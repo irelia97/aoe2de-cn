@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#101310" />
+  <title>帝国天梯 · AoE II DE</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>try{const t=localStorage.getItem('aoe2de:theme')||'auto',d=t==='auto'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):t;document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=d}catch{document.documentElement.dataset.theme='auto';document.documentElement.dataset.resolvedTheme='dark'}</script>
+  <link rel="stylesheet" href="/styles.css?v=light-text-v4" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="帝国天梯首页">
+        <span class="brand-mark"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 35 12v16L20 37 5 28V12L20 3Z"/><path d="M20 3v34M5 12l30 16M35 12 5 28"/><path d="M13 24V14h4v10m2 0V9h4v15m2 0v-7h4v7"/></svg></span>
+        <span><strong>帝国天梯</strong><small>AOE II · DEFINITIVE EDITION</small></span>
+      </a>
+      <div class="side-label">数据中心</div>
+      <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon">▤</span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon">◎</span>选手资料<span class="nav-dot"></span></a><a class="nav-item disabled" href="#" title="即将推出"><span class="nav-icon">◷</span>对局记录<span class="coming">SOON</span></a></nav>
+      <div class="side-bottom"><div class="live-card"><span class="live-orb"></span><div><b>数据服务在线</b><small>连接 World's Edge</small></div><span class="live-check">✓</span></div><p>数据来自 Age of Empires II: DE<br/>公开天梯服务</p></div>
+    </aside>
+
+    <main id="leaderboard">
+      <header class="topbar"><div class="breadcrumbs">数据中心 <span>/</span> <b>天梯榜单</b></div><form id="profileSearchForm" class="profile-search-form topbar-search"><label class="sr-only" for="profileSearchInput">搜索玩家昵称或别名</label><div id="player-search" class="profile-search-input-wrap"><input id="profileSearchInput" name="q" type="search" minlength="2" maxlength="80" placeholder="搜索玩家昵称或别名" autocomplete="off" required /><div id="profileSearchSuggestions" class="profile-suggestions" role="listbox" aria-label="玩家候选" hidden></div></div><div id="profileSearchMeta" class="sr-only" aria-live="polite"></div></form><div class="top-right"><div class="theme-tabs" id="themeTabs" role="group" aria-label="网页色调"><button type="button" data-theme-value="light">白天</button><button type="button" data-theme-value="dark">夜间</button><button type="button" data-theme-value="auto">AUTO</button></div><span class="top-divider"></span><span class="live-label"><i></i> LIVE DATA</span><span class="top-divider"></span><span class="edition">DEFINITIVE EDITION</span></div></header>
+      <section class="intro"><div class="eyebrow"><span></span> RANKED LADDER <span class="eyebrow-line"></span></div><h1>天梯<span>榜单</span></h1><p>追踪全球帝国时代 II 决定版竞技排名</p></section>
+
+      <section class="stats-strip">
+        <div class="stat-block"><span class="stat-icon green">↗</span><div><small>当前榜单</small><strong id="statLadder">1v1 随机地图</strong></div></div>
+        <div class="stat-block"><span class="stat-icon amber">♙</span><div><small>排名玩家数量</small><strong id="statPlayers">—</strong></div></div>
+        <div class="stat-block"><span class="stat-icon blue">◷</span><div><small>数据更新于</small><strong class="mono" id="statUpdated">正在连接…</strong></div></div>
+        <div class="update-note"><span class="pulse"></span><span>榜单更新倒计时 <b id="countdown">60</b>s</span></div>
+      </section>
+
+      <section class="board-card">
+        <div class="board-heading"><div class="board-title"><div><div class="section-kicker">THE LADDER</div><h2>全球排名 <span id="boardType">1v1 随机地图</span></h2></div></div><label class="country-filter" for="countryFilter"><span>国籍</span><span class="select-wrap"><select id="countryFilter" aria-label="按国籍筛选"><option value="all">全部国家</option></select><span class="select-chevron">⌄</span></span></label><div class="controls"><div class="ladder-choices" id="ladderChoices" role="group" aria-label="选择天梯类型"><button type="button" class="ladder-choice selected" data-ladder="3" aria-pressed="true">1v1 随机地图</button><button type="button" class="ladder-choice" data-ladder="4" aria-pressed="false">团队随机地图</button><button type="button" class="ladder-choice" data-ladder="1" aria-pressed="false">1v1 死亡竞赛</button><button type="button" class="ladder-choice" data-ladder="2" aria-pressed="false">团队死亡竞赛</button><button type="button" class="ladder-choice" data-ladder="13" aria-pressed="false">1v1 帝国战争</button><button type="button" class="ladder-choice" data-ladder="14" aria-pressed="false">团队帝国战争</button></div></div></div>
+        <div class="table-wrap"><table><thead><tr><th class="rank-col">排名</th><th class="country-col">国家</th><th class="player-col">游戏昵称</th><th class="rating-col">积分 / 历史最高</th><th class="record-col">胜 / 负</th><th class="win-col">胜率</th><th class="streak-col">连胜</th><th class="game-col">上次游戏时间</th></tr></thead><tbody id="leaderboardBody"><tr><td colspan="8" class="loading"><span class="loader"></span>正在加载天梯数据…</td></tr></tbody></table></div>
+        <div class="table-footer"><span id="resultRange">显示 1–100 / 500</span><nav class="pagination" id="pagination" aria-label="榜单分页"></nav></div>
+      </section>
+      <section class="profile-details-card" id="player-profile" hidden>
+        <div class="profile-details-heading"><div><div class="section-kicker">PLAYER PROFILE</div><h2>选手资料 <span id="profileDetailsName">搜索并选择一名玩家</span></h2></div></div>
+        <div class="profile-page-summary" id="profilePageSummary"></div>
+        <table class="profile-details-table"><thead><tr><th>平台</th><th>账号</th><th>账号 ID</th><th>该账号曾用名</th></tr></thead><tbody id="profileDetailsBody"><tr><td colspan="4" class="profile-details-empty">请使用页面顶部的搜索框查找并选择玩家。</td></tr></tbody></table>
+      </section>
+      <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
+    </main>
+  </div>
+  <script src="/app.js?v=theme-schedule-v2" defer></script>
+</body>
+</html>
