@@ -399,12 +399,12 @@ function searchProfiles(query, leaderboardId) {
       lastMatchTimestamp: profileLastMatchTimestamp(player.lastMatchTime)
     };
   });
-  results.sort((a, b) => Number(Boolean(b.clan?.trim())) - Number(Boolean(a.clan?.trim()))
-    || (b.rating ?? -1) - (a.rating ?? -1)
+  results.sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1)
     || b.matchQuality - a.matchQuality
     || a.matchPosition - b.matchPosition
     || a.matchLengthDifference - b.matchLengthDifference
     || b.lastMatchTimestamp - a.lastMatchTimestamp
+    || Number(Boolean(b.clan?.trim())) - Number(Boolean(a.clan?.trim()))
     || a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
   return results.slice(0, 30);
 }
