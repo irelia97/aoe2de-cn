@@ -2,19 +2,47 @@ const body = document.querySelector('#leaderboardBody');
 const ladderChoices = document.querySelector('#ladderChoices');
 const countryFilter = document.querySelector('#countryFilter');
 let currentRows = [];
-let currentPage = 1;
-let selectedLadder = 3;
-let selectedCountry = 'all';
+const leaderboardViewStorageKey = 'aoe2de:leaderboard-view:v1';
+function readSavedLeaderboardView() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(leaderboardViewStorageKey) || 'null');
+    if (!saved || typeof saved !== 'object') return null;
+    return {
+      ladder: Number.isFinite(Number(saved.ladder)) ? Number(saved.ladder) : 3,
+      country: typeof saved.country === 'string' && saved.country ? saved.country : 'all',
+      page: Math.max(1, Number(saved.page) || 1)
+    };
+  } catch { return null; }
+}
+function persistLeaderboardView() {
+  const view = { ladder: selectedLadder, country: selectedCountry, page: currentPage };
+  try { localStorage.setItem(leaderboardViewStorageKey, JSON.stringify(view)); } catch { /* Storage may be disabled. */ }
+  if (!location.pathname.startsWith('/profile')) {
+    history.replaceState({ ...(history.state || {}), leaderboard: view }, '', location.href);
+  }
+}
+const savedLeaderboardView = readSavedLeaderboardView();
+let currentPage = savedLeaderboardView?.page || 1;
+let selectedLadder = savedLeaderboardView?.ladder || 3;
+let selectedCountry = savedLeaderboardView?.country || 'all';
 const leaderboardData = new Map();
 const leaderboardRequests = new Map();
 const leaderboardRetryAt = new Map();
+const leaderboardSummaryCache = new Map();
+const leaderboardSummaryRequests = new Map();
 const fmt = new Intl.NumberFormat('zh-CN');
 const countryNames = new Intl.DisplayNames(['zh-CN'], { type: 'region' });
-const themePreference = window.matchMedia('(prefers-color-scheme: light)');
 const themeTabs = document.querySelector('#themeTabs');
+document.querySelector('#profileAliasesButton')?.addEventListener('click', event => {
+  event.preventDefault();
+  const target = document.querySelector('#profileAccounts');
+  if (!target) return;
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  history.replaceState(history.state, '', `${location.pathname}${location.search}#profileAccounts`);
+});
 function applyTheme(theme, persist = true) {
-  const selected = ['light', 'dark', 'auto'].includes(theme) ? theme : 'auto';
-  const resolved = selected === 'auto' ? (themePreference.matches ? 'light' : 'dark') : selected;
+  const selected = ['light', 'dark'].includes(theme) ? theme : 'dark';
+  const resolved = selected;
   document.documentElement.dataset.theme = selected;
   document.documentElement.dataset.resolvedTheme = resolved;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolved === 'light' ? '#e9e7df' : '#101310');
@@ -31,10 +59,7 @@ themeTabs?.addEventListener('click', event => {
   const button = event.target.closest('[data-theme-value]');
   if (button) applyTheme(button.dataset.themeValue);
 });
-themePreference.addEventListener('change', () => {
-  if (document.documentElement.dataset.theme === 'auto') applyTheme('auto', false);
-});
-applyTheme(document.documentElement.dataset.theme || 'auto', false);
+applyTheme(document.documentElement.dataset.theme || 'dark', false);
 const lazyDetails = new IntersectionObserver(entries => {
   for (const entry of entries) {
     if (!entry.isIntersecting) continue;
@@ -51,10 +76,12 @@ function countryFlag(code) {
 }
 function normalizeCountryCode(code) {
   const normalized = String(code || '').toUpperCase();
-  return ['TW', 'HK', 'MO'].includes(normalized) ? 'CN' : normalized;
+  return ['HK', 'MO'].includes(normalized) ? 'CN' : normalized;
 }
 function countryName(code) {
-  code = normalizeCountryCode(code);
+  const raw = String(code || '').toUpperCase();
+  if (raw === 'TW') return '中国台湾';
+  code = normalizeCountryCode(raw);
   if (!code || code.length !== 2) return '未知地区';
   try { return countryNames.of(code.toUpperCase()) || '未知地区'; } catch { return '未知地区'; }
 }
@@ -105,11 +132,14 @@ function rowMarkup(row, displayRank = Number(row.rank)) {
   const streak = Number(row.streak || 0);
   const countryCode = normalizeCountryCode(row.country);
   const country = countryName(countryCode);
+  const countryCell = selectedCountry === 'all'
+    ? `<div class="country-cell" title="${escapeHtml(country)}"><span class="flag">${countryFlag(countryCode)}</span><span class="country-name">${escapeHtml(country)}</span></div>`
+    : `<span class="world-rank-cell">#${fmt.format(Number(row.rank))}</span>`;
   const avatar = `<span class="avatar" title="${escapeHtml(row.name)} 的 Steam 头像" data-avatar="${escapeHtml(row.steamId || '')}"><span class="avatar-fallback">${escapeHtml((row.name || '?').slice(0, 1).toUpperCase())}</span></span>`;
   const lastMatch = formatTimeAgo(row.lastMatchDate);
   const lastMatchTitle = Number(row.lastMatchDate) > 0 ? new Date(Number(row.lastMatchDate) * 1000).toLocaleString('zh-CN') : '接口未提供上次比赛时间';
   const trophy = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v3h3v3a5 5 0 0 1-5 5h-.7a6 6 0 0 1-3.8 2.9V20h4v2H8.5v-2h4v-3.1A6 6 0 0 1 8.7 14H8a5 5 0 0 1-5-5V6h3V3Zm0 5H5v1a3 3 0 0 0 2.2 2.9A8 8 0 0 1 6 8Zm12 0a8 8 0 0 1-1.2 3.9A3 3 0 0 0 19 9V8h-1ZM8 5v3a4 4 0 0 0 8 0V5H8Z"/></svg>';
-  return `<tr class="player-row" data-profile="${row.profileId}" data-steam="${escapeHtml(row.steamId || '')}" data-ladder="${selectedLadder}"><td><span class="rank${medal}">${rank <= 3 ? `<span class="medal-mark" title="第${rank}名奖杯">${trophy}</span>` : ''}${rank}</span></td><td><div class="country-cell" title="${escapeHtml(country)}"><span class="flag">${countryFlag(countryCode)}</span><span class="country-name">${escapeHtml(country)}</span></div></td><td><div class="player">${avatar}<a class="player-name" href="https://www.aoe2companion.com/players/${encodeURIComponent(row.profileId)}" target="_blank" rel="noreferrer">${escapeHtml(row.name)}</a></div></td><td><div class="rating-stack"><span class="rating">${fmt.format(row.rating)}</span><span class="peak-rating">最高 ${fmt.format(row.highestRating ?? row.rating)}</span></div></td><td><span class="record"><b>${fmt.format(row.wins)}</b><i>/</i>${fmt.format(row.losses)}</span></td><td><span class="rating">${totalRate === null ? '—' : `${totalRate}%`}</span></td><td><span class="streak${streak > 0 ? ' positive' : streak < 0 ? ' negative' : ''}">${streak > 0 ? '+' : ''}${streak}</span></td><td><span class="last-match-time" title="${escapeHtml(lastMatchTitle)}">${lastMatch || '暂无数据'}</span></td></tr>`;
+  return `<tr class="player-row" data-profile="${row.profileId}" data-steam="${escapeHtml(row.steamId || '')}" data-ladder="${selectedLadder}"><td><span class="rank${medal}">${rank <= 3 ? `<span class="medal-mark" title="第${rank}名奖杯">${trophy}</span>` : rank}</span></td><td>${countryCell}</td><td><div class="player">${avatar}<a class="player-name" href="/profile/${encodeURIComponent(row.profileId)}">${escapeHtml(row.name)}</a></div></td><td><div class="rating-stack"><span class="rating">${fmt.format(row.rating)}</span><span class="peak-rating">最高 ${fmt.format(row.highestRating ?? row.rating)}</span></div></td><td><span class="record"><b>${fmt.format(row.wins)}</b><i>/</i>${fmt.format(row.losses)}</span></td><td><span class="rating">${totalRate === null ? '—' : `${totalRate}%`}</span></td><td><span class="streak${streak > 0 ? ' positive' : streak < 0 ? ' negative' : ''}">${streak > 0 ? '+' : ''}${streak}</span></td><td><span class="last-match-time" title="${escapeHtml(lastMatchTitle)}">${lastMatch || '暂无数据'}</span></td></tr>`;
 }
 async function loadRowDetails(row) {
   const avatar = row.querySelector('.avatar');
@@ -146,14 +176,14 @@ function updateCountryFilterOptions(rows) {
     if (code.length === 2) countries.set(code, countryName(code));
   }
   if (selectedCountry !== 'all' && !countries.has(selectedCountry)) countries.set(selectedCountry, countryName(selectedCountry));
-  const priority = ['CN', 'VN', 'US', 'CA', 'BR', 'AR'];
+  const priority = ['CN', 'TW', 'VN', 'US', 'CA', 'BR', 'AR'];
   const options = [...countries].sort((a, b) => {
     const aPriority = priority.indexOf(a[0]);
     const bPriority = priority.indexOf(b[0]);
     if (aPriority >= 0 || bPriority >= 0) return (aPriority < 0 ? Infinity : aPriority) - (bPriority < 0 ? Infinity : bPriority);
     return a[1].localeCompare(b[1], 'zh-CN');
   });
-  countryFilter.innerHTML = `<option value="all">全部国家</option>${options.map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(name)}</option>`).join('')}`;
+  countryFilter.innerHTML = `<option value="all">全部国家/地区</option>${options.map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(name)}</option>`).join('')}`;
   countryFilter.value = selectedCountry;
 }
 function renderPage() {
@@ -164,6 +194,8 @@ function renderPage() {
   currentPage = Math.min(currentPage, pageCount);
   const startIndex = (currentPage - 1) * 100;
   const pageRows = filteredRows.slice(startIndex, startIndex + 100);
+  const countryHeader = document.querySelector('#countryColumnHeader');
+  if (countryHeader) countryHeader.textContent = selectedCountry === 'all' ? '国家/地区' : '世界排名';
   body.innerHTML = pageRows.length ? pageRows.map((row, index) => rowMarkup(row, selectedCountry === 'all' ? row.rank : startIndex + index + 1)).join('') : `<tr><td colspan="8" class="loading">${currentRows.length ? '该国籍暂无上榜玩家' : '暂无榜单数据'}</td></tr>`;
   const renderedRows = [...body.querySelectorAll('.player-row')];
   renderedRows.forEach(row => lazyDetails.observe(row));
@@ -174,6 +206,7 @@ function renderPage() {
   pagination.innerHTML = `<button class="page-arrow" data-page="${currentPage - 1}" ${currentPage === 1 ? 'disabled' : ''} aria-label="上一页">‹</button>${Array.from({ length: pageCount }, (_, i) => `<button class="page-number${i + 1 === currentPage ? ' selected' : ''}" data-page="${i + 1}" aria-current="${i + 1 === currentPage ? 'page' : 'false'}">${i + 1}</button>`).join('')}<button class="page-arrow" data-page="${currentPage + 1}" ${currentPage === pageCount ? 'disabled' : ''} aria-label="下一页">›</button>`;
   pagination.querySelectorAll('button:not(:disabled)').forEach(button => button.addEventListener('click', () => {
     currentPage = Number(button.dataset.page);
+    persistLeaderboardView();
     renderPage();
     document.querySelector('.table-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
@@ -181,18 +214,37 @@ function renderPage() {
 countryFilter.addEventListener('change', () => {
   selectedCountry = countryFilter.value;
   currentPage = 1;
+  persistLeaderboardView();
   renderPage();
+  loadLeaderboardSummary();
 });
 function setError(message) {
   body.innerHTML = `<tr><td colspan="8" class="error-state"><span class="error-icon">!</span><div><b>暂时无法获取天梯数据</b><small>${escapeHtml(message)}</small></div><button id="retryBtn">重试</button></td></tr>`;
   document.querySelector('#retryBtn')?.addEventListener('click', loadLeaderboard);
 }
+function renderLeaderboardSummary(summary) {
+  document.querySelector('#statAverage').textContent = summary && Number.isFinite(Number(summary.averageRating)) ? fmt.format(Number(summary.averageRating)) : '-';
+  document.querySelector('#statPlayers').textContent = summary ? `${fmt.format(Number(summary.countryPlayers || 0))}/${fmt.format(Number(summary.totalPlayers || 0))}` : '-';
+  document.querySelector('#statTop100').textContent = summary ? fmt.format(Number(summary.top100Country || 0)) : '-';
+}
+async function loadLeaderboardSummary() {
+  const key = `${selectedLadder}:${selectedCountry}`;
+  const cached = leaderboardSummaryCache.get(key);
+  if (cached) renderLeaderboardSummary(cached);
+  else renderLeaderboardSummary(null);
+  if (leaderboardSummaryRequests.has(key)) return leaderboardSummaryRequests.get(key);
+  const request = fetch(`/api/leaderboard-summary?id=${encodeURIComponent(selectedLadder)}&country=${encodeURIComponent(selectedCountry)}`, { cache: 'no-store' })
+    .then(response => response.ok ? response.json() : null)
+    .then(summary => { if (summary) { leaderboardSummaryCache.set(key, summary); if (key === `${selectedLadder}:${selectedCountry}`) renderLeaderboardSummary(summary); } })
+    .catch(() => { if (!cached) renderLeaderboardSummary(null); })
+    .finally(() => leaderboardSummaryRequests.delete(key));
+  leaderboardSummaryRequests.set(key, request);
+  return request;
+}
 function displayLeaderboard(data) {
   renderRows(data.rows);
-  document.querySelector('#statLadder').textContent = data.label;
   document.querySelector('#boardType').textContent = data.label;
-  document.querySelector('#statPlayers').textContent = fmt.format(data.total);
-  document.querySelector('#statUpdated').textContent = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(data.updatedAt));
+  loadLeaderboardSummary();
 }
 async function loadLeaderboard(force = false) {
   const ladderId = selectedLadder;
@@ -219,7 +271,7 @@ async function loadLeaderboard(force = false) {
         retries += 1;
         if (ladderId === selectedLadder) {
           if (!currentRows.length) body.innerHTML = `<tr><td colspan="8" class="loading"><span class="loader"></span>正在重试（${retries}/5）…</td></tr>`;
-          else document.querySelector('#statUpdated').textContent = `正在重试（${retries}/5）…`;
+          else document.querySelector('#statAverage').textContent = `重试中（${retries}/5）`;
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
@@ -231,7 +283,7 @@ async function loadLeaderboard(force = false) {
   } catch (error) {
     leaderboardRetryAt.set(ladderId, Date.now() + 60_000);
     if (ladderId === selectedLadder) {
-      if (currentRows.length) document.querySelector('#statUpdated').textContent = `更新失败 · ${error.message}`;
+      if (currentRows.length) document.querySelector('#statAverage').textContent = '更新失败';
       else setError(error.message || '请检查网络连接后重试');
     }
   }
@@ -249,6 +301,7 @@ ladderChoices.querySelectorAll('.ladder-choice').forEach(button => button.addEve
     choice.setAttribute('aria-pressed', String(active));
   });
   currentPage = 1;
+  persistLeaderboardView();
   const cached = leaderboardData.get(ladderId);
   if (cached) displayLeaderboard(cached.data);
   else {
@@ -280,6 +333,12 @@ let profileSuggestActiveIndex = -1;
 let profileSuggestResults = [];
 let profileSuggestExpanded = false;
 let profileDetailsRequestId = 0;
+let profileMatchesRequestId = 0;
+let currentProfileId = '';
+const lastProfileIdStorageKey = 'aoe2de:last-profile-id:v1';
+let currentProfileLeaderboardRows = [];
+let currentProfileRecentResults = new Map();
+let currentProfileRecentStats = new Map();
 let profileDetailsSocket = null;
 let profileDetailsTimeout = null;
 let profileDetailsRetryTimer = null;
@@ -318,6 +377,19 @@ async function refreshProfileSearchStatus() {
     profileSearchMeta.textContent = '暂时无法连接玩家资料服务';
   }
 }
+function profileLoadingMarkup() {
+  return '<div class="profile-loading-animation" role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div>';
+}
+function setProfileLoadingAnimation(visible) {
+  const loading = document.querySelector('#profileLoadingAnimation');
+  if (loading) loading.hidden = !visible;
+}
+function profileSectionLoadingMarkup() {
+  return '<div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div>';
+}
+function profileTableLoadingMarkup(colspan) {
+  return `<tr><td colspan="${colspan}">${profileSectionLoadingMarkup()}</td></tr>`;
+}
 function profileSuggestionMarkup(player, index) {
   const country = player.country ? countryName(player.country) : '未知地区';
   const clan = player.clan ? ` · ${escapeHtml(player.clan)}` : '';
@@ -334,12 +406,43 @@ function renderPlayerDetailsRows(details) {
   return accounts.map(account => {
     const aliases = Array.isArray(account.akas) ? account.akas.filter(alias => typeof alias === 'string' && alias.trim()).map(repairMojibake) : [];
     const accountName = account.name || '未命名账号';
-    const accountUrl = typeof account.url === 'string' && account.url.startsWith('https://') ? account.url : '';
-    const accountMarkup = accountUrl ? `<a href="${escapeHtml(accountUrl)}" target="_blank" rel="noreferrer">${escapeHtml(accountName)} ↗</a>` : escapeHtml(accountName);
-    return `<tr><td>${escapeHtml(account.platform || '未知平台')}</td><td>${accountMarkup}</td><td>${escapeHtml(account.id ?? '—')}</td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : '无'}</td></tr>`;
+    const accountId = String(account.id ?? '');
+    const accountMarkup = /^\d+$/.test(accountId)
+      ? `<a href="/profile/${encodeURIComponent(accountId)}">${escapeHtml(accountName)}</a>`
+      : escapeHtml(accountName);
+    const avatar = `<span class="profile-account-avatar" data-profile-id="${escapeHtml(accountId)}" title="${escapeHtml(accountName)} 的 Steam 头像"><span>${escapeHtml(accountName.slice(0, 1).toUpperCase() || '?')}</span></span>`;
+    const last = Number(account.last);
+    const lastText = formatTimeAgo(last) || '暂无数据';
+    const lastTitle = last > 0 ? new Date(last * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
+    return `<tr><td class="profile-account-id">${escapeHtml(accountId || '—')}</td><td><div class="profile-account-name">${avatar}${accountMarkup}</div></td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : '无'}</td><td class="profile-account-last" title="${escapeHtml(lastTitle)}">${escapeHtml(lastText)}</td></tr>`;
   }).join('');
 }
-const aoe2RecsProfileCachePrefix = 'aoe2de:aoe2recs-profile:v1:';
+function loadProfileAccountAvatars() {
+  for (const avatar of document.querySelectorAll('.profile-account-avatar[data-profile-id]')) {
+    const profileId = avatar.dataset.profileId;
+    if (!profileId) continue;
+    const directUrl = avatar.dataset.avatarUrl || '';
+    if (directUrl) {
+      const image = document.createElement('img');
+      image.src = directUrl;
+      image.alt = '';
+      image.loading = 'lazy';
+      image.onerror = () => image.remove();
+      avatar.replaceChildren(image);
+      continue;
+    }
+    fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' }).then(response => response.ok ? response.json() : null).then(data => {
+      if (!avatar.isConnected || !data?.avatar) return;
+      const image = document.createElement('img');
+      image.src = data.avatar;
+      image.alt = '';
+      image.loading = 'lazy';
+      image.onerror = () => image.remove();
+      avatar.replaceChildren(image);
+    }).catch(() => {});
+  }
+}
+const aoe2RecsProfileCachePrefix = 'aoe2de:aoe2recs-profile:v2:';
 const aoe2RecsProfileCacheTtl = 48 * 60 * 60 * 1000;
 function readAoE2RecsProfileCache(profileId) {
   const key = `${aoe2RecsProfileCachePrefix}${profileId}`;
@@ -358,8 +461,12 @@ function readAoE2RecsProfileCache(profileId) {
 }
 function saveAoE2RecsProfileCache(profileId, profile) {
   const cachedProfile = {
+    avatar: profile.avatar || '',
     player: profile.player || null,
-    accounts: Array.isArray(profile.accounts) ? profile.accounts : []
+    accounts: Array.isArray(profile.accounts) ? profile.accounts : [],
+    live: profile.live || null,
+    matches: Array.isArray(profile.matches) ? profile.matches : [],
+    leaderboards: Array.isArray(profile.leaderboards) ? profile.leaderboards : []
   };
   try {
     localStorage.setItem(`${aoe2RecsProfileCachePrefix}${profileId}`, JSON.stringify({ savedAt: Date.now(), profile: cachedProfile }));
@@ -367,15 +474,626 @@ function saveAoE2RecsProfileCache(profileId, profile) {
     // Quota or privacy settings may disable local storage; keep the live result usable.
   }
 }
-function renderAoE2RecsProfile(profile, profileId, fallbackName) {
-  document.querySelector('#profileDetailsName').textContent = profile.player?.name || fallbackName || `玩家 ${profileId}`;
+function formatProfileDate(timestamp) {
+  const value = Number(timestamp);
+  return value > 0 ? new Date(value * 1000).toLocaleString('zh-CN') : '暂无数据';
+}
+function aoe2AssetSlug(value) {
+  return String(value || '').trim().toLocaleLowerCase().replace(/[’']/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+function aoe2MapImageUrl(mapName) {
+  const slug = aoe2AssetSlug(mapName);
+  return slug ? `/assets/game/map/${slug}.png` : '';
+}
+const mapNamesZh = {
+  "Arabia": "阿拉伯半岛",
+  "Archipelago": "群岛",
+  "Baltic": "波罗的海",
+  "Black Forest": "黑森林",
+  "Coastal": "沿海",
+  "Continental": "大陆",
+  "Crater Lake": "火山湖",
+  "Fortress": "堡垒",
+  "Gold Rush": "淘金潮",
+  "Highland": "高地",
+  "Islands": "岛屿",
+  "Mediterranean": "地中海",
+  "Migration": "迁移",
+  "Rivers": "河流",
+  "Team Islands": "团队岛屿",
+  "Full Random": "完全随机地图",
+  "Scandinavia": "斯堪的纳维亚",
+  "Mongolia": "蒙古",
+  "Salt Marsh": "盐碱沼泽",
+  "Yucatan": "尤卡坦",
+  "Arena": "竞技场",
+  "King of the Hill": "占山为王",
+  "Oasis": "绿洲",
+  "Ghost Lake": "幽灵湖",
+  "Random Land Map": "随机陆地地图",
+  "Execute On Load": "加载时执行",
+  "Nomad": "游牧",
+  "Blind Random": "绝对随机地图",
+  "Hidden": "隐藏",
+  "Objectives": "任务",
+  "Hints": "提示",
+  "Scouts": "侦察",
+  "Acropolis": "雅典卫城",
+  "Budapest": "布达佩斯",
+  "Cenotes": "岩坑池地",
+  "City of Lakes": "百湖之城",
+  "Golden Pit": "金矿谷",
+  "Hideout": "藏身之处",
+  "Hill Fort": "山寨",
+  "Lombardia": "伦巴第",
+  "Steppe": "干草原",
+  "Valley": "峡谷",
+  "MegaRandom": "超级随机",
+  "Hamburger": "汉堡包",
+  "CtR Random": "争夺圣物随机地图",
+  "CtR Monsoon": "争夺圣物雨季沼泽",
+  "CtR Pyramid Descent": "争夺圣物决战金字塔之巅",
+  "CtR Spiral": "争夺圣物漩涡迷航",
+  "Golden Swamp": "金沼泽",
+  "Four Lakes": "四片湖泊",
+  "Land Nomad": "陆地游牧",
+  "BR Battle On Ice": "大逃杀冰上战斗",
+  "BR El Dorado": "大逃杀黄金国",
+  "BR Fall of Axum": "大逃杀阿克苏姆的衰落",
+  "BR Fall of Rome": "大逃杀罗马的衰落",
+  "BR Majapahit Empire": "大逃杀满者伯夷帝国",
+  "Amazon Tunnel": "亚马逊隧道",
+  "Coastal Forest": "沿海森林",
+  "African Clearing": "非洲林中空地",
+  "Atacama": "阿塔卡马",
+  "Seize The Mountain": "攻占山头",
+  "Crater": "弹坑",
+  "Crossroads": "十字路口",
+  "Michi": "开道",
+  "Team Moats": "团队护城河",
+  "Volcanic Island": "火山岛",
+  "Acclivity": "上坡",
+  "Eruption": "火山喷发",
+  "Frigid Lake": "酷寒之湖",
+  "Greenland": "格陵兰",
+  "Lowland": "低地",
+  "Marketplace": "市场",
+  "Meadow": "草地",
+  "Mountain Range": "山脉",
+  "Northern Isles": "北方群岛",
+  "Ring Fortress": "环形要塞",
+  "Runestones": "符文石群",
+  "Aftermath": "余波荡漾",
+  "Enclosed": "与世隔绝",
+  "Haboob": "哈布风暴",
+  "Kawasan": "卡瓦森",
+  "Land Madness": "癫狂之地",
+  "Sacred Springs": "圣泉",
+  "Wade": "浅滩",
+  "Morass": "沼泽",
+  "Shoals": "浅滩",
+  "Cliffbound": "紧邻悬崖",
+  "Isthmus": "地峡",
+  "Dunesprings": "沙丘泉",
+  "Golden Stream": "金色溪流",
+  "Mountain Dunes": "山地沙丘",
+  "River Divide": "河流分叉口",
+  "Sandrift": "流沙",
+  "Shrubland": "灌木丛",
+  "The Passage": "走廊",
+  "Hollow Woodlands": "山谷林地",
+  "Karsts": "喀斯特地貌",
+  "Glade": "林间空地",
+  "Fortified Clearing": "强化空地",
+  "QS Arabia": "QS 阿拉伯",
+  "QS Fortified Clearing": "QS 强化空地",
+  "QS Glade": "QS 林中空地",
+  "QS Nomad": "QS 游牧",
+  "Canals": "运河",
+  "Capricious": "变幻莫测",
+  "Dingos": "澳洲野犬",
+  "Graveyards": "坟墓",
+  "Metropolis": "大都市",
+  "Moats": "护城河",
+  "Paradise Island": "天堂岛",
+  "Pilgrims": "朝圣者",
+  "Prairie": "大草原",
+  "Seasons": "四季",
+  "Sherwood Forest": "雪伍德森林",
+  "": "",
+  "Shipwreck": "船只遗骸",
+  "Team Glaciers": "团队冰川",
+  "": "",
+  "Stranded": "孤岛求生",
+  "Pregame Cinematic": "游戏片头过场动画",
+  "Victory Cinematic": "胜利过场动画",
+  "Loss Cinematic": "失败过场动画",
+  "Scenario Instruction Map": "场景指南地图",
+  "QS Runestones": "QS 符文石",
+  "QS Arena": "QS 竞技场",
+  "QS Black Forest": "QS 黑森林",
+  "Great Wall": "长城",
+  "Sardis": "萨迪斯",
+  "Aquarena": "水上竞技场",
+  "Forest Breach": "森林缺口",
+  "Border Dispute": "边境纷争",
+  "Graupel": "霰雪",
+  "Chaos Pit": "混沌之坑",
+  "Mired": "泥沼",
+  "Murkwood": "黑雾林",
+  "Crownwood": "克朗伍德",
+  "Dorothea Quarry": "多罗西亚采石场",
+  "Glacis": "格拉西斯",
+  "Hengehold": "亨格霍尔德",
+  "Loch Ness": "尼斯湖",
+  "Rampart": "壁垒",
+  "Stonefront": "石阵防线",
+  "Thames": "泰晤士河",
+  "Vulpine": "狐影林",
+  "Arabian Desert": "阿拉伯沙漠",
+};
+function mapDisplayName(mapName) {
+  const value = String(mapName || '').trim();
+  if (!value) return '未知地图';
+  const exact = mapNamesZh[value];
+  if (exact) return exact;
+  const matched = Object.keys(mapNamesZh).find(name => name.toLocaleLowerCase() === value.toLocaleLowerCase());
+  return matched ? mapNamesZh[matched] : value;
+}
+function mapNameColorClass(mapName) {
+  const name = String(mapName || '');
+  let hash = 0;
+  for (const character of name) hash = ((hash << 5) - hash + character.codePointAt(0)) | 0;
+  if (/沙漠|非洲|desert|africa|arabia|arabian/i.test(name)) return `map-name-color-${[8, 9, 10][Math.abs(hash) % 3]}`;
+  return `map-name-color-${Math.abs(hash) % 8}`;
+}
+function aoe2CivilizationImageUrl(civilization) {
+  const value = String(civilization || '').trim().toLocaleLowerCase();
+  const canonical = { inca: 'incas', incas: 'incas', maya: 'mayans', mayans: 'mayans' }[value] || value;
+  const slug = aoe2AssetSlug(canonical);
+  return slug ? `/assets/game/civilization/${slug}.png` : '';
+}
+const civilizationNamesZh = {
+  Armenians: '亚美尼亚', Aztecs: '阿兹特克', Bengalis: '孟加拉', Berbers: '柏柏尔', Bohemians: '波希米亚', Britons: '不列颠', Bulgarians: '保加利亚', Burgundians: '勃艮第', Burmese: '缅甸', Byzantines: '拜占庭', Celts: '凯尔特', Chinese: '中国', Cumans: '库曼', Danes: '丹麦', Dravidians: '达罗毗荼', Ethiopians: '埃塞俄比亚', Franks: '法兰克', Georgians: '格鲁吉亚', Goths: '哥特', Gurjaras: '瞿折罗', Hindustanis: '印度斯坦', Huns: '匈奴', Incas: '印加', inca: '印加', Italians: '意大利', Japanese: '日本', Jurchens: '女真', Khitans: '契丹', Khmer: '高棉', Koreans: '朝鲜', Lithuanians: '立陶宛', Magyars: '马扎尔', Malay: '马来', Malays: '马来', Malians: '马里', Mapuche: '马普切', Maya: '玛雅', maya: '玛雅', Mayans: '玛雅', mayans: '玛雅', Mongols: '蒙古', Muisca: '穆伊斯卡', Persians: '波斯', Poles: '波兰', Portuguese: '葡萄牙', Romans: '罗马', Saracens: '撒拉逊', Saxons: '撒克逊', Shu: '蜀', Sicilians: '西西里', Slavs: '斯拉夫', Spanish: '西班牙', Tatars: '鞑靼', Teutons: '条顿', Turks: '土耳其', Tupi: '图皮', Varangians: '瓦兰吉', Vietnamese: '越南', Vikings: '维京', Wei: '魏', Wu: '吴'
+};
+function civilizationNameZh(civilization) {
+  const value = String(civilization || '').trim();
+  const stripped = value.replace(/\s+\(.*\)$/, '');
+  const exact = civilizationNamesZh[stripped];
+  if (exact) return exact;
+  const matched = Object.keys(civilizationNamesZh).find(name => name.toLocaleLowerCase() === stripped.toLocaleLowerCase());
+  return (matched && civilizationNamesZh[matched]) || value || '未知民族';
+}
+function profileMatchTypeLabel(match) {
+  const leaderboard = String(match?.leaderboard || '').trim();
+  if (!leaderboard) return `大厅局 ${String(match?.lobby || '未知大厅').trim()}`;
+  if (leaderboard === 'RM TG') return '团队随机地图';
+  if (leaderboard === 'RM 1v1') return '随机地图1v1';
+  return leaderboard;
+}
+function profileMatchTypeKey(match) {
+  const leaderboard = String(match?.leaderboard || '').trim();
+  if (leaderboard) return leaderboard;
+  return `${String(match?.type || '').trim()}|${String(match?.diplomacy || '').trim()}`;
+}
+function profileMatchRatingDeltas(matches) {
+  const deltas = new Map();
+  const previous = new Map();
+  const chronological = [...matches].sort((a, b) => Number(a.started || a.lobby_created || 0) - Number(b.started || b.lobby_created || 0));
+  for (const match of chronological) {
+    if (!match?.leaderboard && String(match?.lobby || '').trim()) continue;
+    const typeKey = profileMatchTypeKey(match);
+    for (const player of Array.isArray(match.players) ? match.players : []) {
+      const direct = Number(player.ratingDelta);
+      if (Number.isFinite(direct)) deltas.set(`${match.id}:${player.id}`, direct);
+      const rating = Number(player.rating);
+      if (!Number.isFinite(rating)) continue;
+      const playerKey = `${typeKey}|${player.id}`;
+      const prior = previous.get(playerKey);
+      if (Number.isFinite(prior) && !deltas.has(`${match.id}:${player.id}`)) deltas.set(`${match.id}:${player.id}`, rating - prior);
+      previous.set(playerKey, rating);
+    }
+  }
+  return deltas;
+}
+function fullSteamAvatarUrl(url) {
+  return typeof url === 'string' ? url.replace(/_medium(?=\.[a-z]+(?:\?.*)?$)/i, '_full') : '';
+}
+function renderProfileLeaderboards(leaderboards, recentResults = currentProfileRecentResults, recentStats = currentProfileRecentStats) {
+  const rows = Array.isArray(leaderboards) ? leaderboards : [];
+  currentProfileLeaderboardRows = rows;
+  const body = document.querySelector('#profileLeaderboardBody');
+  const toggle = document.querySelector('#profileLeaderboardToggle');
+  if (!body) return;
+  const inactiveCount = rows.filter(row => row.hasData === false || row.active === false).length;
+  const ladderPriority = new Map([[3, 0], [4, 1], [13, 2], [14, 3], [1, 4], [2, 5]]);
+  const orderedRows = [...rows].sort((a, b) =>
+    (ladderPriority.get(Number(a.id)) ?? 99) - (ladderPriority.get(Number(b.id)) ?? 99)
+  );
+  body.innerHTML = orderedRows.map(row => {
+    const hasData = row.hasData !== false;
+    const active = hasData && row.active !== false;
+    const games = Number.isFinite(Number(row.wins)) && Number.isFinite(Number(row.losses)) ? Number(row.wins) + Number(row.losses) : null;
+    const winrate = games !== null && games > 0 && Number.isFinite(Number(row.wins)) ? `${(Number(row.wins) / games * 100).toFixed(1)}%` : '—';
+    const ratingPair = row.rating != null || row.highestRating != null ? `${row.rating != null ? fmt.format(row.rating) : '—'} / ${row.highestRating != null ? fmt.format(row.highestRating) : '—'}` : '—';
+    const recent = Array.isArray(recentResults?.get?.(Number(row.id))) ? recentResults.get(Number(row.id)).slice().reverse() : [];
+    const favorite = recentStats?.get?.(Number(row.id)) || {};
+    const recentMarkup = Array.from({ length: 5 }, (_, index) => {
+      const result = recent[index];
+      return `<span class="profile-recent-result ${result === true ? 'win' : result === false ? 'loss' : 'unknown'}" title="${result === true ? '胜利' : result === false ? '失败' : '暂无记录'}">${result === true ? '✓' : result === false ? '×' : '·'}</span>`;
+    }).join('');
+    const rankLabel = active ? '世界排名' : hasData ? '不活跃' : '未参与此模式';
+    const rankValue = active ? '#' + fmt.format(row.rank) : hasData ? '无排名' : '—';
+    const favoriteCiv = favorite.civilization ? `${favorite.civilization} · ${favorite.civilizationCount} 场` : '—';
+    const favoriteMap = favorite.map ? `${favorite.map} · ${favorite.mapCount} 场` : '—';
+    const favoriteOpponentRecord = favorite.opponent ? `${favorite.opponentWins}场/${favorite.opponentTotal}场` : '—';
+    const favoriteOpponentId = favorite.opponentId && /^\d+$/.test(String(favorite.opponentId)) ? String(favorite.opponentId) : '';
+    const favoriteOpponentAvatar = favoriteOpponentId ? `<span class="profile-ladder-opponent-avatar" data-profile-avatar-id="${escapeHtml(favoriteOpponentId)}"><span>${escapeHtml((favorite.opponent || '?').slice(0, 1).toUpperCase())}</span></span>` : '';
+    const favoriteOpponentLink = favorite.opponent && favoriteOpponentId ? `<a class="profile-ladder-opponent-link" href="/profile/${encodeURIComponent(favoriteOpponentId)}" title="查看 ${escapeHtml(favorite.opponent)} 的资料">${favoriteOpponentAvatar}<span class="profile-ladder-opponent-name">${escapeHtml(favorite.opponent)}</span></a>` : escapeHtml(favorite.opponent || '—');
+    const favoriteCivIcon = favorite.civilizationIcon ? `<img class="profile-ladder-civ-icon" src="${escapeHtml(favorite.civilizationIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : '';
+    const lastGame = formatTimeAgo(row.lastMatchDate) || '—';
+    const lastGameTitle = Number(row.lastMatchDate) > 0 ? new Date(Number(row.lastMatchDate) * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
+    return `<article class="profile-ladder-card${active ? '' : ' profile-inactive-row'}"${active ? '' : ' hidden'}><div class="profile-ladder-card-head"><strong>${escapeHtml(row.label || '未知模式')}</strong><span>${games !== null ? `${fmt.format(games)} 场` : '—'}</span><span class="profile-ladder-last-game" title="${escapeHtml(lastGameTitle)}">最后游戏时间 ${escapeHtml(lastGame)}</span></div><div class="profile-ladder-card-body"><div class="profile-ladder-card-main"><div class="profile-ladder-rank"><small>${rankLabel}</small><b>${rankValue}</b></div><div class="profile-ladder-stat profile-ladder-rating"><span>当前积分/历史最高</span><b>${ratingPair}</b></div><div class="profile-ladder-stat profile-ladder-record"><span>胜率</span><b>${winrate}</b></div></div><div class="profile-ladder-favorites"><div class="profile-ladder-stat profile-ladder-favorite-civ"><span>近期最多民族</span><b title="${escapeHtml(favorite.civilization || '暂无数据')}">${favoriteCivIcon}${escapeHtml(favoriteCiv)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-map"><span>近期最多地图</span><b title="${escapeHtml(favorite.map || '暂无数据')}">${escapeHtml(favoriteMap)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-opponent"><span>近期最强对手</span><b title="${escapeHtml(favorite.opponent || '暂无数据')}">${favoriteOpponentLink}</b><small class="profile-ladder-opponent-record">${escapeHtml(favoriteOpponentRecord)}</small></div></div></div><div class="profile-ladder-card-foot"><span class="profile-recent-results-label">最近 5 场</span><span class="profile-recent-results">${recentMarkup}</span></div></article>`;
+  }).join('') || '<div class="profile-leaderboard-empty">暂无天梯汇总数据</div>';
+  body.querySelectorAll('.profile-ladder-opponent-avatar[data-profile-avatar-id]').forEach(avatar => {
+    const profileId = avatar.dataset.profileAvatarId;
+    fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (!avatar.isConnected || !data?.avatar) return;
+        const image = document.createElement('img');
+        image.src = fullSteamAvatarUrl(data.avatar);
+        image.alt = '';
+        image.loading = 'lazy';
+        image.onerror = () => image.remove();
+        avatar.replaceChildren(image);
+      }).catch(() => {});
+  });
+  if (toggle) {
+    toggle.hidden = inactiveCount === 0;
+    toggle.textContent = '显示不活跃模式';
+    toggle.onclick = () => {
+      const hidden = body.querySelector('.profile-inactive-row')?.hidden;
+      body.querySelectorAll('.profile-inactive-row').forEach(row => { row.hidden = !hidden; });
+      toggle.textContent = hidden ? '隐藏不活跃模式' : '显示不活跃模式';
+    };
+  }
+}
+function loadProfileLeaderboards(profileId) {
+  const initialBody = document.querySelector('#profileLeaderboardBody');
+  if (initialBody) initialBody.innerHTML = profileSectionLoadingMarkup();
+  fetch(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}`, { cache: 'no-store' })
+    .then(response => response.ok ? response.json() : null)
+    .then(data => { if (data?.leaderboards) renderProfileLeaderboards(data.leaderboards); })
+    .catch(() => {});
+}
+function renderProfileMatches(profile, matchesOverride = null, visibleCount = 100) {
+  const body = document.querySelector('#profileMatchesBody');
+  if (!body) return;
+  const playerId = String(profile.player?.id || '');
+  const matches = Array.isArray(matchesOverride) ? matchesOverride : (Array.isArray(profile.matches) ? profile.matches : []);
+  if (!matches.length) {
+    body.innerHTML = '<div class="profile-matches-empty">暂无对局记录</div>';
+    return;
+  }
+  const isLiveMatch = match => match?.live === true || (match?.live !== false && Number(match?.started) > 0 && !Number(match?.finished) && match?.abandoned !== true);
+  const liveMatch = matches.find(isLiveMatch) || null;
+  const historyMatches = matches.filter(match => match !== liveMatch);
+  const ratingDeltas = profileMatchRatingDeltas(matches);
+  const visibleMatches = (liveMatch ? [liveMatch] : []).concat(historyMatches.slice(0, visibleCount));
+  body.innerHTML = visibleMatches.map(match => {
+    const live = match === liveMatch;
+    const players = Array.isArray(match.players) ? match.players : [];
+    const self = players.find(player => String(player.id) === playerId);
+    const teams = Array.isArray(match.teams) ? match.teams : [];
+    const selfTeam = self && teams.find(team => Array.isArray(team.members) && team.members.some(member => String(member) === String(self.number)));
+    const hasTeamWinner = teams.some(team => team.winner === true) || players.some(player => player.winner === true || player.won === true);
+    const selfTeamWon = selfTeam?.winner === true || self?.winner === true || self?.won === true;
+    const won = selfTeamWon;
+    const lost = self?.winner === false || self?.won === false || (hasTeamWinner && selfTeam && !selfTeamWon);
+    const isLobbyMatch = !String(match.leaderboard || '').trim();
+    const isAbandoned = match.abandoned === true;
+    const result = live ? '' : isAbandoned ? '非正常对局' : won ? '胜利' : lost ? '失败' : '—';
+    const duration = Number(match.duration);
+    const durationText = live ? '进行中' : Number.isFinite(duration) && duration > 0 ? `${Math.floor(duration / 60)}分${Math.floor(duration % 60)}秒` : '—';
+    const started = Number(match.started || match.lobby_created) || 0;
+    const matchAgo = formatTimeAgo(started) || '暂无时间';
+    const playerByNumber = new Map(players.map(player => [String(player.number), player]));
+    const orderedTeams = selfTeam ? [selfTeam, ...teams.filter(team => team !== selfTeam)] : teams;
+    const isOneVsOne = String(match.diplomacy || '').toLowerCase() === '1v1' || (players.length === 2 && teams.length === 2 && teams.every(team => Array.isArray(team.members) && team.members.length <= 1));
+    const renderMatchPlayer = (player, teamWon = false, side = '') => {
+      const isSelf = String(player.id) === playerId;
+      const color = typeof player.color_hex === 'string' && /^#[0-9a-f]{6}$/i.test(player.color_hex) ? player.color_hex : '#84928a';
+      const playerWon = !live && (player.winner === true || (hasTeamWinner && teamWon));
+      const civilization = player.civilization || '未知文明';
+      const civilizationZh = civilizationNameZh(civilization);
+      const civImage = aoe2CivilizationImageUrl(civilization);
+      const civMarkup = civImage ? `<img class="profile-match-civ-icon" src="${civImage}" alt="" loading="lazy" onerror="this.hidden=true">` : '';
+      const playerClass = `profile-match-player${isSelf ? ' is-self' : ''}${playerWon ? ' is-winner' : ''}${side ? ` is-${side}` : ''}`;
+      const ratingMarkup = `<b>${player.rating != null ? fmt.format(player.rating) : '—'}</b>`;
+      const directRatingDelta = Number(player.ratingDelta);
+      const ratingDelta = live || isLobbyMatch || isAbandoned ? null : Number.isFinite(directRatingDelta)
+        ? directRatingDelta
+        : ratingDeltas.get(`${match.id}:${player.id}`);
+      const ratingDeltaMarkup = Number.isFinite(ratingDelta) && ratingDelta !== 0 ? `<span class="profile-match-rating-delta ${ratingDelta > 0 ? 'positive' : 'negative'}">${ratingDelta > 0 ? '+' : ''}${fmt.format(ratingDelta)}</span>` : '';
+      const crownMarkup = playerWon ? '<span class="profile-match-crown" title="胜者">♛</span>' : '';
+      const playerName = escapeHtml(player.name || '未知玩家');
+      const playerLink = /^\d+$/.test(String(player.id || '')) ? `<a class="profile-match-player-name-link" title="${playerName}" href="/profile/${encodeURIComponent(String(player.id))}">${playerName}</a>` : playerName;
+      const nameMarkup = `<div class="profile-match-player-name">${side === 'left' ? ratingDeltaMarkup : ''}<strong title="${playerName}">${playerLink}</strong>${side !== 'left' ? ratingDeltaMarkup : ''}</div>`;
+      const mainMarkup = `<div class="profile-match-player-main">${nameMarkup}<span class="profile-match-civ"><span>${escapeHtml(civilizationZh)}</span>${civMarkup}</span></div>`;
+      const colorMarkup = `<span class="profile-match-color" style="background:${color}"></span>`;
+      return side === 'left' ? `<div class="${playerClass}">${ratingMarkup}${crownMarkup}${mainMarkup}${colorMarkup}</div>` : `<div class="${playerClass}">${colorMarkup}${mainMarkup}${crownMarkup}${ratingMarkup}</div>`;
+    };
+    const teamMarkup = orderedTeams.map((team, teamIndex) => {
+      const teamPlayers = (Array.isArray(team.members) ? team.members : []).map(member => playerByNumber.get(String(member))).filter(Boolean);
+      const teamWon = team.winner === true || teamPlayers.some(player => player.winner === true || player.won === true);
+      const side = teams.length > 2 ? 'right' : (teamIndex === 0 ? 'left' : 'right');
+      const playersMarkup = teamPlayers.map(player => renderMatchPlayer(player, teamWon, side)).join('') || '<div class="profile-match-player-empty">队伍信息不可用</div>';
+      return `<div class="profile-match-team${teamWon ? ' is-winner' : ''}${teamIndex === 0 ? ' is-own-team' : ''}">${playersMarkup}</div>`;
+    }).join('<div class="profile-match-vs">VS</div>');
+    const matchupMarkup = isOneVsOne && players.length >= 2
+      ? `${renderMatchPlayer(players[0], teams.find(team => team.members?.some(member => String(member) === String(players[0].number)))?.winner === true, 'left')}<div class="profile-match-vs">VS</div>${renderMatchPlayer(players[1], teams.find(team => team.members?.some(member => String(member) === String(players[1].number)))?.winner === true, 'right')}`
+      : teamMarkup;
+    const resultClass = isAbandoned ? 'is-abandoned' : won ? 'is-win' : lost ? 'is-loss' : 'is-unknown';
+    const rawMapName = match.rms || '未知地图';
+    const mapName = mapDisplayName(rawMapName);
+    const mapImage = aoe2MapImageUrl(rawMapName);
+    const mapIcon = `<span class="profile-match-map-fallback">?</span>${mapImage ? `<img src="${mapImage}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}`;
+    const liveBadge = live ? `<a class="profile-match-live-badge" href="aoe2de://1/${encodeURIComponent(String(match.id))}" title="点击在 AoE2 DE 中观战">LIVE-&gt;点击游戏内观战</a>` : `<span class="profile-match-result">${escapeHtml(result)}</span>`;
+    const replayButton = live ? '' : `<select class="profile-match-replay-download" aria-label="选择录像视角" data-match-id="${escapeHtml(match.id ?? '')}"><option value="">下载录像</option>${players.map(player => `<option value="${escapeHtml(player.id ?? '')}">${escapeHtml(player.name || `玩家 ${player.id}`)}</option>`).join('')}</select>`;
+    const teamLayoutClass = `${teams.length > 2 ? ' many-teams' : ''}${teams.length >= 2 && teams.some(team => Array.isArray(team.members) && team.members.length > 1) ? ' team-game' : ''}`;
+    return `<article class="profile-match-card ${live ? 'is-live' : resultClass}"><div class="profile-match-heading"><span class="profile-match-leaderboard" title="${escapeHtml(profileMatchTypeLabel(match))}">${escapeHtml(profileMatchTypeLabel(match))}</span>${liveBadge}</div><div class="profile-match-content"><div class="profile-match-info"><div class="profile-match-map-column"><div class="profile-match-map-icon">${mapIcon}</div>${replayButton}</div><div class="profile-match-map-copy"><strong class="${mapNameColorClass(rawMapName)}" title="${escapeHtml(mapName)}">${escapeHtml(mapName)}</strong><span>◷ ${escapeHtml(durationText)}</span><span>${escapeHtml(matchAgo)}</span><small>#${escapeHtml(match.id ?? '—')}</small></div></div><div class="profile-match-teams${teamLayoutClass}">${matchupMarkup}</div></div></article>`;
+  }).join('');
+  body.querySelectorAll('.profile-match-replay-download').forEach(picker => {
+    picker.addEventListener('change', () => {
+      const selectedProfileId = picker.value;
+      const matchId = picker.dataset.matchId;
+      if (!selectedProfileId || !matchId) return;
+      window.location.href = `/api/match-replay?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(selectedProfileId)}`;
+      picker.selectedIndex = 0;
+    });
+  });
+}
+function renderProfileLastMatchFromMatch(match) {
+  const target = document.querySelector('#profileIdentityLastMatch');
+  if (!target) return;
+  const started = Number(match?.started) || 0;
+  const live = match?.live === true || (match?.live !== false && started > 0 && !Number(match?.finished) && match?.abandoned !== true);
+  if (live) {
+    target.innerHTML = '<span class="profile-live-dot" aria-hidden="true"></span><span class="profile-live-label">游戏中</span>';
+    target.title = started > 0 ? `开始于 ${new Date(started * 1000).toLocaleString('zh-CN')}` : '正在进行的对局';
+    return;
+  }
+  const duration = Number(match?.duration);
+  const finished = started > 0 ? started + (Number.isFinite(duration) && duration > 0 ? duration : 0) : 0;
+  target.textContent = `最后游戏时间：${formatTimeAgo(finished || started) || '暂无数据'}`;
+  target.title = finished > 0 ? new Date(finished * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
+}
+function profileRecentResultsByLeaderboard(matches, playerId) {
+  const results = new Map();
+  const leaderboardId = match => ({ 'RM 1v1': 3, 'RM TG': 4, 'EW 1v1': 13, 'EW TG': 14 }[String(match?.leaderboard || '').trim()] || null);
+  const ordered = [...(Array.isArray(matches) ? matches : [])].sort((a, b) => Number(b.started || b.lobby_created || 0) - Number(a.started || a.lobby_created || 0));
+  for (const match of ordered) {
+    const id = leaderboardId(match);
+    if (!id || match?.live === true || (!Number(match?.finished) && match?.abandoned !== true)) continue;
+    const players = Array.isArray(match.players) ? match.players : [];
+    const self = players.find(player => String(player.id) === String(playerId));
+    if (!self) continue;
+    const teams = Array.isArray(match.teams) ? match.teams : [];
+    const selfTeam = teams.find(team => Array.isArray(team.members) && team.members.some(member => String(member) === String(self.number)));
+    const teamWon = selfTeam?.winner === true;
+    const won = self.winner === true || self.won === true || teamWon;
+    const lost = self.winner === false || self.won === false || (selfTeam && selfTeam.winner === false);
+    if (!won && !lost) continue;
+    const values = results.get(id) || [];
+    if (values.length < 5) values.push(won);
+    results.set(id, values);
+  }
+  return results;
+}
+function profileRecentStatsByLeaderboard(matches, playerId) {
+  const stats = new Map();
+  const leaderboardId = match => ({ 'RM 1v1': 3, 'RM TG': 4, 'EW 1v1': 13, 'EW TG': 14 }[String(match?.leaderboard || '').trim()] || null);
+  const counts = new Map();
+  for (const match of Array.isArray(matches) ? matches : []) {
+    const id = leaderboardId(match);
+    if (!id || match?.live === true || (!Number(match?.finished) && match?.abandoned !== true)) continue;
+    const self = (Array.isArray(match.players) ? match.players : []).find(player => String(player.id) === String(playerId));
+    if (!self) continue;
+    const entry = counts.get(id) || { civilizations: new Map(), civilizationIcons: new Map(), maps: new Map(), opponents: new Map() };
+    const civilization = civilizationNameZh(self.civilization || '');
+    const map = mapDisplayName(match.rms || '');
+    if (civilization && civilization !== '未知民族') {
+      entry.civilizations.set(civilization, (entry.civilizations.get(civilization) || 0) + 1);
+      const civImage = aoe2CivilizationImageUrl(self.civilization || '');
+      if (civImage) entry.civilizationIcons.set(civilization, civImage);
+    }
+    if (map && map !== '未知地图') entry.maps.set(map, (entry.maps.get(map) || 0) + 1);
+    const selfTeam = (Array.isArray(match.teams) ? match.teams : []).find(team => Array.isArray(team.members) && team.members.some(member => String(member) === String(self.number)));
+    const selfWon = self.winner === true || self.won === true || selfTeam?.winner === true;
+    const selfLost = self.winner === false || self.won === false || (selfTeam && selfTeam.winner === false);
+    if (selfWon || selfLost) {
+      const selfMembers = new Set(Array.isArray(selfTeam?.members) ? selfTeam.members.map(String) : [String(self.number)]);
+      for (const opponent of (Array.isArray(match.players) ? match.players : []).filter(player => !selfMembers.has(String(player.number)))) {
+        const name = String(opponent.name || '').trim();
+        if (name) {
+          const prior = entry.opponents.get(name) || { id: String(opponent.id || ''), total: 0, wins: 0, losses: 0 };
+          prior.total += 1;
+          if (selfWon) prior.wins += 1;
+          if (selfLost) prior.losses += 1;
+          entry.opponents.set(name, prior);
+        }
+      }
+    }
+    counts.set(id, entry);
+  }
+  for (const [id, entry] of counts) {
+    const mostFrequent = values => [...values.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))[0] || ['', 0];
+    const civilization = mostFrequent(entry.civilizations);
+    const map = mostFrequent(entry.maps);
+    const opponent = [...entry.opponents.entries()].sort((a, b) => b[1].losses - a[1].losses || b[1].total - a[1].total || a[0].localeCompare(b[0], 'zh-CN'))[0] || ['', { total: 0, wins: 0, losses: 0 }];
+    stats.set(id, { civilization: civilization[0], civilizationCount: civilization[1], civilizationIcon: entry.civilizationIcons.get(civilization[0]) || '', map: map[0], mapCount: map[1], opponent: opponent[0], opponentId: opponent[1].id || '', opponentWins: opponent[1].wins, opponentTotal: opponent[1].total });
+  }
+  return stats;
+}
+async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDetailsRequestId) {
+  const more = document.querySelector('#profileMatchesMore');
+  const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
+  // Match history is sourced exclusively from AoE2 Companion. AoE2Recs profile
+  // payloads may contain a partial history without per-player ratingDiff.
+  let matches = [];
+  let hasMore = false;
+  let visibleCount = 20;
+  let loading = false;
+  const render = () => {
+    if (!isCurrent()) return;
+    renderProfileMatches(profile, matches, visibleCount);
+    if (more) {
+      more.hidden = visibleCount >= matches.length && !hasMore;
+      more.disabled = loading;
+      more.textContent = loading ? '加载中…' : '显示更多';
+    }
+  };
+  const fetchPage = async (offset, limit = 100, progressive = false) => {
+    const suffix = progressive ? '&progressive=1' : '';
+    const response = await fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}&offset=${offset}&limit=${limit}${suffix}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('近期对局请求失败');
+    return response.json();
+  };
+  try {
+    const first = await fetchPage(0, 100, true);
+    if (!isCurrent()) return;
+    matches = Array.isArray(first.matches) ? first.matches : [];
+    currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
+    currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
+    if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
+    // Render the first upstream batch immediately while the server completes
+    // the cache refresh and watermark scan in the background.
+    hasMore = false;
+    visibleCount = 20;
+    renderProfileLastMatchFromMatch(matches[0]);
+    render();
+
+    // Replace the initial batch with the completed cached 100-match window as
+    // soon as the background refresh finishes.
+    try {
+      const complete = await fetchPage(0, 100);
+      if (!isCurrent()) return;
+      matches = Array.isArray(complete.matches) ? complete.matches : matches;
+      currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
+      currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
+      if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
+      hasMore = false;
+      renderProfileLastMatchFromMatch(matches[0]);
+      render();
+    } catch {
+      // The initial 20 matches remain visible if the background refresh fails.
+    }
+  } catch {
+    // Do not fall back to AoE2Recs matches: they may omit per-player ratingDiff.
+    if (isCurrent()) {
+      const body = document.querySelector('#profileMatchesBody');
+      if (body) body.innerHTML = '';
+    }
+  }
+  if (!more) return;
+  more.onclick = async () => {
+    if (!isCurrent()) return;
+    if (loading) return;
+    if (visibleCount < matches.length) {
+      visibleCount = Math.min(visibleCount + 20, matches.length);
+      render();
+      return;
+    }
+    if (!hasMore) return;
+    loading = true;
+    render();
+    try {
+      const page = await fetchPage(matches.length, 100);
+      if (!isCurrent()) return;
+      const incoming = Array.isArray(page.matches) ? page.matches : [];
+      const known = new Set(matches.map(match => String(match.id)));
+      matches = matches.concat(incoming.filter(match => !known.has(String(match.id))));
+      hasMore = Boolean(page.hasMore);
+      visibleCount = Math.min(visibleCount + 20, matches.length);
+    } catch {
+      hasMore = false;
+    } finally {
+      loading = false;
+      render();
+    }
+  };
+}
+function loadProfileAccounts(profileId, requestId) {
+  const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
+  setProfileMessage(profileSectionLoadingMarkup());
+  fetch(`/api/profile-accounts?id=${encodeURIComponent(profileId)}`, { cache: 'no-store' })
+    .then(response => response.ok ? response.json() : Promise.reject(new Error('账号资料请求失败')))
+    .then(data => {
+      if (!isCurrent()) return;
+      const details = { player: { id: profileId }, avatar: data?.avatar || '', accounts: Array.isArray(data?.accounts) ? data.accounts : [] };
+      document.querySelector('#profileDetailsBody').innerHTML = renderPlayerDetailsRows(details);
+      loadProfileAccountAvatars();
+    })
+    .catch(() => { if (isCurrent()) setProfileMessage('暂时无法获取账号与曾用名', 'profile-details-error'); });
+}
+function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = profileDetailsRequestId) {
+  setProfileLoadingAnimation(false);
+  const selectedAccount = (Array.isArray(profile.accounts) ? profile.accounts : []).find(account => String(account.id ?? '') === String(profileId));
+  const playerName = selectedAccount?.name || profile.player?.name || fallbackName || `玩家 ${profileId}`;
+  document.querySelector('#profileIdentityName').textContent = playerName;
   const player = profile.player || {};
-  const summary = [player.clan, player.country_code ? countryName(player.country_code) : '', player.id ? `AoE2 ID ${player.id}` : ''].filter(Boolean);
-  document.querySelector('#profilePageSummary').textContent = summary.join(' · ');
-  document.querySelector('#profileDetailsBody').innerHTML = renderPlayerDetailsRows(profile);
+  const avatar = document.querySelector('#profileOverviewAvatar');
+  if (avatar) {
+    avatar.replaceChildren();
+    const useProfileAvatar = String(profile.player?.id ?? '') === String(profileId) && profile.avatar;
+    if (useProfileAvatar) {
+      const image = document.createElement('img');
+      image.src = fullSteamAvatarUrl(profile.avatar);
+      image.alt = '';
+      image.loading = 'lazy';
+      image.onerror = () => image.remove();
+      avatar.append(image);
+    } else avatar.textContent = playerName.slice(0, 1).toUpperCase();
+    if (!useProfileAvatar && /^\d+$/.test(String(profileId))) {
+      fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' }).then(response => response.ok ? response.json() : null).then(data => {
+        if (!avatar.isConnected || !data?.avatar) return;
+        const image = document.createElement('img');
+        image.src = data.avatar;
+        image.alt = '';
+        image.loading = 'lazy';
+        image.onerror = () => image.remove();
+        avatar.replaceChildren(image);
+      }).catch(() => {});
+    }
+  }
+  const meta = document.querySelector('#profileIdentityMeta');
+  if (meta) {
+    const country = player.country_code ? countryName(player.country_code) : '未知国籍';
+    const team = player.team || '暂无战队';
+    meta.textContent = `${country} · ${team}`;
+  }
+  const lastMatch = document.querySelector('#profileIdentityLastMatch');
+  if (lastMatch) {
+    const latestMatch = Array.isArray(profile.matches) ? profile.matches[0] : null;
+    const started = Number(latestMatch?.started || latestMatch?.lobby_created) || 0;
+    const duration = Number(latestMatch?.duration);
+    const latest = started > 0 ? started + (Number.isFinite(duration) && duration > 0 ? duration : 0) : 0;
+    const relative = formatTimeAgo(latest) || '暂无数据';
+    lastMatch.textContent = `最后游戏时间：${relative}`;
+    lastMatch.title = latest > 0 ? new Date(latest * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
+  }
+  if (Array.isArray(profile.accounts) && profile.accounts.length) {
+    document.querySelector('#profileDetailsBody').innerHTML = renderPlayerDetailsRows(profile);
+    loadProfileAccountAvatars();
+  }
+  const matchesBody = document.querySelector('#profileMatchesBody');
+  if (matchesBody && profileMatchesRequestId !== requestId) matchesBody.innerHTML = profileLoadingMarkup();
+  if (profileMatchesRequestId !== requestId) loadWorldsEdgeMatches(profileId, profile, requestId);
 }
 function routeToPlayerProfile(player) {
   if (!player?.profileId) return;
+  if (!location.pathname.startsWith('/profile')) history.replaceState({ ...(history.state || {}), leaderboard: { ladder: selectedLadder, country: selectedCountry, page: currentPage } }, '', location.href);
   history.pushState({ profileId: String(player.profileId), name: String(player.name || '') }, '', `/profile/${encodeURIComponent(player.profileId)}`);
   hideProfileSuggestions();
   renderCurrentRoute(player);
@@ -393,28 +1111,77 @@ function renderCurrentRoute(selectedPlayer = null) {
     const active = link.dataset.page === (isProfilePage ? 'profile' : 'leaderboard');
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '选手资料' : '天梯榜单';
+  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : '天梯榜单';
   if (!isProfilePage) {
+    const saved = history.state?.leaderboard;
+    if (saved) {
+      selectedLadder = Number(saved.ladder) || 3;
+      selectedCountry = String(saved.country || 'all');
+      currentPage = Math.max(1, Number(saved.page) || 1);
+      persistLeaderboardView();
+      ladderChoices.querySelectorAll('.ladder-choice').forEach(choice => {
+        const active = Number(choice.dataset.ladder) === selectedLadder;
+        choice.classList.toggle('selected', active);
+        choice.setAttribute('aria-pressed', String(active));
+      });
+      const cached = leaderboardData.get(selectedLadder);
+      if (cached) displayLeaderboard(cached.data);
+    } else {
+      ladderChoices.querySelectorAll('.ladder-choice').forEach(choice => {
+        const active = Number(choice.dataset.ladder) === selectedLadder;
+        choice.classList.toggle('selected', active);
+        choice.setAttribute('aria-pressed', String(active));
+      });
+      if (countryFilter) countryFilter.value = selectedCountry;
+    }
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
     clearTimeout(profileDetailsRetryTimer);
     clearInterval(profileDetailsRequestTimer);
     profileDetailsSocket?.close();
     profileDetailsSocket = null;
+    loadLeaderboard();
+    updateCountdown();
     return;
   }
   if (!profileId) {
+    const aliasesButton = document.querySelector('#profileAliasesButton');
+    if (aliasesButton) aliasesButton.hidden = true;
+    if (currentProfileId) return;
+    let savedProfileId = '';
+    try { savedProfileId = localStorage.getItem(lastProfileIdStorageKey) || ''; } catch { /* Storage may be disabled. */ }
+    if (/^\d+$/.test(savedProfileId)) {
+      history.replaceState({ ...(history.state || {}), profileId: savedProfileId }, '', `/profile/${encodeURIComponent(savedProfileId)}`);
+      return renderCurrentRoute();
+    }
+    setProfileLoadingAnimation(false);
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
     clearTimeout(profileDetailsRetryTimer);
     clearInterval(profileDetailsRequestTimer);
     profileDetailsSocket?.close();
     profileDetailsSocket = null;
-    document.querySelector('#profileDetailsName').textContent = '搜索并选择一名玩家';
-    document.querySelector('#profilePageSummary').textContent = '';
+    document.querySelector('#profileIdentityName').textContent = '搜索并选择一名玩家';
+    document.querySelector('#profileIdentityMeta').textContent = '';
+    document.querySelector('#profileIdentityLastMatch').textContent = '';
     setProfileMessage('请使用页面顶部的搜索框查找并选择玩家。');
+    const leaderboardBody = document.querySelector('#profileLeaderboardBody');
+    if (leaderboardBody) leaderboardBody.innerHTML = '';
+    const matchesBody = document.querySelector('#profileMatchesBody');
+    if (matchesBody) matchesBody.innerHTML = '<div class="profile-matches-empty">请使用页面顶部的搜索框查找并选择玩家。</div>';
+    const matchesMore = document.querySelector('#profileMatchesMore');
+    if (matchesMore) { matchesMore.hidden = true; matchesMore.disabled = false; matchesMore.onclick = null; }
     return;
   }
+  currentProfileId = String(profileId);
+  const aliasesButton = document.querySelector('#profileAliasesButton');
+  if (aliasesButton) aliasesButton.hidden = false;
+  try { localStorage.setItem(lastProfileIdStorageKey, currentProfileId); } catch { /* Storage may be disabled. */ }
+  if (selectedPlayer) {
+    document.querySelector('#profileIdentityName').textContent = selectedPlayer.name || `玩家 ${profileId}`;
+    document.querySelector('#profileIdentityMeta').textContent = `${selectedPlayer.country ? countryName(selectedPlayer.country) : '未知国籍'} · ${selectedPlayer.clan || '暂无战队'}`;
+  }
+  loadProfileLeaderboards(profileId);
   loadAoE2RecsProfile(profileId, selectedPlayer?.name || history.state?.name || '');
 }
 function loadAoE2RecsProfile(profileId, fallbackName = '') {
@@ -423,96 +1190,40 @@ function loadAoE2RecsProfile(profileId, fallbackName = '') {
   clearInterval(profileDetailsRequestTimer);
   profileDetailsSocket?.close();
   const requestId = ++profileDetailsRequestId;
-  const profileName = document.querySelector('#profileDetailsName');
+  profileMatchesRequestId = requestId;
+  currentProfileLeaderboardRows = [];
+  currentProfileRecentResults = new Map();
+  currentProfileRecentStats = new Map();
+  setProfileLoadingAnimation(false);
+  loadWorldsEdgeMatches(profileId, { player: { id: profileId }, matches: [] }, requestId);
+  loadProfileAccounts(profileId, requestId);
+  const profileName = document.querySelector('#profileIdentityName');
   profileName.textContent = fallbackName || `玩家 ${profileId}`;
-  document.querySelector('#profilePageSummary').textContent = '';
-  const cachedProfile = readAoE2RecsProfileCache(profileId);
-  if (cachedProfile) {
-    renderAoE2RecsProfile(cachedProfile, profileId, fallbackName);
-    return;
-  }
-  setProfileMessage('<span class="loader"></span>加载中');
-  let retryCount = 0;
-
-  const finish = (data, socket, attempt) => {
-    if (attempt.finished || requestId !== profileDetailsRequestId || !data || typeof data !== 'object') return;
-    const profile = data.person && typeof data.person === 'object' ? data.person : data;
-    if (profile.found === false || profile.player === null) {
-      attempt.finished = true;
+  const matchesBody = document.querySelector('#profileMatchesBody');
+  const matchesMore = document.querySelector('#profileMatchesMore');
+  if (matchesBody) matchesBody.innerHTML = profileLoadingMarkup();
+  if (matchesMore) { matchesMore.hidden = true; matchesMore.disabled = false; matchesMore.onclick = null; }
+  setProfileMessage(profileSectionLoadingMarkup());
+  const controller = new AbortController();
+  profileDetailsTimeout = setTimeout(() => controller.abort(), 150_000);
+  fetch(`/api/profile-details?id=${encodeURIComponent(profileId)}`, { cache: 'no-store', signal: controller.signal })
+    .then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then(data => {
+      if (requestId !== profileDetailsRequestId || !data || typeof data !== 'object') return;
       clearTimeout(profileDetailsTimeout);
-      clearInterval(profileDetailsRequestTimer);
-      setProfileMessage('未找到该选手资料。', 'profile-details-error');
-      socket.close();
-      return;
-    }
-    if (!Array.isArray(profile.accounts) && !profile.player) return;
-    attempt.finished = true;
-    clearTimeout(profileDetailsTimeout);
-    clearInterval(profileDetailsRequestTimer);
-    if (socket === profileDetailsSocket) profileDetailsSocket = null;
-    saveAoE2RecsProfileCache(profileId, profile);
-    renderAoE2RecsProfile(profile, profileId, fallbackName);
-    socket.close();
-  };
-
-  const connect = () => {
-    if (requestId !== profileDetailsRequestId) return;
-    const attempt = { finished: false, requestSent: false, sends: 0 };
-    let socket;
-    const retryOrFail = () => {
-      if (attempt.finished || requestId !== profileDetailsRequestId) return;
-      attempt.finished = true;
+      if (!data.player && !Array.isArray(data.accounts)) throw new Error('资料格式无效');
+      if (!data.stale) saveAoE2RecsProfileCache(profileId, data);
+      renderAoE2RecsProfile(data, profileId, fallbackName, requestId);
+    })
+    .catch(error => {
+      if (requestId !== profileDetailsRequestId) return;
+      setProfileLoadingAnimation(false);
       clearTimeout(profileDetailsTimeout);
-      clearInterval(profileDetailsRequestTimer);
-      if (socket === profileDetailsSocket) profileDetailsSocket = null;
-      socket?.close();
-      if (retryCount < 5) {
-        retryCount++;
-        profileDetailsRetryTimer = setTimeout(connect, Math.min(500 * (2 ** (retryCount - 1)), 4000));
-      } else {
-        setProfileMessage('加载失败（已重试 5 次），请稍后再试。', 'profile-details-error');
-      }
-    };
-    try {
-      socket = new WebSocket('wss://aoe2recs.com/dashboard/api/');
-      profileDetailsSocket = socket;
-    } catch {
-      retryOrFail();
-      return;
-    }
-    profileDetailsTimeout = setTimeout(retryOrFail, 12000);
-    socket.addEventListener('message', event => {
-      if (requestId !== profileDetailsRequestId || attempt.finished) return;
-      let message;
-      try { message = JSON.parse(event.data); } catch { return; }
-      // AoE2Recs ignores profile_id requests sent immediately on open. Wait for
-      // its first dashboard state batch before asking for the profile.
-      if (!attempt.requestSent && message.cls === 3) {
-        attempt.requestSent = true;
-        const sendProfileRequest = () => {
-          if (attempt.finished || socket.readyState !== WebSocket.OPEN || attempt.sends >= 3) {
-            clearInterval(profileDetailsRequestTimer);
-            return;
-          }
-          attempt.sends++;
-          socket.send(JSON.stringify({ profile_id: Number(profileId) }));
-        };
-        sendProfileRequest();
-        profileDetailsRequestTimer = setInterval(sendProfileRequest, 1500);
-      }
-      if (message.cls === 13) finish(message.data, socket, attempt);
-      if (message.cls === 3 && Array.isArray(message.data)) {
-        for (const update of message.data) if (update.cls === 13) finish(update.data, socket, attempt);
-      }
+      setProfileMessage(error.name === 'AbortError' ? '加载失败（已重试 10 次），请稍后再试。' : '加载失败（已重试 10 次），请稍后再试。', 'profile-details-error');
     });
-    socket.addEventListener('error', retryOrFail);
-    socket.addEventListener('close', () => {
-      if (socket === profileDetailsSocket) profileDetailsSocket = null;
-      retryOrFail();
-    });
-  };
-
-  connect();
 }
 function hideProfileSuggestions() {
   profileSearchSuggestions.hidden = true;
@@ -615,7 +1326,22 @@ document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.
   history.pushState({}, '', link.dataset.page === 'profile' ? '/profile' : '/');
   renderCurrentRoute();
 }));
+document.addEventListener('click', event => {
+  const link = event.target.closest('.player-name');
+  if (!link || location.pathname.startsWith('/profile')) return;
+  const row = link.closest('.player-row');
+  const profileId = row?.dataset.profile;
+  const player = currentRows.find(item => String(item.profileId) === String(profileId));
+  if (!player) return;
+  event.preventDefault();
+  routeToPlayerProfile(player);
+});
 window.addEventListener('popstate', () => renderCurrentRoute());
 renderCurrentRoute();
 refreshProfileSearchStatus();
 setInterval(refreshProfileSearchStatus, 5000);
+
+
+
+
+
