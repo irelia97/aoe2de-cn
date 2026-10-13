@@ -700,23 +700,36 @@ function civilizationNameZh(civilization) {
   return (matched && civilizationNamesZh[matched]) || value || '未知民族';
 }
 function profileMatchTypeLabel(match) {
-  const leaderboard = String(match?.leaderboard || '').trim();
+  const leaderboard = profileMatchLeaderboard(match);
   if (!leaderboard) return `大厅局 ${String(match?.lobby || '未知大厅').trim()}`;
   if (leaderboard === 'RM TG') return '团队随机地图';
   if (leaderboard === 'RM 1v1') return '随机地图1v1';
   return leaderboard;
 }
 function profileMatchTypeKey(match) {
-  const leaderboard = String(match?.leaderboard || '').trim();
+  const leaderboard = profileMatchLeaderboard(match);
   if (leaderboard) return leaderboard;
   return `${String(match?.type || '').trim()}|${String(match?.diplomacy || '').trim()}`;
+}
+function profileMatchLeaderboard(match) {
+  const raw = String(match?.leaderboard || '').trim().toUpperCase().replace(/\s+/g, '_');
+  if (raw === 'DM_1V1') return 'DM 1v1';
+  if (raw === 'DM_TG' || raw === 'DM_TEAM') return 'DM TG';
+  if (raw === 'RM_1V1') return 'RM 1v1';
+  if (raw === 'RM_TG' || raw === 'RM_TEAM') return 'RM TG';
+  if (raw === 'EW_1V1') return 'EW 1v1';
+  if (raw === 'EW_TG' || raw === 'EW_TEAM') return 'EW TG';
+  if (/DEATHMATCH|^DM$/.test(String(match?.type || '').toUpperCase())) {
+    return /1V1|1\s*V\s*1/.test(String(match?.diplomacy || '').toUpperCase()) ? 'DM 1v1' : 'DM TG';
+  }
+  return String(match?.leaderboard || '').trim();
 }
 function profileMatchRatingDeltas(matches) {
   const deltas = new Map();
   const previous = new Map();
   const chronological = [...matches].sort((a, b) => Number(a.started || a.lobby_created || 0) - Number(b.started || b.lobby_created || 0));
   for (const match of chronological) {
-    if (!match?.leaderboard && String(match?.lobby || '').trim()) continue;
+    if (!profileMatchLeaderboard(match) && String(match?.lobby || '').trim()) continue;
     const typeKey = profileMatchTypeKey(match);
     for (const player of Array.isArray(match.players) ? match.players : []) {
       const direct = Number(player.ratingDelta);
@@ -770,7 +783,7 @@ function profileRecentModeCounts(matches, playerId) {
   for (const match of (Array.isArray(matches) ? matches : []).slice(0, 100)) {
     const belongsToPlayer = (Array.isArray(match.players) ? match.players : []).some(player => String(player.id) === String(playerId));
     if (!belongsToPlayer) continue;
-    const id = modeByMatch.get(String(match.leaderboard || '').trim()) ?? 'other';
+    const id = modeByMatch.get(profileMatchLeaderboard(match)) ?? 'other';
     counts.set(id, (counts.get(id) || 0) + 1);
   }
   return counts;
@@ -1282,6 +1295,159 @@ function loadMedia(showAllVideos = false) {
   mediaRequest = fetch('/api/media', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败'))).then(data => { renderMedia(data, showAllVideos); return data; }).catch(() => { renderMedia({ videos: [], live: [] }, showAllVideos); }).finally(() => { mediaRequest = null; });
   return mediaRequest;
 }
+let updatesRequest = null;
+let currentUpdatesArticleId = '';
+let updatesTocActiveId = '';
+let updatesTocSyncFrame = 0;
+let updatesTocManualScroll = false;
+function normalizeUpdatesArticle() {
+  const article = document.querySelector('#updatesArticle');
+  if (!article) return;
+  for (const paragraph of [...article.querySelectorAll(':scope > p')]) {
+    const text = paragraph.textContent.trim();
+    const meaningful = [...paragraph.childNodes].filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent.trim());
+    const onlyBold = meaningful.length && meaningful.every(node => node.nodeType === Node.ELEMENT_NODE && ['STRONG', 'BR'].includes(node.tagName));
+    if (!onlyBold || text.length < 2 || text.length > 48) continue;
+    const isMinorHeading = /^(?:声明|内容概要)(?:[:：]|\s|$)/.test(text);
+    const isMajorHeading = paragraph.previousElementSibling?.tagName === 'HR' && !isMinorHeading;
+    const heading = document.createElement(isMajorHeading ? 'h2' : 'h3');
+    heading.className = 'updates-inferred-heading';
+    heading.innerHTML = paragraph.innerHTML;
+    paragraph.replaceWith(heading);
+  }
+  for (const list of [...article.querySelectorAll(':scope > ul.updates-opus-list')]) {
+    if (!list.isConnected) continue;
+    let next = list.nextElementSibling;
+    while (next?.matches(`ul.updates-opus-list.${[...list.classList].find(name => name.startsWith('level-')) || 'level-1'}`)) {
+      const following = next.nextElementSibling;
+      list.append(...next.children);
+      next.remove();
+      next = following;
+    }
+  }
+}
+function renderUpdatesToc(articleId = '') {
+  const article = document.querySelector('#updatesArticle');
+  const toc = document.querySelector('#updatesToc');
+  if (!article || !toc) return;
+  const headings = [...article.querySelectorAll(':scope > h2, :scope > h3, :scope > h4, :scope > .opus-module-content > h2, :scope > .opus-module-content > h3, :scope > .opus-module-content > h4')]
+    .filter(heading => !/^(?:译注|译者注|编者注|注释|注意|重要提示)(?:[:：]|\s|$)/.test(heading.textContent.trim()));
+  if (headings.length < 2) {
+    toc.hidden = true;
+    toc.innerHTML = '';
+    updatesTocActiveId = '';
+    return;
+  }
+  const key = String(articleId || 'article').replace(/[^a-z0-9_-]/gi, '');
+  const entries = headings.map((heading, index) => {
+    heading.id = `updates-section-${key}-${index + 1}`;
+    return `<a class="level-${heading.tagName.slice(1)}" href="#${heading.id}">${escapeHtml(heading.textContent.trim() || `章节 ${index + 1}`)}</a>`;
+  });
+  toc.innerHTML = `<strong>文章目录</strong><nav>${entries.join('')}</nav>`;
+  for (const link of toc.querySelectorAll('a[href^="#"]')) {
+    link.addEventListener('click', event => {
+      event.preventDefault();
+      const target = document.getElementById(link.getAttribute('href').slice(1));
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+  toc.hidden = false;
+  updatesTocActiveId = '';
+  syncUpdatesTocToReading();
+}
+function syncUpdatesTocToReading() {
+  const toc = document.querySelector('#updatesToc');
+  if (!toc || toc.hidden || !/^\/updates\/?$/.test(location.pathname)) return;
+  const links = [...toc.querySelectorAll('a[href^="#"]')];
+  const entries = links.map(link => ({ link, heading: document.getElementById(link.getAttribute('href').slice(1)) })).filter(entry => entry.heading);
+  if (!entries.length) return;
+  const marker = 130;
+  let active = entries[0];
+  for (const entry of entries) {
+    if (entry.heading.getBoundingClientRect().top > marker) break;
+    active = entry;
+  }
+  const id = active.heading.id;
+  if (id === updatesTocActiveId) return;
+  updatesTocActiveId = id;
+  for (const entry of entries) entry.link.classList.toggle('active', entry === active);
+  if (updatesTocManualScroll) return;
+  const tocRect = toc.getBoundingClientRect();
+  const linkRect = active.link.getBoundingClientRect();
+  const linkTop = linkRect.top - tocRect.top + toc.scrollTop;
+  const targetTop = linkTop - (toc.clientHeight - linkRect.height) / 2;
+  toc.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+}
+function scheduleUpdatesTocSync() {
+  if (updatesTocSyncFrame) return;
+  updatesTocSyncFrame = requestAnimationFrame(() => {
+    updatesTocSyncFrame = 0;
+    syncUpdatesTocToReading();
+  });
+}
+function renderUpdates(data) {
+  const select = document.querySelector('#updatesArticleSelect');
+  const article = document.querySelector('#updatesArticle');
+  const updated = document.querySelector('#updatesUpdated');
+  const status = document.querySelector('#updatesStatus');
+  const items = Array.isArray(data?.articles) ? data.articles : [];
+  if (updated) updated.textContent = data?.updatedAt ? `更新于 ${mediaDate(data.updatedAt)}` : '等待更新';
+  if (select) {
+    const current = String(data?.article?.id || '');
+    select.innerHTML = items.length ? items.map(item => `<option value="${escapeHtml(item.id)}"${String(item.id) === current ? ' selected' : ''}>${escapeHtml(item.title || '未命名文章')}</option>`).join('') : '<option value="">暂无符合条件的文章</option>';
+    select.onchange = () => loadUpdates(select.value);
+  }
+  const item = data?.article;
+  if (item?.id) currentUpdatesArticleId = String(item.id);
+  if (status) status.textContent = items.length ? `共 ${items.length} 篇` : '暂无文章';
+  if (article) {
+    if (!item) {
+      article.innerHTML = '<div class="updates-empty">暂无符合筛选条件的文章</div>';
+      renderUpdatesToc();
+    }
+    else {
+      const authorUrl = `https://space.bilibili.com/${encodeURIComponent(item.authorUid || '2608713')}`;
+      article.innerHTML = `<h1>${escapeHtml(item.title || '未命名文章')}</h1><div class="updates-attribution">文章转载于 <a href="${escapeHtml(item.sourceUrl || '#')}" target="_blank" rel="noopener noreferrer">原链接</a>，作者是 <a href="${escapeHtml(authorUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.author || '未知')}</a></div>${item.contentHtml || '<div class="updates-empty">正文暂未抓取完成，请稍后重试。</div>'}`;
+      normalizeUpdatesArticle();
+      renderUpdatesToc(item.id);
+    }
+  }
+}
+function loadUpdates(articleId = '') {
+  const requestedId = String(articleId || currentUpdatesArticleId || '');
+  if (updatesRequest && !requestedId) return updatesRequest;
+  const request = fetch(`/api/updates${requestedId ? `?articleId=${encodeURIComponent(requestedId)}` : ''}`, { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))).then(data => { renderUpdates(data); return data; }).catch(error => { const article = document.querySelector('#updatesArticle'); if (article) article.innerHTML = `<div class="updates-empty">更新汇总加载失败：${escapeHtml(error.message || '')}</div>`; }).finally(() => { if (!requestedId) updatesRequest = null; });
+  if (!requestedId) updatesRequest = request;
+  return request;
+}
+const updatesBackToTop = document.querySelector('#updatesBackToTop');
+const updatesToc = document.querySelector('#updatesToc');
+function syncUpdatesBackToTop() {
+  if (!updatesBackToTop) return;
+  updatesBackToTop.hidden = !/^\/updates\/?$/.test(location.pathname) || window.scrollY < 480;
+}
+updatesBackToTop?.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+updatesToc?.addEventListener('wheel', event => {
+  const maxScrollTop = updatesToc.scrollHeight - updatesToc.clientHeight;
+  if (maxScrollTop <= 0 || !event.deltaY) return;
+  const canScroll = event.deltaY < 0 ? updatesToc.scrollTop > 0 : updatesToc.scrollTop < maxScrollTop - 1;
+  if (!canScroll) return;
+  event.preventDefault();
+  event.stopPropagation();
+  updatesTocManualScroll = true;
+  const currentScrollTop = updatesToc.scrollTop;
+  updatesToc.scrollTo({ top: currentScrollTop, behavior: 'auto' });
+  const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 18 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? updatesToc.clientHeight : 1;
+  updatesToc.scrollTop += event.deltaY * scale;
+}, { passive: false });
+updatesToc?.addEventListener('mouseleave', () => {
+  if (!updatesTocManualScroll) return;
+  updatesTocManualScroll = false;
+  updatesTocActiveId = '';
+  scheduleUpdatesTocSync();
+});
+window.addEventListener('scroll', syncUpdatesBackToTop, { passive: true });
+window.addEventListener('scroll', scheduleUpdatesTocSync, { passive: true });
 setInterval(() => {
   if (!/^\/media\/?$/.test(location.pathname)) return;
   const bucket = String(Math.floor(Date.now() / (5 * 60 * 1000)));
@@ -1296,17 +1462,21 @@ function renderCurrentRoute(selectedPlayer = null) {
   const isProfilePage = Boolean(match);
   const isMediaVideosPage = /^\/media\/videos\/?$/.test(location.pathname);
   const isMediaPage = isMediaVideosPage || /^\/media\/?$/.test(location.pathname);
+  const isUpdatesPage = /^\/updates\/?$/.test(location.pathname);
   const profileId = match?.[1] || '';
+  syncUpdatesBackToTop();
   document.body.classList.toggle('page-profile', isProfilePage);
   document.body.classList.toggle('page-media', isMediaPage);
+  document.body.classList.toggle('page-updates', isUpdatesPage);
   document.querySelector('#player-profile').hidden = !isProfilePage;
   document.querySelector('#media-page').hidden = !isMediaPage;
+  document.querySelector('#updates-page').hidden = !isUpdatesPage;
   document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => {
-    const activePage = isProfilePage ? 'profile' : isMediaPage ? 'media' : 'leaderboard';
+    const activePage = isProfilePage ? 'profile' : isMediaPage ? 'media' : isUpdatesPage ? 'updates' : 'leaderboard';
     const active = link.dataset.page === activePage;
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : '天梯榜单';
+  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isUpdatesPage ? '更新汇总' : '天梯榜单';
   if (isMediaPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
@@ -1315,6 +1485,16 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsSocket?.close();
     profileDetailsSocket = null;
     loadMedia(isMediaVideosPage);
+    return;
+  }
+  if (isUpdatesPage) {
+    profileDetailsRequestId++;
+    clearTimeout(profileDetailsTimeout);
+    clearTimeout(profileDetailsRetryTimer);
+    clearInterval(profileDetailsRequestTimer);
+    profileDetailsSocket?.close();
+    profileDetailsSocket = null;
+    loadUpdates();
     return;
   }
   if (!isProfilePage) {
@@ -1535,7 +1715,7 @@ profileSearchForm.addEventListener('submit', async event => {
 });
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
-  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'media' ? '/media' : '/';
+  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'updates' ? '/updates' : '/';
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));

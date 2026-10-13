@@ -5,10 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { ProxyAgent, WebSocket, setGlobalDispatcher } from 'undici';
 import { chromium } from 'playwright';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
+const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
 if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
@@ -83,6 +86,13 @@ const mediaVideoCachePath = join(dataDir, 'media-videos.json');
 const mediaVideoStatePath = join(dataDir, 'media-video-state.json');
 const mediaVideoPausePath = join(dataDir, 'media-video-paused');
 const mediaThumbnailCacheDir = join(dataDir, 'media-thumbnails');
+const bilibiliUpdatesCachePath = join(dataDir, 'bilibili-updates.json');
+const bilibiliUpdatesReadlistUrl = 'https://www.bilibili.com/read/readlist/rl153587';
+const bilibiliUpdatesListApi = 'https://api.bilibili.com/x/article/list/web/articles?id=153587&web_location=333.1400';
+const bilibiliUpdatesRefreshInterval = 12 * 60 * 60_000;
+let bilibiliUpdatesCache = null;
+let bilibiliUpdatesRefreshPromise = null;
+let bilibiliUpdatesRefreshTimer = null;
 const selectedStreamersPath = join(root, 'map', 'aoc-selected-streamers.json');
 const rlReferencePath = join(root, 'map', 'aoc-player-links.json');
 
@@ -234,6 +244,294 @@ async function fetchMediaText(url) {
   const response = await fetch(url, { headers: { accept: 'text/html, application/atom+xml, application/xml', 'user-agent': 'Mozilla/5.0 AOE2DE-CN media monitor/1.0' }, signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`媒体页面返回 HTTP ${response.status}`);
   return response.text();
+}
+
+function bilibiliUpdateTitleMatches(title) {
+  const value = String(title || '');
+  if (value.includes('帝国时代2') || value.includes('帝国时代二')) return true;
+  // The second rule excludes every common Arabic, full-width and Chinese
+  // numeral immediately following “帝国时代”.
+  return value.includes('帝国时代') && !/帝国时代[\p{N}〇零一二三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]/u.test(value);
+}
+
+function extractBalancedDiv(html, marker) {
+  const opening = String(html || '').indexOf(marker);
+  if (opening < 0) return '';
+  const start = String(html).lastIndexOf('<div', opening);
+  if (start < 0) return '';
+  const source = String(html);
+  const token = /<div\b[^>]*>|<\/div\s*>/gi;
+  token.lastIndex = start;
+  let depth = 0;
+  let match;
+  while ((match = token.exec(source))) {
+    if (/^<div\b/i.test(match[0])) depth += 1;
+    else depth -= 1;
+    if (depth === 0) return source.slice(start, token.lastIndex);
+  }
+  return source.slice(start);
+}
+
+function sanitizeBilibiliArticleHtml(html) {
+  let value = String(html || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src|data-src)\s*=\s*(["'])\s*javascript:[\s\S]*?\2/gi, '$1="#"');
+  value = value.replace(/<img\b([^>]*?)\sdata-src=(['"])(https?:\/\/[^'"]+)\2([^>]*)>/gi, '<img$1 src="$3"$4>');
+  value = value.replace(/\sloading=(['"])lazy\1/gi, '');
+  value = value.replace(/<img\b(?![^>]*\breferrerpolicy=)/gi, '<img referrerpolicy="no-referrer" loading="eager"');
+  // Article tags are metadata, not part of the imported article body.
+  value = value.replace(/<div\b[^>]*(?:tag-list|article-tags|opus-module-topic)[^>]*>[\s\S]*?<\/div>/gi, '');
+  value = value.replace(/^\s*(?:<p[^>]*>\s*)?(?:TAG|标签|话题)[:：][\s\S]*?(?:<\/p>|\n)/i, '');
+  return value.trim();
+}
+
+function updatesEscapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+}
+
+function updatesLinkifyText(value) {
+  const source = String(value ?? '');
+  const pattern = /https?:\/\/[^\s<>"'，。；！？、）】]+/gi;
+  let output = '';
+  let lastIndex = 0;
+  for (const match of source.matchAll(pattern)) {
+    output += updatesEscapeHtml(source.slice(lastIndex, match.index));
+    const url = match[0];
+    output += `<a href="${updatesEscapeHtml(url)}" target="_blank" rel="noopener noreferrer">${updatesEscapeHtml(url)}</a>`;
+    lastIndex = Number(match.index) + url.length;
+  }
+  return output + updatesEscapeHtml(source.slice(lastIndex));
+}
+
+function renderBilibiliOpusNode(node) {
+  if (Number(node?.node_type) === 1 && node.word) {
+    const word = node.word;
+    let value = updatesLinkifyText(word.words || '');
+    if (word.style?.bold) value = `<strong>${value}</strong>`;
+    if (word.style?.italic) value = `<em>${value}</em>`;
+    if (word.style?.strikethrough) value = `<s>${value}</s>`;
+    if (word.style?.underline) value = `<u>${value}</u>`;
+    return value;
+  }
+  if (Number(node?.node_type) === 4 && node.link) {
+    const href = /^https?:\/\//i.test(String(node.link.link || '')) ? node.link.link : '#';
+    return `<a href="${updatesEscapeHtml(href)}" target="_blank" rel="noopener noreferrer">${updatesEscapeHtml(node.link.show_text || href)}</a>`;
+  }
+  return '';
+}
+
+function renderBilibiliOpusContent(opus) {
+  const paragraphs = Array.isArray(opus?.content?.paragraphs) ? opus.content.paragraphs : [];
+  const output = [];
+  let listHash = '';
+  let listLevel = 0;
+  const closeList = () => {
+    if (!listHash) return;
+    output.push('</ul>');
+    listHash = '';
+    listLevel = 0;
+  };
+  for (const paragraph of paragraphs) {
+    const type = Number(paragraph?.para_type);
+    const nodes = Array.isArray(paragraph?.text?.nodes) ? paragraph.text.nodes : [];
+    const text = nodes.map(renderBilibiliOpusNode).join('');
+    const plain = nodes.map(node => node?.word?.words || node?.link?.show_text || '').join('').replace(/[\u200B-\u200F\u2060\uFEFF]/g, '').trim();
+    // Bilibili stores the opening topic tags as a dedicated paragraph.
+    if (!output.length && (!plain || /^(?:#[^#]+#\s*)+$/u.test(plain))) continue;
+    if (type === 6) {
+      const format = paragraph.format?.list_format || {};
+      const hash = String(paragraph.format?.combine_hash || `list-${output.length}`);
+      const level = Math.max(1, Number(format.level) || 1);
+      if (hash !== listHash || level !== listLevel) {
+        closeList();
+        output.push(`<ul class="updates-opus-list level-${level}">`);
+        listHash = hash;
+        listLevel = level;
+      }
+      output.push(`<li>${text}</li>`);
+      continue;
+    }
+    closeList();
+    if (type === 2) {
+      const pictures = Array.isArray(paragraph.pic?.pics) ? paragraph.pic.pics : [];
+      if (pictures.length) output.push(`<figure class="updates-opus-pictures">${pictures.map(picture => {
+        const source = String(picture?.url || '').replace(/^http:\/\//i, 'https://');
+        return source ? `<img src="${updatesEscapeHtml(source)}" alt="" referrerpolicy="no-referrer" loading="eager"${picture.width ? ` width="${Number(picture.width)}"` : ''}${picture.height ? ` height="${Number(picture.height)}"` : ''}>` : '';
+      }).join('')}</figure>`);
+    } else if (type === 3) {
+      output.push('<hr>');
+    } else if (type === 9) {
+      const heading = Math.min(4, Math.max(2, Number(paragraph.format?.heading_type) + 1 || 2));
+      if (text) output.push(`<h${heading}>${text}</h${heading}>`);
+    } else if (text) {
+      const align = Number(paragraph.format?.align);
+      output.push(`<p${align === 2 ? ' class="align-center"' : align === 3 ? ' class="align-right"' : ''}>${text}</p>`);
+    }
+  }
+  closeList();
+  return output.join('');
+}
+
+function parseBilibiliArticlePage(html, fallback = {}) {
+  const source = String(html || '');
+  const body = sanitizeBilibiliArticleHtml(extractBalancedDiv(source, 'opus-module-content opus-paragraph-children'));
+  const stateMatch = source.match(/__INITIAL_STATE__=([\s\S]*?)<\/script>/i);
+  let state = null;
+  if (stateMatch) {
+    try { state = JSON.parse(stateMatch[1].replace(/;\s*$/, '')); } catch {}
+  }
+  const detail = state?.detail;
+  const basic = detail?.basic || {};
+  const authorModule = Array.isArray(detail?.modules) ? detail.modules.find(module => module.module_type === 'MODULE_TYPE_AUTHOR')?.module_author : null;
+  const title = basic.title ? String(basic.title).replace(/\s+-\s+哔哩哔哩\s*$/, '') : String(fallback.title || '');
+  return {
+    id: String(fallback.id || basic.comment_id_str || basic.rid_str || ''),
+    title,
+    author: authorModule?.name || fallback.author || '',
+    authorUid: String(authorModule?.mid || fallback.author_uid || ''),
+    publishedAt: fallback.publish_time ? new Date(Number(fallback.publish_time) * 1000).toISOString() : (authorModule?.pub_time || ''),
+    sourceUrl: `https://www.bilibili.com/read/cv${String(fallback.id || basic.comment_id_str || basic.rid_str || '')}`,
+    contentHtml: body
+  };
+}
+
+async function fetchBilibiliArticlePageViaBrowser(id) {
+  const articleUrl = `https://www.bilibili.com/read/cv${encodeURIComponent(id)}`;
+  try {
+    const command = `$ProgressPreference='SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing -Uri '${articleUrl}' -Headers @{ 'User-Agent'='Mozilla/5.0'; Referer='${bilibiliUpdatesReadlistUrl}' }).Content`;
+    const result = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', command], { timeout: 60_000, maxBuffer: 20 * 1024 * 1024, windowsHide: true });
+    if (result.stdout && result.stdout.includes('opus-module-content')) return result.stdout;
+  } catch {}
+  const browser = await getBilibiliBrowser();
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' }
+  });
+  if (bilibiliCookie) {
+    await context.addCookies(bilibiliCookie.split(';').map(pair => {
+      const separator = pair.indexOf('=');
+      return separator > 0 ? { name: pair.slice(0, separator).trim(), value: pair.slice(separator + 1).trim(), domain: '.bilibili.com', path: '/', secure: true } : null;
+    }).filter(Boolean));
+  }
+  const page = await context.newPage();
+  try {
+    await page.goto(articleUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    return await page.content();
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function fetchBilibiliArticleApi(id, fallback = {}) {
+  const response = await fetch(`https://api.bilibili.com/x/article/view?id=${encodeURIComponent(id)}`, { headers: bilibiliHeaders(), signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`文章接口 HTTP ${response.status}`);
+  const payload = await response.json();
+  if (Number(payload?.code) !== 0 || !payload?.data) throw new Error(`文章接口业务码 ${payload?.code}`);
+  const data = payload.data;
+  const author = data.author?.name || data.author?.uname || fallback.author || '';
+  const body = data.opus?.content?.paragraphs ? renderBilibiliOpusContent(data.opus) : (data.content || '');
+  const coverSource = data.opus?.article?.cover?.[0]?.url || data.banner_url || '';
+  const coverUrl = String(coverSource).replace(/^http:\/\//i, 'https://');
+  const cover = coverUrl ? `<figure class="updates-opus-cover"><img src="${updatesEscapeHtml(coverUrl)}" alt="" referrerpolicy="no-referrer" loading="eager"></figure>` : '';
+  return {
+    id: String(data.id || id),
+    title: String(data.title || fallback.title || ''),
+    author,
+    authorUid: String(data.author?.mid || data.author?.uid || fallback.author_uid || ''),
+    publishedAt: data.publish_time ? new Date(Number(data.publish_time) * 1000).toISOString() : '',
+    sourceUrl: `https://www.bilibili.com/read/cv${String(data.id || id)}`,
+    contentHtml: sanitizeBilibiliArticleHtml(`${cover}${body}`)
+  };
+}
+
+async function readBilibiliUpdatesCache() {
+  if (bilibiliUpdatesCache) return bilibiliUpdatesCache;
+  try {
+    bilibiliUpdatesCache = JSON.parse(await readFile(bilibiliUpdatesCachePath, 'utf8'));
+  } catch {
+    bilibiliUpdatesCache = { updatedAt: null, articles: [] };
+  }
+  if (!Array.isArray(bilibiliUpdatesCache.articles)) bilibiliUpdatesCache.articles = [];
+  return bilibiliUpdatesCache;
+}
+
+async function refreshBilibiliUpdates() {
+  if (bilibiliUpdatesRefreshPromise) return bilibiliUpdatesRefreshPromise;
+  bilibiliUpdatesRefreshPromise = (async () => {
+    const response = await fetch(bilibiliUpdatesListApi, { headers: bilibiliHeaders(), signal: AbortSignal.timeout(30_000) });
+    if (!response.ok) throw new Error(`Bilibili 文集接口 HTTP ${response.status}`);
+    const payload = await response.json();
+    const list = Array.isArray(payload?.data?.articles) ? payload.data.articles : [];
+    const selected = list.filter(article => bilibiliUpdateTitleMatches(article.title)).sort((a, b) => Number(b.publish_time || 0) - Number(a.publish_time || 0));
+    const previousCache = await readBilibiliUpdatesCache();
+    const existingArticles = previousCache.formatVersion === 5 ? previousCache.articles : [];
+    const cachedIds = new Set(existingArticles.map(article => String(article.id)));
+    const newItems = selected.filter(article => !cachedIds.has(String(article.id || '')));
+    const newArticles = new Array(newItems.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < newItems.length) {
+        const index = cursor++;
+        const item = newItems[index];
+        const id = String(item.id || '');
+        try {
+          const parsed = await fetchBilibiliArticleApi(id, item);
+          newArticles[index] = { ...parsed, summary: item.summary || '', words: item.words || 0, publishTime: item.publish_time || 0 };
+        } catch (error) {
+          console.warn(`[updates] article ${id} failed:`, error.message);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, () => worker()));
+    const articles = [...existingArticles, ...newArticles.filter(Boolean)].sort((a, b) => Number(b.publishTime || 0) - Number(a.publishTime || 0));
+    const result = { formatVersion: 5, updatedAt: new Date().toISOString(), sourceUrl: bilibiliUpdatesReadlistUrl, author: payload?.data?.author?.name || payload?.data?.author?.uname || '灵梦の蝴蝶结', articles };
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(bilibiliUpdatesCachePath, JSON.stringify(result), 'utf8');
+    bilibiliUpdatesCache = result;
+    return result;
+  })().finally(() => { bilibiliUpdatesRefreshPromise = null; });
+  return bilibiliUpdatesRefreshPromise;
+}
+
+async function getBilibiliUpdates(articleId = '') {
+  const cached = await readBilibiliUpdatesCache();
+  if (cached.formatVersion !== 5 || !cached.articles.length || Date.now() - Date.parse(cached.updatedAt || 0) > bilibiliUpdatesRefreshInterval) {
+    try { await refreshBilibiliUpdates(); } catch (error) { console.warn('[updates] refresh failed:', error.message); }
+  }
+  const current = bilibiliUpdatesCache || cached;
+  const articles = Array.isArray(current.articles) ? current.articles : [];
+  const selected = articles.find(article => String(article.id) === String(articleId)) || articles[0] || null;
+  const withAuthor = article => article ? { ...article, author: article.author || current.author || '灵梦の蝴蝶结' } : article;
+  return { updatedAt: current.updatedAt || null, sourceUrl: current.sourceUrl || bilibiliUpdatesReadlistUrl, articles: articles.map(({ contentHtml, ...article }) => withAuthor(article)), article: withAuthor(selected) };
+}
+
+function scheduleBilibiliUpdatesRefresh(delay = bilibiliUpdatesRefreshInterval) {
+  clearTimeout(bilibiliUpdatesRefreshTimer);
+  bilibiliUpdatesRefreshTimer = setTimeout(async () => {
+    try {
+      const before = (await readBilibiliUpdatesCache()).articles.length;
+      const refreshed = await refreshBilibiliUpdates();
+      const added = Math.max(0, refreshed.articles.length - before);
+      console.log(`[updates] scheduled refresh complete: ${refreshed.articles.length} articles${added ? `, ${added} new` : ''}`);
+    } catch (error) {
+      console.warn('[updates] scheduled refresh failed:', error.message);
+    } finally {
+      scheduleBilibiliUpdatesRefresh();
+    }
+  }, Math.max(1_000, delay));
+  bilibiliUpdatesRefreshTimer.unref?.();
+}
+
+async function startBilibiliUpdatesLifecycle() {
+  const cached = await readBilibiliUpdatesCache();
+  const updatedAt = Date.parse(cached.updatedAt || '');
+  const elapsed = Number.isFinite(updatedAt) ? Date.now() - updatedAt : bilibiliUpdatesRefreshInterval;
+  const delay = Math.max(1_000, bilibiliUpdatesRefreshInterval - Math.max(0, elapsed));
+  scheduleBilibiliUpdatesRefresh(delay);
+  console.log(`[updates] next collection check: ${new Date(Date.now() + delay).toISOString()}`);
 }
 
 async function getMediaThumbnail(url, id, maxAgeMs = 0) {
@@ -1270,8 +1568,11 @@ function isTerminalMatch(match) {
 
 function normalizeCompanionMatches(payload) {
   return (Array.isArray(payload?.matches) ? payload.matches : []).map(match => {
-    const leaderboardValue = String(match.leaderboard || '').toLowerCase();
-    const leaderboard = leaderboardValue === 'rm_1v1' ? 'RM 1v1' : leaderboardValue === 'rm_team' ? 'RM TG' : leaderboardValue === 'ew_1v1' ? 'EW 1v1' : leaderboardValue === 'ew_team' ? 'EW TG' : '';
+    const leaderboardValue = String(match.leaderboard || '').trim().toLowerCase().replace(/\s+/g, '_');
+    const rawType = String(match.type || '').trim().toUpperCase();
+    const rawDiplomacy = String(match.diplomacy || '').trim().toUpperCase();
+    let leaderboard = leaderboardValue === 'dm_1v1' ? 'DM 1v1' : leaderboardValue === 'dm_tg' || leaderboardValue === 'dm_team' ? 'DM TG' : leaderboardValue === 'rm_1v1' ? 'RM 1v1' : leaderboardValue === 'rm_tg' || leaderboardValue === 'rm_team' ? 'RM TG' : leaderboardValue === 'ew_1v1' ? 'EW 1v1' : leaderboardValue === 'ew_tg' || leaderboardValue === 'ew_team' ? 'EW TG' : '';
+    if (!leaderboard && /DEATHMATCH|^DM$/.test(rawType)) leaderboard = /1V1|1\s*V\s*1/.test(rawDiplomacy) ? 'DM 1v1' : 'DM TG';
     const players = [];
     const teams = (Array.isArray(match.teams) ? match.teams : []).map(team => {
       const members = [];
@@ -1294,8 +1595,8 @@ function normalizeCompanionMatches(payload) {
       id: match.matchId,
       leaderboard,
       lobby: leaderboard ? '' : (match.name || '未知大厅'),
-      type: leaderboard.includes('TG') ? 'TG' : leaderboard.includes('1v1') ? '1v1' : '',
-      diplomacy: leaderboard.includes('1v1') ? '1v1' : leaderboard.includes('TG') ? 'TG' : '',
+      type: leaderboard.includes('TG') ? 'TG' : leaderboard.includes('1v1') ? '1v1' : rawType === 'DEATHMATCH' ? 'DM' : '',
+      diplomacy: leaderboard.includes('1v1') ? '1v1' : leaderboard.includes('TG') ? 'TG' : rawDiplomacy,
       rms: match.mapName || match.map || '未知地图',
       started,
       finished,
@@ -1926,6 +2227,17 @@ http.createServer(async (req, res) => {
     }
   }
 
+  if (url.pathname === '/api/updates') {
+    try {
+      const data = await getBilibiliUpdates(url.searchParams.get('articleId') || '');
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(data));
+    } catch (error) {
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ error: error.message || '获取更新汇总失败' }));
+    }
+  }
+
   if (url.pathname === '/api/avatar') {
     let steamId = url.searchParams.get('steamId') || '';
     const profileId = url.searchParams.get('profileId') || '';
@@ -1992,7 +2304,7 @@ http.createServer(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?)\/?$/.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates)\/?$/.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const path = normalize(join(root, 'public', relative));
   if (!path.startsWith(join(root, 'public'))) {
     res.writeHead(403); return res.end('Forbidden');
@@ -2007,6 +2319,7 @@ http.createServer(async (req, res) => {
 }).listen(port, () => {
   console.log(`AoE2DE Ladder running at http://localhost:${port}`);
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
+  startBilibiliUpdatesLifecycle().catch(error => console.warn('[updates] lifecycle startup failed:', error.message));
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
 });
 
