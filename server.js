@@ -1,12 +1,14 @@
 import http from 'node:http';
-import { readFile, open, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 import { ProxyAgent, WebSocket, setGlobalDispatcher } from 'undici';
+import { chromium } from 'playwright';
+import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
 if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
@@ -16,17 +18,21 @@ const dataDir = join(root, '.cache');
 const aoe2RecsProfileCacheDir = join(dataDir, 'aoe2recs-profiles');
 const gameAssetCacheDir = join(dataDir, 'game-assets');
 const profilePointerPath = join(dataDir, 'profile-index-current.json');
+const profileDownloadPausePath = join(dataDir, 'profile-download-paused');
+const profileLocalDumpPath = join(dataDir, 'profile.csv');
 const profileDumpUrl = 'https://dump.cdn.aoe2companion.com/profile.csv';
 const profileRefreshInterval = 25 * 60 * 60_000;
 const port = Number(process.env.PORT || 3000);
 const api = 'https://aoe-api.worldsedgelink.com/community/leaderboard/getLeaderBoard2';
 const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争' };
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
+const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
 const avatarCache = new Map();
 const leaderboardCache = new Map();
 const leaderboardRefreshes = new Map();
 const personalStatsCache = new Map();
 const personalStatsCacheTtl = 10 * 60_000;
+const livePlayerStatsCache = new Map();
+const livePlayerStatsRefreshes = new Map();
 const aoe2InsightsSummaryCache = new Map();
 const aoe2InsightsSummaryRefreshes = new Map();
 const aoe2InsightsSummaryTtl = 6 * 60 * 60_000;
@@ -57,6 +63,784 @@ let profileCache = null;
 let profileRefreshPromise = null;
 let profileRefreshTimer = null;
 const profileRefreshState = { refreshing: false, stage: '等待启动', downloadedBytes: 0, totalBytes: 0, processedRows: 0, startedAt: null, error: null };
+const mediaVideoActiveRefreshMin = 30 * 60_000;
+const mediaVideoActiveRefreshMax = 60 * 60_000;
+const mediaVideoRequestGapMin = 5 * 60_000;
+const mediaVideoRequestGapMax = 5 * 60_000;
+const mediaVideoCycleDelay = 3 * 60 * 60_000;
+const mediaVideoCircuitBaseDelay = 2 * 60 * 60_000;
+const mediaVideoCircuitMaxDelay = 6 * 60 * 60_000;
+const mediaLiveRefreshInterval = 2 * 60_000;
+const bilibiliCookiePath = join(dataDir, 'bilibili-cookie.txt');
+const bilibiliCookie = process.env.BILIBILI_COOKIE || process.env.BILI_COOKIE || (() => {
+  try { return readFileSync(bilibiliCookiePath, 'utf8').trim(); } catch { return ''; }
+})();
+console.log(`[media] bilibili browser cookie loaded: ${bilibiliCookie.length > 0 ? 'yes' : 'no'} (${bilibiliCookie.length} chars)`);
+let bilibiliWbiKeys = null;
+let bilibiliWbiKeyPromise = null;
+let bilibiliBrowserPromise = null;
+const mediaVideoCachePath = join(dataDir, 'media-videos.json');
+const mediaVideoStatePath = join(dataDir, 'media-video-state.json');
+const mediaVideoPausePath = join(dataDir, 'media-video-paused');
+const mediaThumbnailCacheDir = join(dataDir, 'media-thumbnails');
+const selectedStreamersPath = join(root, 'map', 'aoc-selected-streamers.json');
+const rlReferencePath = join(root, 'map', 'aoc-player-links.json');
+
+function mediaVideoPaused() {
+  if (!existsSync(mediaVideoPausePath)) return false;
+  try {
+    const until = Date.parse(readFileSync(mediaVideoPausePath, 'utf8').trim());
+    if (Number.isFinite(until) && Date.now() >= until) {
+      unlinkSync(mediaVideoPausePath);
+      return false;
+    }
+  } catch {}
+  return true;
+}
+const mediaCache = {
+  data: { videos: [], live: [], updatedAt: null, nextRefreshAt: null, videosUpdatedAt: null, liveUpdatedAt: null, nextVideosRefreshAt: null, nextLiveRefreshAt: null },
+  videosSavedAt: 0,
+  liveSavedAt: 0
+};
+let mediaVideosRefreshPromise = null;
+let mediaVideoSchedulerTimer = null;
+let mediaVideoStateLoaded = false;
+let mediaVideoNextRequestAt = 0;
+let mediaVideoBlockedUntil = 0;
+let mediaVideoRateLimitStrikes = 0;
+const mediaVideoSourceStates = new Map();
+const mediaVideoCycleSeen = new Set();
+let mediaLiveRefreshPromise = null;
+let mediaPersistentVideosLoaded = false;
+let selectedStreamers = null;
+let rlReferenceById = null;
+
+async function loadSelectedStreamers() {
+  if (selectedStreamers) return selectedStreamers;
+  try {
+    const data = JSON.parse(await readFile(selectedStreamersPath, 'utf8'));
+    selectedStreamers = (Array.isArray(data.players) ? data.players : []).flatMap((player, sourceOrder) => {
+      const links = player.live_links || {};
+      return Object.entries(links).flatMap(([platform, urls]) => (Array.isArray(urls) ? urls : [urls]).filter(Boolean).map(url => ({
+        platform,
+        url: String(url),
+        name: player.name || '',
+        rl: Array.isArray(player.rl) ? player.rl.map(String) : [],
+        isCN: Boolean(player.isCN),
+        sourceOrder
+      })));
+    });
+  } catch (error) {
+    console.warn('[media] selected streamer data unavailable:', error.message);
+    selectedStreamers = [];
+  }
+  return selectedStreamers;
+}
+
+async function loadRlReference() {
+  if (rlReferenceById) return rlReferenceById;
+  rlReferenceById = new Map();
+  try {
+    const data = JSON.parse(await readFile(rlReferencePath, 'utf8'));
+    for (const player of Array.isArray(data.players) ? data.players : []) {
+      for (const id of Array.isArray(player.rl) ? player.rl : []) {
+        const key = String(id).trim();
+        if (key) rlReferenceById.set(key, { name: player.name || '', liveLinks: player.live_links || {}, socialLinks: player.social_links || {} });
+      }
+    }
+  } catch (error) {
+    console.warn('[profile] RL reference data unavailable:', error.message);
+  }
+  return rlReferenceById;
+}
+
+function mediaText(value) {
+  return String(value ?? '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+}
+
+function mediaXmlTag(block, tag) {
+  const match = String(block || '').match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'i'));
+  return match ? mediaText(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')) : '';
+}
+
+function bilibiliHeaders(extra = {}) {
+  return {
+    accept: 'application/json, text/plain, */*',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    origin: 'https://www.bilibili.com',
+    referer: 'https://www.bilibili.com/',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    ...(bilibiliCookie ? { cookie: bilibiliCookie } : {}),
+    ...extra
+  };
+}
+
+const wbiMixinKeyTable = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 19, 29, 13, 39, 28, 60, 23, 51, 6, 41, 26, 14, 11, 20, 24, 37, 55, 40, 7, 2, 48, 17, 3, 42, 12, 52, 21, 30, 56, 34, 1, 16, 4, 22, 54, 38, 25, 36, 57, 59];
+
+async function loadBilibiliWbiKeys() {
+  if (bilibiliWbiKeys) return bilibiliWbiKeys;
+  if (bilibiliWbiKeyPromise) return bilibiliWbiKeyPromise;
+  bilibiliWbiKeyPromise = (async () => {
+    const response = await fetch('https://api.bilibili.com/x/web-interface/nav', { headers: bilibiliHeaders(), signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`B站 WBI 导航接口返回 HTTP ${response.status}`);
+    const payload = await response.json();
+    const imgUrl = payload?.data?.wbi_img?.img_url || '';
+    const subUrl = payload?.data?.wbi_img?.sub_url || '';
+    const imgKey = imgUrl.split('/').pop()?.split('.')[0] || '';
+    const subKey = subUrl.split('/').pop()?.split('.')[0] || '';
+    if (!imgKey || !subKey) throw new Error('B站 WBI 密钥为空');
+    bilibiliWbiKeys = { imgKey, subKey, mixinKey: wbiMixinKeyTable.map(index => `${imgKey}${subKey}`[index] || '').join('').slice(0, 32) };
+    return bilibiliWbiKeys;
+  })().finally(() => { bilibiliWbiKeyPromise = null; });
+  return bilibiliWbiKeyPromise;
+}
+
+async function bilibiliWbiUrl(baseUrl, params) {
+  const keys = await loadBilibiliWbiKeys();
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) query.set(key, String(value));
+  query.set('wts', String(Math.floor(Date.now() / 1000)));
+  const unsigned = [...query.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`).join('&');
+  query.set('w_rid', createHash('md5').update(unsigned + keys.mixinKey).digest('hex'));
+  const url = new URL(baseUrl);
+  url.search = query.toString();
+  return url;
+}
+
+async function fetchMediaJson(url, options = {}) {
+  const response = await fetch(url, { ...options, headers: bilibiliHeaders(options.headers || {}), signal: options.signal || AbortSignal.timeout(15_000) });
+  if (!response.ok) {
+    const error = new Error(`媒体接口返回 HTTP ${response.status}`);
+    error.status = response.status;
+    const retryAfter = response.headers.get('retry-after');
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      const date = Date.parse(retryAfter);
+      error.retryAfterMs = Number.isFinite(seconds) ? seconds * 1000 : (Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0);
+    }
+    throw error;
+  }
+  const payload = await response.json();
+  const hostname = new URL(url).hostname;
+  if (/(?:^|\.)bilibili\.com$/i.test(hostname) && Number.isFinite(Number(payload?.code)) && Number(payload.code) !== 0) {
+    const error = new Error(`B站接口返回业务码 ${payload.code}${payload.message ? `：${payload.message}` : ''}`);
+    error.bilibiliCode = Number(payload.code);
+    throw error;
+  }
+  return payload;
+}
+
+async function fetchMediaText(url) {
+  const response = await fetch(url, { headers: { accept: 'text/html, application/atom+xml, application/xml', 'user-agent': 'Mozilla/5.0 AOE2DE-CN media monitor/1.0' }, signal: AbortSignal.timeout(20_000) });
+  if (!response.ok) throw new Error(`媒体页面返回 HTTP ${response.status}`);
+  return response.text();
+}
+
+async function getMediaThumbnail(url, id, maxAgeMs = 0) {
+  const safeId = String(id || 'thumbnail').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const target = join(mediaThumbnailCacheDir, `${safeId}.img`);
+  let staleData = null;
+  try {
+    const [data, details] = await Promise.all([readFile(target), stat(target)]);
+    if (!maxAgeMs || Date.now() - details.mtimeMs < maxAgeMs) return { data, contentType: 'image/jpeg' };
+    staleData = data;
+  } catch {}
+  try {
+    const sourceUrl = new URL(url);
+    if (!/(?:^|\.)(?:hdslb\.com|bilivideo\.com|ytimg\.com|jtvnw\.net|douyucdn\.cn|douyincdn\.com|douyinvod\.com|douyinpic\.com|kick\.com)$/i.test(sourceUrl.hostname)) throw new Error('不支持的封面地址');
+    const response = await fetch(sourceUrl, { headers: { referer: 'https://www.bilibili.com/', 'user-agent': 'Mozilla/5.0 AOE2DE-CN media monitor/1.0' }, signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`封面返回 HTTP ${response.status}`);
+    const data = Buffer.from(await response.arrayBuffer());
+    await mkdir(mediaThumbnailCacheDir, { recursive: true });
+    await writeFile(target, data);
+    return { data, contentType: response.headers.get('content-type') || 'image/jpeg' };
+  } catch (error) {
+    if (staleData) return { data: staleData, contentType: 'image/jpeg' };
+    throw error;
+  }
+}
+
+function mediaVideoItem(source, item) {
+  const id = String(item.id || item.videoId || '');
+  const thumbnail = String(item.thumbnail || '').replace(/^http:\/\//i, 'https://');
+  return {
+    id: id || `${source.platform}:${item.link || item.url || item.title}`,
+    platform: source.platform || 'other',
+    channel: item.channel || source.name || '',
+    title: String(item.title || '未命名视频'),
+    url: item.url || item.link || source.url || '#',
+    thumbnail,
+    publishedAt: item.publishedAt || item.published || null,
+    pinned: Boolean(source.pinned || item.pinned)
+  };
+}
+
+async function fetchBilibiliVideo(source) {
+  const payload = await fetchMediaJson(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(source.bvid)}`);
+  const item = payload?.data;
+  if (!item?.bvid) throw new Error('B站视频资料为空');
+  return mediaVideoItem(source, {
+    id: item.bvid,
+    title: item.title,
+    url: `https://www.bilibili.com/video/${item.bvid}`,
+    thumbnail: item.pic,
+    channel: item.owner?.name || '',
+    publishedAt: item.pubdate ? new Date(Number(item.pubdate) * 1000).toISOString() : null
+  });
+}
+
+async function fetchBilibiliVideos(source) {
+  return fetchBilibiliVideosInBrowser(source);
+}
+
+function bilibiliChromePath() {
+  const candidates = [
+    process.env.BILIBILI_CHROME_PATH,
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+  ].filter(Boolean);
+  return candidates.find(path => existsSync(path)) || undefined;
+}
+
+async function getBilibiliBrowser() {
+  if (bilibiliBrowserPromise) return bilibiliBrowserPromise;
+  bilibiliBrowserPromise = chromium.launch({
+    headless: true,
+    executablePath: bilibiliChromePath(),
+    proxy: proxyUrl ? { server: proxyUrl } : undefined,
+    args: ['--disable-blink-features=AutomationControlled']
+  }).catch(error => { bilibiliBrowserPromise = null; throw error; });
+  return bilibiliBrowserPromise;
+}
+
+async function fetchBilibiliVideosInBrowser(source) {
+  const browser = await getBilibiliBrowser();
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' }
+  });
+  if (bilibiliCookie) {
+    await context.addCookies(bilibiliCookie.split(';').map(pair => {
+      const separator = pair.indexOf('=');
+      return separator > 0 ? { name: pair.slice(0, separator).trim(), value: pair.slice(separator + 1).trim(), domain: '.bilibili.com', path: '/', secure: true } : null;
+    }).filter(Boolean));
+  }
+  const page = await context.newPage();
+  try {
+    const responsePromise = page.waitForResponse(response => response.url().includes('/x/space/wbi/arc/search'), { timeout: 30_000 });
+    await page.goto(`https://space.bilibili.com/${encodeURIComponent(source.id)}/video`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    const response = await responsePromise;
+    const payload = await response.json();
+    if (Number(payload?.code) !== 0) {
+      const error = new Error(`B站浏览器接口返回业务码 ${payload?.code}${payload?.message ? `：${payload.message}` : ''}`);
+      error.bilibiliCode = Number(payload?.code);
+      throw error;
+    }
+    const list = payload?.data?.list?.vlist || [];
+    console.log(`[media] browser video source checked: ${source.name || source.id}; items ${list.length}`);
+    return list.map(item => mediaVideoItem(source, {
+      id: item.bvid || item.aid,
+      title: item.title,
+      url: item.bvid ? `https://www.bilibili.com/video/${item.bvid}` : `https://space.bilibili.com/${source.id}`,
+      thumbnail: item.pic,
+      publishedAt: item.created ? new Date(Number(item.created) * 1000).toISOString() : null
+    }));
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function fetchBilibiliVideosViaApi(source) {
+  const url = await bilibiliWbiUrl('https://api.bilibili.com/x/space/wbi/arc/search', { mid: source.id, ps: 12, pn: 1, order: 'pubdate' });
+  const payload = await fetchMediaJson(url);
+  const list = payload?.data?.list?.vlist || [];
+  return list.map(item => mediaVideoItem(source, {
+    id: item.bvid || item.aid,
+    title: item.title,
+    url: item.bvid ? `https://www.bilibili.com/video/${item.bvid}` : `https://space.bilibili.com/${source.id}`,
+    thumbnail: item.pic,
+    publishedAt: item.created ? new Date(Number(item.created) * 1000).toISOString() : null
+  }));
+}
+
+async function fetchRssVideos(source) {
+  const xml = await fetchMediaText(source.feedUrl);
+  const entries = [...xml.matchAll(/<(?:entry|item)\b[\s\S]*?<\/(?:entry|item)>/gi)].map(match => match[0]);
+  return entries.slice(0, 12).map(block => {
+    const linkHref = block.match(/<link[^>]+href=["']([^"']+)["']/i)?.[1] || mediaXmlTag(block, 'link');
+    const videoId = mediaXmlTag(block, 'yt:videoId') || linkHref.match(/[?&]v=([^&]+)/)?.[1] || '';
+    return mediaVideoItem(source, { id: videoId, title: mediaXmlTag(block, 'title'), url: linkHref, thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '', publishedAt: mediaXmlTag(block, 'published') || mediaXmlTag(block, 'pubDate') });
+  }).filter(item => item.url && item.url !== '#');
+}
+
+async function fetchMediaVideoSource(source) {
+  let results = [];
+  if (source.platform === 'bilibili' && source.bvid) results = [await fetchBilibiliVideo(source)];
+  else if (source.platform === 'bilibili') results = await fetchBilibiliVideos(source);
+  else if (source.platform === 'youtube') results = await fetchRssVideos({ ...source, feedUrl: source.feedUrl || `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(source.channelId || '')}` });
+  else if (source.platform === 'rss' && source.feedUrl) results = await fetchRssVideos(source);
+  return results
+    .filter(item => {
+      if (mediaVideoWhitelist.some(name => String(item.channel || '').trim() === name)) return true;
+      if (item.pinned) return true;
+      const title = String(item.title || '').replace(/\s+/g, '');
+      if (!title) return false;
+      if (/帝国(?:时代)?[34]/.test(title)) return false;
+      return title.includes('帝国') || title.includes('帝国时代');
+    })
+    .sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
+}
+
+async function loadPersistentMediaVideos() {
+  if (mediaPersistentVideosLoaded) return mediaCache.data.videos;
+  mediaPersistentVideosLoaded = true;
+  try {
+    const saved = JSON.parse(await readFile(mediaVideoCachePath, 'utf8'));
+    if (Array.isArray(saved.videos)) mediaCache.data.videos = saved.videos.slice(0, 50).map(item => ({ ...item, thumbnail: String(item.thumbnail || '').replace(/^http:\/\//i, 'https://') }));
+    const savedAt = Date.parse(saved.savedAt);
+    if (Number.isFinite(savedAt)) {
+      mediaCache.videosSavedAt = savedAt;
+      mediaCache.data.videosUpdatedAt = new Date(savedAt).toISOString();
+      mediaCache.data.updatedAt = mediaCache.data.videosUpdatedAt;
+    }
+  } catch {
+    // The disk cache is optional and will be created after the first refresh.
+  }
+  return mediaCache.data.videos;
+}
+
+function randomMediaDelay(min, max) {
+  return Math.round(min + Math.random() * Math.max(0, max - min));
+}
+
+function mediaVideoSourceKey(source) {
+  return `${source.platform || 'other'}:${source.bvid || source.id || source.channelId || source.feedUrl || source.url || source.name || 'unknown'}`;
+}
+
+function mediaTimestamp(value) {
+  const parsed = typeof value === 'number' ? value : Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function loadPersistentMediaVideoState() {
+  if (mediaVideoStateLoaded) return;
+  mediaVideoStateLoaded = true;
+  try {
+    const saved = JSON.parse(await readFile(mediaVideoStatePath, 'utf8'));
+    mediaVideoNextRequestAt = mediaTimestamp(saved.nextRequestAt);
+    mediaVideoBlockedUntil = mediaTimestamp(saved.blockedUntil);
+    mediaVideoRateLimitStrikes = Math.max(0, Number(saved.rateLimitStrikes) || 0);
+    for (const key of Array.isArray(saved.cycleSeen) ? saved.cycleSeen : []) mediaVideoCycleSeen.add(String(key));
+    for (const [key, value] of Object.entries(saved.sources || {})) {
+      mediaVideoSourceStates.set(key, {
+        nextCheckAt: mediaTimestamp(value.nextCheckAt),
+        lastAttemptAt: mediaTimestamp(value.lastAttemptAt),
+        lastSuccessAt: mediaTimestamp(value.lastSuccessAt),
+        failureCount: Math.max(0, Number(value.failureCount) || 0),
+        idleSuccesses: Math.max(0, Number(value.idleSuccesses) || 0)
+      });
+    }
+  } catch {
+    // The scheduler state is optional and will be created after the first check.
+  }
+}
+
+function ensureMediaVideoSourceStates() {
+  const now = Date.now();
+  for (const source of Array.isArray(mediaSources.videos) ? mediaSources.videos : []) {
+    const key = mediaVideoSourceKey(source);
+    if (!mediaVideoSourceStates.has(key)) {
+      mediaVideoSourceStates.set(key, { nextCheckAt: now, lastAttemptAt: 0, lastSuccessAt: 0, failureCount: 0, idleSuccesses: 0 });
+    }
+  }
+}
+
+async function savePersistentMediaVideoState() {
+  const sources = {};
+  for (const [key, value] of mediaVideoSourceStates) {
+    sources[key] = {
+      nextCheckAt: value.nextCheckAt ? new Date(value.nextCheckAt).toISOString() : null,
+      lastAttemptAt: value.lastAttemptAt ? new Date(value.lastAttemptAt).toISOString() : null,
+      lastSuccessAt: value.lastSuccessAt ? new Date(value.lastSuccessAt).toISOString() : null,
+      failureCount: value.failureCount,
+      idleSuccesses: value.idleSuccesses
+    };
+  }
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(mediaVideoStatePath, JSON.stringify({
+    savedAt: new Date().toISOString(),
+    nextRequestAt: mediaVideoNextRequestAt ? new Date(mediaVideoNextRequestAt).toISOString() : null,
+    blockedUntil: mediaVideoBlockedUntil ? new Date(mediaVideoBlockedUntil).toISOString() : null,
+    rateLimitStrikes: mediaVideoRateLimitStrikes,
+    cycleSeen: [...mediaVideoCycleSeen],
+    sources
+  }, null, 2), 'utf8');
+}
+
+function mediaVideoSuccessDelay(idleSuccesses) {
+  if (idleSuccesses <= 1) return randomMediaDelay(mediaVideoActiveRefreshMin, mediaVideoActiveRefreshMax);
+  if (idleSuccesses === 2) return randomMediaDelay(60 * 60_000, 90 * 60_000);
+  if (idleSuccesses === 3) return randomMediaDelay(90 * 60_000, 180 * 60_000);
+  return randomMediaDelay(180 * 60_000, 360 * 60_000);
+}
+
+function isBilibiliRateLimit(error) {
+  return Number(error?.status) === 412 || [-412, -352, -403].includes(Number(error?.bilibiliCode));
+}
+
+function mediaVideoNextDueAt() {
+  const sources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
+  if (!sources.length) return 0;
+  const due = sources.map(source => {
+    const state = mediaVideoSourceStates.get(mediaVideoSourceKey(source));
+    const sourceDue = state?.nextCheckAt || Date.now();
+    return source.platform === 'bilibili' ? Math.max(sourceDue, mediaVideoBlockedUntil) : sourceDue;
+  });
+  return Math.max(mediaVideoNextRequestAt, Math.min(...due));
+}
+
+function updateMediaVideoNextRefreshAt() {
+  if (mediaVideoPaused()) {
+    mediaCache.data.nextVideosRefreshAt = null;
+    mediaCache.data.nextRefreshAt = mediaCache.data.nextLiveRefreshAt || null;
+    return;
+  }
+  const nextAt = mediaVideoNextDueAt();
+  mediaCache.data.nextVideosRefreshAt = nextAt ? new Date(nextAt).toISOString() : null;
+  const liveNext = mediaTimestamp(mediaCache.data.nextLiveRefreshAt);
+  const nextRefresh = [nextAt, liveNext].filter(Boolean);
+  mediaCache.data.nextRefreshAt = nextRefresh.length ? new Date(Math.min(...nextRefresh)).toISOString() : null;
+}
+
+function scheduleMediaVideoRefresh() {
+  if (mediaVideoSchedulerTimer) clearTimeout(mediaVideoSchedulerTimer);
+  if (mediaVideoPaused()) {
+    mediaVideoSchedulerTimer = null;
+    updateMediaVideoNextRefreshAt();
+    return;
+  }
+  const nextAt = mediaVideoNextDueAt();
+  updateMediaVideoNextRefreshAt();
+  if (!nextAt) return;
+  mediaVideoSchedulerTimer = setTimeout(() => {
+    mediaVideoSchedulerTimer = null;
+    refreshMediaVideos()
+      .catch(error => console.warn('[media] video refresh failed:', error.message))
+      .finally(scheduleMediaVideoRefresh);
+  }, Math.max(0, nextAt - Date.now()));
+}
+
+async function fetchBilibiliLive(source) {
+  const payload = await fetchMediaJson(`https://api.live.bilibili.com/room/v1/Room/get_info?id=${encodeURIComponent(source.roomId)}`);
+  const room = payload?.data || {};
+  const online = Number(room.live_status) === 1;
+  return { id: `bilibili:${source.roomId}`, platform: 'bilibili', name: source.name || '', url: source.url || `https://live.bilibili.com/${source.roomId}`, live: online, title: room.title || '', thumbnail: room.user_cover || room.keyframe || room.cover || '', startedAt: room.live_time || null, viewers: Number(room.online) || 0, checkedAt: new Date().toISOString() };
+}
+
+async function fetchYoutubeLive(source) {
+  const html = await fetchMediaText(source.liveUrl || source.url);
+  const videoId = html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([\w-]{6,})"/)?.[1]
+    || html.match(/[?&]v=([\w-]{6,})/)?.[1]
+    || html.match(/"videoId":"([\w-]{6,})"/)?.[1]
+    || html.match(/ytimg\.com\/vi\/([\w-]{6,})\//)?.[1]
+    || '';
+  const videoPos = videoId ? html.indexOf(videoId) : -1;
+  const videoWindow = videoPos >= 0 ? html.slice(Math.max(0, videoPos - 1200), videoPos + 6000) : '';
+  const channelLiveBadge = /"text":"LIVE"|"imageName":"LIVE"/i.test(videoWindow);
+  const online = !/"status"\s*:\s*"LIVE_STREAM_OFFLINE"/i.test(html)
+    && ( /"isLiveNow"\s*:\s*true|<meta itemprop=["']isLiveBroadcast["'] content=["']True|liveStreamabilityRenderer"\s*:\s*\{[^}]*"videoId"/i.test(html) || channelLiveBadge );
+  const title = mediaText(html.match(/<meta property=["']og:title["'] content=["']([^"']+)/i)?.[1] || '');
+  const viewers = Number(html.match(/(?:concurrentViewers|viewCount|viewerCount)[^\d]{0,20}(\d+)/i)?.[1] || 0);
+  return { id: `youtube:${source.channelId || source.liveUrl}`, platform: 'youtube', name: source.name || '', url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : (source.url || source.liveUrl), live: online, title, thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '', viewers, checkedAt: new Date().toISOString() };
+}
+
+async function fetchDouyinLive(source) {
+  const html = await fetchMediaText(source.url);
+  const stateHtml = html.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/\\"/g, '"').replace(/\\u0026/g, '&');
+  const room = stateHtml.match(/"room":\{"id_str":"[^"}]+","status":(\d+),"status_str":"\d+","title":"((?:\\.|[^"])*)"[\s\S]{0,700}?"cover":\{"url_list":\["([^"\\]+)/i);
+  const roomStatus = Number(room?.[1] || 0);
+  const title = mediaText(room?.[2] || '') || mediaPageMeta(html, 'og:title') || source.name;
+  const thumbnail = room?.[3] || mediaPageMeta(html, 'og:image') || '/assets/douyin-default-cover.jpg';
+  const online = roomStatus === 2;
+  const viewers = Number(stateHtml.match(/(?:user_count|online_user_count|viewerCount|online_num)[^\d]{0,20}(\d+)/i)?.[1] || 0);
+  return { id: `douyin:${source.url}`, platform: 'douyin', name: source.name || '', isCN: source.isCN, url: source.url, live: online, title, thumbnail, viewers, checkedAt: new Date().toISOString() };
+}
+
+async function fetchTwitchLive(source) {
+  const channel = source.url.match(/twitch\.tv\/([^/?#]+)/i)?.[1] || '';
+  if (!channel) return { id: `twitch:${source.url}`, platform: 'twitch', name: source.name || '', isCN: source.isCN, url: source.url, live: false, viewers: 0, checkedAt: new Date().toISOString() };
+  const query = 'query StreamMetadata($channelLogin: String!) { user(login: $channelLogin) { stream { id viewersCount title game { name } previewImageURL(width: 640, height: 360) } } }';
+  const payload = await fetchMediaJson('https://gql.twitch.tv/gql', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'client-id': 'kimne78kx3ncx6brgo4mv6wki5h1ko' },
+    body: JSON.stringify([{ operationName: 'StreamMetadata', variables: { channelLogin: channel }, query }])
+  });
+  const stream = payload?.[0]?.data?.user?.stream || null;
+  return { id: `twitch:${channel.toLowerCase()}`, platform: 'twitch', name: source.name || '', isCN: source.isCN, url: source.url, live: Boolean(stream), title: stream?.title || '', thumbnail: stream?.previewImageURL || `https://static-cdn.jtvnw.net/previews-ttv/live_user/${encodeURIComponent(channel)}-640x360.jpg`, viewers: Number(stream?.viewersCount) || 0, checkedAt: new Date().toISOString() };
+}
+
+async function fetchDouyuLive(source) {
+  const roomId = source.url.match(/douyu\.com\/(\d+)/i)?.[1] || '';
+  if (!roomId) return { id: `douyu:${source.url}`, platform: 'douyu', name: source.name || '', isCN: source.isCN, url: source.url, live: false, viewers: 0, checkedAt: new Date().toISOString() };
+  const response = await fetch(`https://www.douyu.com/betard/${roomId}`, { headers: { accept: 'application/json, text/plain, */*', 'user-agent': 'Mozilla/5.0 AOE2DE-CN media monitor/1.0', referer: 'https://www.douyu.com/' }, signal: AbortSignal.timeout(20_000) });
+  if (!response.ok) throw new Error(`斗鱼房间接口返回 HTTP ${response.status}`);
+  const payload = await response.json();
+  const room = payload?.room || {};
+  const live = String(room.status) === '1' && Number(room.show_status) === 1 && Number(room.videoLoop || 0) === 0;
+  const thumbnail = room.room_src ? (String(room.room_src).startsWith('http') ? room.room_src : `https://rpic.douyucdn.cn/${String(room.room_src).replace(/^\/+/, '')}`) : '';
+  const popularity = Number(room.room_biz_all?.hot || 0);
+  return { id: `douyu:${roomId}`, platform: 'douyu', name: source.name || room.nickname || '', isCN: source.isCN, url: source.url, live, title: room.room_name || '', thumbnail, startedAt: room.show_time ? new Date(Number(room.show_time) * 1000).toISOString() : null, viewers: popularity, popularity, checkedAt: new Date().toISOString() };
+}
+
+function mediaPageMeta(html, property) {
+  const pattern = new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']*)`, 'i');
+  return mediaText(html.match(pattern)?.[1] || '');
+}
+
+async function fetchGenericLive(source) {
+  const html = await fetchMediaText(source.url);
+  const title = mediaPageMeta(html, 'og:title') || source.name;
+  let thumbnail = mediaPageMeta(html, 'og:image');
+  if (!thumbnail && source.platform === 'twitch') {
+    const channel = source.url.match(/twitch\.tv\/([^/?#]+)/i)?.[1] || '';
+    if (channel) thumbnail = `https://static-cdn.jtvnw.net/previews-ttv/live_user/${encodeURIComponent(channel)}-640x360.jpg`;
+  }
+  const online = /(?:isLive|isLiveNow|live_status|room_status|show_status)[^a-z0-9]{0,12}(?:true|1)\b/i.test(html)
+    || /isLiveBroadcast["']?\s*(?::|content=)["']?\s*(?:true|True|1)/i.test(html);
+  const viewers = Number(html.match(/(?:concurrentViewers|viewerCount|online_num|online)[^\d]{0,20}(\d+)/i)?.[1] || 0);
+  return { id: `${source.platform}:${source.url}`, platform: source.platform, name: source.name, isCN: source.isCN, url: source.url, live: online, title, thumbnail, viewers, checkedAt: new Date().toISOString() };
+}
+
+async function fetchLivePlayerLeaderboardStats(rlIds) {
+  const profileIds = [...new Set((Array.isArray(rlIds) ? rlIds : [])
+    .map(value => String(value).trim())
+    .filter(value => /^\d+$/.test(value) && Number(value) > 0))]
+    .sort((a, b) => Number(a) - Number(b));
+  if (!profileIds.length) return null;
+  const key = profileIds.join(',');
+  const cached = livePlayerStatsCache.get(key);
+  if (cached && Date.now() - cached.savedAt < personalStatsCacheTtl) return cached.data;
+  if (livePlayerStatsRefreshes.has(key)) return livePlayerStatsRefreshes.get(key);
+
+  const refresh = (async () => {
+    const endpoint = new URL('https://aoe-api.worldsedgelink.com/community/leaderboard/getPersonalStat');
+    endpoint.search = new URLSearchParams({ title: 'age2', profile_ids: JSON.stringify(profileIds.map(Number)) });
+    const response = await fetch(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`直播玩家天梯接口返回 HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '直播玩家天梯接口返回失败');
+
+    const profileByStatGroup = new Map();
+    for (const group of Array.isArray(payload.statGroups) ? payload.statGroups : []) {
+      const profileId = group?.members?.[0]?.profile_id;
+      if (profileId != null) profileByStatGroup.set(Number(group.id), String(profileId));
+    }
+    const select = leaderboardId => (Array.isArray(payload.leaderboardStats) ? payload.leaderboardStats : [])
+      .filter(stat => Number(stat.leaderboard_id) === leaderboardId && Number(stat.rank) > 0 && Number.isFinite(Number(stat.rating)))
+      .map(stat => ({ profileId: profileByStatGroup.get(Number(stat.statgroup_id)) || null, rating: Number(stat.rating), rank: Number(stat.rank) }))
+      .sort((a, b) => b.rating - a.rating || a.rank - b.rank)[0] || null;
+    const data = { randomMap1v1: select(3), randomMapTeam: select(4) };
+    livePlayerStatsCache.set(key, { savedAt: Date.now(), data });
+    return data;
+  })().catch(error => {
+    if (cached) return cached.data;
+    throw error;
+  }).finally(() => livePlayerStatsRefreshes.delete(key));
+  livePlayerStatsRefreshes.set(key, refresh);
+  return refresh;
+}
+
+async function fetchMediaLive() {
+  const configured = await loadSelectedStreamers();
+  const sources = configured.length ? configured : (Array.isArray(mediaSources.live) ? mediaSources.live : []);
+  const results = [];
+  const batchSize = 10;
+  for (let index = 0; index < sources.length; index += batchSize) {
+    const batch = sources.slice(index, index + batchSize);
+    const batchResults = await Promise.all(batch.map(async source => {
+      try {
+        let item;
+        if (source.platform === 'bilibili') {
+          const roomId = source.url.match(/live\.bilibili\.com\/(\d+)/i)?.[1];
+          item = await fetchBilibiliLive({ ...source, roomId, url: source.url });
+        } else if (source.platform === 'youtube_live' || source.platform === 'youtube') {
+          item = await fetchYoutubeLive({ ...source, liveUrl: source.url, url: source.url, platform: 'youtube', isCN: source.isCN });
+        } else if (source.platform === 'twitch') {
+          item = await fetchTwitchLive(source);
+        } else if (source.platform === 'douyu') {
+          item = await fetchDouyuLive(source);
+        } else if (source.platform === 'douyin') {
+          item = await fetchDouyinLive(source);
+        } else {
+          item = await fetchGenericLive(source);
+        }
+        return { ...item, name: source.name, rl: source.rl || [], isCN: source.isCN, sourceOrder: source.sourceOrder };
+      } catch (error) {
+        console.warn(`[media] live source failed: ${source.name || source.platform}`, error.message);
+        return null;
+      }
+    }));
+    results.push(...batchResults.filter(Boolean));
+  }
+  const priority = { twitch: 6, youtube: 5, douyin: 4, douyu: 3, bilibili: 2 };
+  const selected = new Map();
+  for (const item of results.filter(entry => entry.live)) {
+    const key = String(item.name || item.url || item.id).trim().toLowerCase();
+    const current = selected.get(key);
+    if (!current || (priority[item.platform] || 1) > (priority[current.platform] || 1)) selected.set(key, item);
+  }
+  const enriched = await Promise.all([...selected.values()].map(async item => {
+    const { rl, ...publicItem } = item;
+    try {
+      const leaderboards = await fetchLivePlayerLeaderboardStats(rl);
+      return leaderboards ? { ...publicItem, leaderboards } : publicItem;
+    } catch (error) {
+      console.warn(`[media] live player stats failed: ${item.name || item.id}`, error.message);
+      return publicItem;
+    }
+  }));
+  return enriched.sort((a, b) => {
+    if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
+    if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
+    return a.isCN ? -1 : 1;
+  });
+}
+
+function refreshMediaVideos() {
+  if (mediaVideoPaused()) {
+    updateMediaVideoNextRefreshAt();
+    return Promise.resolve(mediaCache.data);
+  }
+  if (mediaVideosRefreshPromise) return mediaVideosRefreshPromise;
+  mediaVideosRefreshPromise = (async () => {
+    await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
+    ensureMediaVideoSourceStates();
+    const now = Date.now();
+    if (now < mediaVideoNextRequestAt) {
+      updateMediaVideoNextRefreshAt();
+      return mediaCache.data;
+    }
+
+    const candidates = (Array.isArray(mediaSources.videos) ? mediaSources.videos : [])
+      .map(source => ({ source, state: mediaVideoSourceStates.get(mediaVideoSourceKey(source)) }))
+      .filter(({ source, state }) => state && state.nextCheckAt <= now && (source.platform !== 'bilibili' || now >= mediaVideoBlockedUntil))
+      .sort((a, b) => a.state.nextCheckAt - b.state.nextCheckAt || a.state.lastAttemptAt - b.state.lastAttemptAt);
+    const candidate = candidates[0];
+    if (!candidate) {
+      updateMediaVideoNextRefreshAt();
+      return mediaCache.data;
+    }
+
+    const { source, state } = candidate;
+    const key = mediaVideoSourceKey(source);
+    state.lastAttemptAt = now;
+    mediaVideoNextRequestAt = now + mediaVideoRequestGapMin;
+    try {
+      const videos = await fetchMediaVideoSource(source);
+      const cachedIds = new Set(mediaCache.data.videos.map(item => String(item?.id || '')).filter(Boolean));
+      const hasNewVideo = videos.some(item => item?.id && !cachedIds.has(String(item.id)));
+      state.lastSuccessAt = Date.now();
+      state.failureCount = 0;
+      state.idleSuccesses = hasNewVideo ? 0 : Math.min(4, state.idleSuccesses + 1);
+      state.nextCheckAt = Date.now() + mediaVideoCycleDelay;
+      if (source.platform === 'bilibili' && mediaVideoRateLimitStrikes > 0) mediaVideoRateLimitStrikes -= 1;
+
+      if (videos.length) {
+        const mergedById = new Map();
+        for (const item of mediaCache.data.videos) if (item?.id) mergedById.set(String(item.id), item);
+        for (const item of videos) if (item?.id) mergedById.set(String(item.id), item);
+        mediaCache.data.videos = [...mergedById.values()]
+          .sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))
+          .slice(0, 50);
+        await mkdir(dataDir, { recursive: true });
+        await writeFile(mediaVideoCachePath, JSON.stringify({ savedAt: new Date(state.lastSuccessAt).toISOString(), videos: mediaCache.data.videos }, null, 2), 'utf8');
+      }
+      mediaCache.videosSavedAt = state.lastSuccessAt;
+      mediaCache.data.videosUpdatedAt = new Date(state.lastSuccessAt).toISOString();
+      mediaCache.data.updatedAt = mediaCache.data.videosUpdatedAt;
+      console.log(`[media] video source checked: ${source.name || key}; next check ${new Date(state.nextCheckAt).toISOString()}`);
+    } catch (error) {
+      state.failureCount += 1;
+      if (source.platform === 'bilibili' && isBilibiliRateLimit(error)) {
+        mediaVideoRateLimitStrikes += 1;
+        const backoff = Math.min(mediaVideoCircuitMaxDelay, mediaVideoCircuitBaseDelay * (2 ** (mediaVideoRateLimitStrikes - 1)));
+        mediaVideoBlockedUntil = Date.now() + Math.max(backoff, Number(error.retryAfterMs) || 0);
+        state.nextCheckAt = mediaVideoBlockedUntil;
+        console.warn(`[media] B站触发风控，暂停视频检测至 ${new Date(mediaVideoBlockedUntil).toISOString()}: ${source.name || key}`);
+      } else {
+        state.nextCheckAt = Date.now() + mediaVideoCycleDelay;
+        console.warn(`[media] video source failed: ${source.name || key}`, error.message);
+      }
+    }
+    mediaVideoCycleSeen.add(key);
+    const videoSources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
+    const cycleComplete = videoSources.length > 0 && videoSources.every(videoSource => mediaVideoCycleSeen.has(mediaVideoSourceKey(videoSource)));
+    if (cycleComplete) {
+      const cycleNextAt = Date.now() + mediaVideoCycleDelay;
+      for (const videoSource of videoSources) {
+        const videoState = mediaVideoSourceStates.get(mediaVideoSourceKey(videoSource));
+        if (videoState) videoState.nextCheckAt = cycleNextAt;
+      }
+      mediaVideoCycleSeen.clear();
+      mediaVideoNextRequestAt = cycleNextAt;
+      console.log(`[media] video cycle complete; next cycle ${new Date(cycleNextAt).toISOString()}`);
+    } else {
+      mediaVideoNextRequestAt = Date.now() + mediaVideoRequestGapMin;
+    }
+    updateMediaVideoNextRefreshAt();
+    await savePersistentMediaVideoState();
+    return mediaCache.data;
+  })().finally(() => { mediaVideosRefreshPromise = null; });
+  return mediaVideosRefreshPromise;
+}
+
+function refreshMediaLive() {
+  if (mediaLiveRefreshPromise) return mediaLiveRefreshPromise;
+  mediaLiveRefreshPromise = fetchMediaLive().then(live => {
+    const now = Date.now();
+    mediaCache.data.live = live;
+    mediaCache.data.liveUpdatedAt = new Date(now).toISOString();
+    mediaCache.data.nextLiveRefreshAt = new Date(now + mediaLiveRefreshInterval).toISOString();
+    mediaCache.data.updatedAt = new Date(now).toISOString();
+    mediaCache.data.nextRefreshAt = new Date(Math.min(
+      Date.parse(mediaCache.data.nextVideosRefreshAt || mediaCache.data.nextLiveRefreshAt),
+      Date.parse(mediaCache.data.nextLiveRefreshAt)
+    )).toISOString();
+    mediaCache.liveSavedAt = now;
+    return mediaCache.data;
+  }).finally(() => { mediaLiveRefreshPromise = null; });
+  return mediaLiveRefreshPromise;
+}
+
+async function startMediaVideoScheduler() {
+  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
+  ensureMediaVideoSourceStates();
+  await refreshMediaVideos();
+  scheduleMediaVideoRefresh();
+  return mediaCache.data;
+}
+
+function refreshMediaCache() {
+  return Promise.all([startMediaVideoScheduler(), refreshMediaLive()]).then(() => mediaCache.data);
+}
+
+async function getMediaCache() {
+  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
+  ensureMediaVideoSourceStates();
+  if (!mediaVideoSchedulerTimer && !mediaVideosRefreshPromise) scheduleMediaVideoRefresh();
+  const now = Date.now();
+  const liveStale = !mediaCache.liveSavedAt || now - mediaCache.liveSavedAt >= mediaLiveRefreshInterval;
+  if (!mediaCache.data.videos.length && mediaVideoNextDueAt() <= now) {
+    await refreshMediaVideos();
+    scheduleMediaVideoRefresh();
+  }
+  if (liveStale) {
+    const refresh = refreshMediaLive();
+    refresh.catch(error => console.warn('[media] 后台直播刷新失败:', error.message));
+  }
+  return mediaCache.data;
+}
 
 function gameAssetPath(kind, slug) {
   return join(gameAssetCacheDir, kind, `${slug}.png`);
@@ -218,6 +1002,7 @@ function scheduleLeaderboardRefresh() {
   }, Math.max(0, next.at - Date.now()));
 }
 scheduleLeaderboardRefresh();
+setInterval(() => { refreshMediaLive().catch(error => console.warn('[media] live refresh failed:', error.message)); }, mediaLiveRefreshInterval);
 
 async function downloadProfileCsv(tempPath) {
   const response = await fetch(profileDumpUrl, { headers: { accept: 'text/csv' }, signal: AbortSignal.timeout(60 * 60_000) });
@@ -349,14 +1134,25 @@ async function buildProfileCache() {
   const finalPath = join(dataDir, finalFilename);
   const tempDumpPath = join(dataDir, tempDumpFilename);
   const dumpPath = join(dataDir, dumpFilename);
+  let sourceDumpPath = dumpPath;
   let db;
   try {
-    await downloadProfileCsv(tempDumpPath);
-    await rename(tempDumpPath, dumpPath);
+    try {
+      const localDump = await stat(profileLocalDumpPath);
+      if (!localDump.isFile() || localDump.size <= 0) throw new Error('本地 Profile dump 为空');
+      sourceDumpPath = profileLocalDumpPath;
+      profileRefreshState.stage = '读取本地 CSV Profile dump';
+      profileRefreshState.downloadedBytes = localDump.size;
+      profileRefreshState.totalBytes = localDump.size;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      await downloadProfileCsv(tempDumpPath);
+      await rename(tempDumpPath, dumpPath);
+    }
     profileRefreshState.stage = '建立玩家资料索引';
     db = new DatabaseSync(tempPath);
     db.exec('PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; CREATE TABLE profiles(profile_id TEXT PRIMARY KEY, steam_id TEXT, name TEXT NOT NULL, clan TEXT, last_match_time TEXT, country TEXT); CREATE TABLE profile_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);');
-    await importProfileCsv(db, dumpPath);
+    await importProfileCsv(db, sourceDumpPath);
     if (!profileRefreshState.processedRows) throw new Error('Profile dump 中没有读取到玩家资料');
     profileRefreshState.stage = '建立昵称搜索索引';
     db.exec("CREATE VIRTUAL TABLE profile_search USING fts5(name, content='profiles', content_rowid='rowid', tokenize='trigram'); INSERT INTO profile_search(profile_search) VALUES('rebuild');");
@@ -403,6 +1199,13 @@ function refreshProfileCache() {
 
 async function startProfileCacheLifecycle() {
   await loadProfileCache();
+  try {
+    await stat(profileDownloadPausePath);
+    profileRefreshState.refreshing = false;
+    profileRefreshState.stage = 'Profile dump 下载已暂停';
+    profileRefreshState.error = null;
+    return;
+  } catch {}
   const age = profileCache?.updatedAt ? Date.now() - Date.parse(profileCache.updatedAt) : Infinity;
   // Respect the dump timestamp for CSV indexes so a freshly imported index
   // does not trigger an immediate replacement on the next restart.
@@ -949,8 +1752,9 @@ http.createServer(async (req, res) => {
     try {
       const profile = localProfileDetails(profileId);
       if (!profile) throw new Error('本地资料库中没有该选手');
+      const rlReference = (await loadRlReference()).get(String(profileId)) || null;
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300' });
-      return res.end(JSON.stringify({ ...profile, cached: true, stale: false, source: 'profile-dump' }));
+      return res.end(JSON.stringify({ ...profile, rlReference, cached: true, stale: false, source: 'profile-dump' }));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '获取选手资料失败' }));
@@ -964,8 +1768,10 @@ http.createServer(async (req, res) => {
     }
     try {
       const result = await getAoE2RecsProfile(profileId);
+      const rlReference = await loadRlReference();
+      const accounts = (result.profile.accounts || []).map(account => ({ ...account, rlReference: rlReference.get(String(account.id ?? '').trim()) || null }));
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': result.stale ? 'no-cache' : 'public, max-age=300' });
-      return res.end(JSON.stringify({ accounts: result.profile.accounts || [], avatar: result.profile.avatar || '', cached: result.cached, stale: result.stale, source: 'aoe2recs' }));
+      return res.end(JSON.stringify({ accounts, avatar: result.profile.avatar || '', cached: result.cached, stale: result.stale, source: 'aoe2recs' }));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '获取账号与曾用名失败' }));
@@ -1095,15 +1901,65 @@ http.createServer(async (req, res) => {
     }
   }
 
+  if (url.pathname === '/api/media/thumbnail') {
+    try {
+      const sourceUrl = url.searchParams.get('url') || '';
+      const id = url.searchParams.get('id') || 'thumbnail';
+      const live = url.searchParams.get('live') === '1';
+      const thumbnail = await getMediaThumbnail(sourceUrl, id, live ? 5 * 60_000 : 0);
+      res.writeHead(200, { 'content-type': thumbnail.contentType, 'cache-control': `public, max-age=${live ? 300 : 86400}` });
+      return res.end(thumbnail.data);
+    } catch (error) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end(error.message || '封面不可用');
+    }
+  }
+
+  if (url.pathname === '/api/media') {
+    try {
+      const data = await getMediaCache();
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(data));
+    } catch (error) {
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: error.message || '获取视频直播数据失败' }));
+    }
+  }
+
   if (url.pathname === '/api/avatar') {
     let steamId = url.searchParams.get('steamId') || '';
     const profileId = url.searchParams.get('profileId') || '';
-    if (!/^\d{17}$/.test(steamId) && /^\d+$/.test(profileId) && profileDb) {
+    const validProfileId = /^\d+$/.test(profileId);
+    const fetchAoE2RecsAvatar = async () => {
+      if (!validProfileId) return '';
+      const fallback = await getAoE2RecsProfile(profileId);
+      const avatar = fallback?.profile?.avatar || '';
+      const parsed = avatar ? new URL(avatar) : null;
+      return parsed?.protocol === 'https:' && parsed.hostname.endsWith('.steamstatic.com') ? avatar : '';
+    };
+    if (!/^\d{17}$/.test(steamId) && validProfileId && profileDb) {
       steamId = String(profileDb.prepare('SELECT steam_id AS steamId FROM profiles WHERE profile_id = ?').get(profileId)?.steamId || '');
     }
     if (!/^\d{17}$/.test(steamId)) {
+      if (validProfileId) {
+        try {
+          const profileCacheKey = `profile:${profileId}`;
+          const cachedAvatar = avatarCache.get(profileCacheKey);
+          if (cachedAvatar?.expires > Date.now()) {
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            return res.end(JSON.stringify(cachedAvatar));
+          }
+          const avatar = await fetchAoE2RecsAvatar();
+          if (avatar) {
+            const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
+            avatarCache.set(profileCacheKey, cached);
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            return res.end(JSON.stringify(cached));
+          }
+        } catch {}
+      }
       res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ error: '无效的 Steam ID' }));
+      return res.end(JSON.stringify({ error: '找不到可用头像' }));
     }
     try {
       let cached = avatarCache.get(steamId);
@@ -1120,12 +1976,23 @@ http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify(cached));
     } catch (error) {
+      if (validProfileId) {
+        try {
+          const avatar = await fetchAoE2RecsAvatar();
+          if (avatar) {
+            const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
+            avatarCache.set(steamId, cached);
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            return res.end(JSON.stringify(cached));
+          }
+        } catch {}
+      }
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: error.message || '头像暂不可用' }));
     }
   }
 
-  const relative = url.pathname === '/' || /^\/profile(?:\/\d+)?\/?$/.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?)\/?$/.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const path = normalize(join(root, 'public', relative));
   if (!path.startsWith(join(root, 'public'))) {
     res.writeHead(403); return res.end('Forbidden');
@@ -1139,6 +2006,7 @@ http.createServer(async (req, res) => {
   }
 }).listen(port, () => {
   console.log(`AoE2DE Ladder running at http://localhost:${port}`);
+  refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
 });
 

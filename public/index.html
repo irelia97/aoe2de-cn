@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=remove-social-link-v1" />
+  <link rel="stylesheet" href="/styles.css?v=media-board-v22" />
 </head>
 <body>
   <div class="shell">
@@ -19,12 +19,12 @@
         <span><strong>帝国天梯</strong><small>AOE II · DEFINITIVE EDITION</small></span>
       </a>
       <div class="side-label">数据中心</div>
-      <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon">▤</span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon">◎</span>玩家资料<span class="nav-dot"></span></a><a class="nav-item disabled" href="#" title="即将推出"><span class="nav-icon">◷</span>对局记录<span class="coming">SOON</span></a></nav>
+      <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon">▤</span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon">◎</span>玩家资料<span class="nav-dot"></span></a><a class="nav-item" data-page="media" href="/media"><span class="nav-icon">▶</span>视频直播<span class="nav-dot"></span></a><a class="nav-item disabled" href="#" title="即将推出"><span class="nav-icon">◷</span>对局记录<span class="coming">SOON</span></a></nav>
       <div class="side-bottom"><div class="live-card"><span class="live-orb"></span><div><b>数据服务在线</b><small>连接 World's Edge</small></div><span class="live-check">✓</span></div><p>数据来自 Age of Empires II: DE<br/>公开天梯服务</p></div>
     </aside>
 
     <main id="leaderboard">
-      <header class="topbar"><div class="breadcrumbs">数据中心 <span>/</span> <b>天梯榜单</b></div><form id="profileSearchForm" class="profile-search-form topbar-search"><label class="sr-only" for="profileSearchInput">搜索玩家昵称或别名</label><div id="player-search" class="profile-search-input-wrap"><input id="profileSearchInput" name="q" type="search" minlength="2" maxlength="80" placeholder="搜索玩家昵称或别名" autocomplete="off" required /><div id="profileSearchSuggestions" class="profile-suggestions" role="listbox" aria-label="玩家候选" hidden></div></div><div id="profileSearchMeta" class="sr-only" aria-live="polite"></div></form><div class="top-right"><div class="theme-tabs" id="themeTabs" role="group" aria-label="网页色调"><button type="button" data-theme-value="light">白天</button><button type="button" data-theme-value="dark">夜间</button></div><span class="top-divider"></span><span class="live-label"><i></i> LIVE DATA</span><span class="top-divider"></span><span class="edition">DEFINITIVE EDITION</span></div></header>
+      <header class="topbar"><div class="breadcrumbs">数据中心 <span>/</span> <b>天梯榜单</b></div><form id="profileSearchForm" class="profile-search-form topbar-search"><label class="sr-only" for="profileSearchInput">输入玩家昵称</label><div id="player-search" class="profile-search-input-wrap"><input id="profileSearchInput" name="q" type="search" minlength="2" maxlength="80" placeholder="输入玩家昵称" autocomplete="off" required /><div id="profileSearchSuggestions" class="profile-suggestions" role="listbox" aria-label="玩家候选" hidden></div></div><div id="profileSearchMeta" class="sr-only" aria-live="polite"></div></form><div class="top-right"><div class="theme-tabs" id="themeTabs" role="group" aria-label="网页色调"><button type="button" data-theme-value="light">白天</button><button type="button" data-theme-value="dark">夜间</button></div><span class="top-divider"></span><span class="live-label"><i></i> LIVE DATA</span><span class="top-divider"></span><span class="edition">DEFINITIVE EDITION</span></div></header>
       <section class="intro"><div class="eyebrow"><span></span> RANKED LADDER <span class="eyebrow-line"></span></div><h1>天梯<span>榜单</span></h1><p>榜单只收录前2000名选手</p></section>
 
       <section class="stats-strip">
@@ -41,17 +41,26 @@
       </section>
       <section class="profile-details-card" id="player-profile" hidden>
         <div class="profile-details-heading"><div><div class="section-kicker">PLAYER PROFILE</div><h2>玩家资料</h2></div></div>
-        <div class="profile-identity"><div id="profileLoadingAnimation" class="profile-loading-animation profile-card-loading" hidden role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div><span class="profile-overview-avatar" id="profileOverviewAvatar">?</span><div class="profile-identity-content"><strong id="profileIdentityName">搜索并选择一名玩家</strong><span id="profileIdentityMeta"></span><a href="#profileAccounts" id="profileAliasesButton" hidden>查看别名</a><span id="profileIdentityLastMatch"></span></div></div>
-        <div class="profile-subsection"><div class="profile-subsection-heading"><h3 class="profile-ladder-heading">各模式天梯</h3><button type="button" id="profileLeaderboardToggle" hidden></button></div><div class="profile-leaderboard-grid" id="profileLeaderboardBody"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div></div>
+        <div class="profile-identity"><div id="profileLoadingAnimation" class="profile-loading-animation profile-card-loading" hidden role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div><div class="profile-identity-avatar-column"><span class="profile-overview-avatar" id="profileOverviewAvatar">?</span><span id="profileIdentityLastMatch"></span></div><div class="profile-identity-content"><div class="profile-name-row"><strong id="profileIdentityName">搜索并选择一名玩家</strong><button type="button" id="profileAliasesButton" hidden>查看别名</button></div><span id="profileIdentityMeta"></span><span id="profileIdentityLinks" class="profile-identity-links"></span></div><div class="profile-identity-mode-charts" aria-label="游戏模式占比"><figure><div id="profileAllModeChart" class="profile-mode-chart-content"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div><figcaption>全部排位对局</figcaption></figure><figure><div id="profileRecentModeChart" class="profile-mode-chart-content"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div><figcaption>近 100 场对局</figcaption></figure><ul id="profileModeLegend" class="profile-identity-mode-legend" aria-label="模式颜色说明"></ul></div></div>
+        <div class="profile-subsection"><div class="profile-subsection-heading profile-ladder-section-heading"><h3 class="profile-ladder-heading">各模式天梯</h3><button type="button" id="profileLeaderboardToggle" hidden></button></div><div class="profile-leaderboard-grid" id="profileLeaderboardBody"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div></div>
         <div class="profile-subsection"><div class="profile-subsection-heading"><h3 class="profile-matches-heading">最近 100 场对局</h3></div><div class="profile-matches-list" id="profileMatchesBody"><div class="profile-loading-animation" role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div></div><div class="profile-matches-footer"><button id="profileMatchesMore" class="profile-more-button" type="button" hidden>更多对局</button></div></div>
-        <div class="profile-subsection" id="profileAccounts"><h3>账号与曾用名</h3><table class="profile-details-table"><thead><tr><th>账号 ID</th><th>当前昵称</th><th>该账号曾用名</th><th>最后游戏时间</th></tr></thead><tbody id="profileDetailsBody"><tr><td colspan="4" class="profile-details-empty">请使用页面顶部的搜索框查找并选择玩家。</td></tr></tbody></table></div>
+        <div class="profile-alias-modal" id="profileAccounts" hidden><div class="profile-alias-dialog" role="dialog" aria-modal="true" aria-labelledby="profileAccountsTitle"><div class="profile-alias-dialog-heading"><h3 id="profileAccountsTitle">账号与曾用名</h3><button type="button" id="profileAccountsClose" aria-label="关闭">×</button></div><table class="profile-details-table"><thead><tr><th>账号 ID</th><th>当前昵称</th><th>该账号曾用名</th><th>最后游戏时间</th></tr></thead><tbody id="profileDetailsBody"><tr><td colspan="4" class="profile-details-empty">请使用页面顶部的搜索框查找并选择玩家。</td></tr></tbody></table></div></div>
+      </section>
+      <section class="media-page" id="media-page" hidden>
+        <div class="media-heading"><div><div class="section-kicker">VIDEO &amp; LIVE</div><h2 id="mediaTitle">视频直播</h2><p id="mediaSubtitle">开发者精选的帝国时代 II 视频与直播</p></div><span class="media-updated" id="mediaUpdated">—</span></div>
+        <section class="media-section"><div class="media-section-heading"><div class="media-section-title"><h3>视频区</h3><a class="media-more-link media-more-button" id="mediaVideosMore" href="/media/videos">查看更多视频</a><a class="media-more-link media-more-button" id="mediaVideosBack" href="/media" hidden>返回视频直播</a></div><span id="mediaVideosHint">最新 10 个</span></div><div class="media-grid" id="mediaVideos"><div class="media-empty">暂无已配置的视频源</div></div></section>
+        <section class="media-section" id="mediaLiveSection"><div class="media-section-heading"><h3>直播区</h3><span>按人气/观众数量排序</span></div><div class="media-live-group"><h4>中文区</h4><div class="media-grid media-live-grid" id="mediaLiveCN"><div class="media-empty">暂无开播直播间</div></div></div><div class="media-live-group"><h4>外文区</h4><div class="media-grid media-live-grid" id="mediaLiveForeign"><div class="media-empty">暂无开播直播间</div></div></div></section>
       </section>
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=ladder-priority-v1" defer></script>
+  <script src="/app.js?v=media-board-v17" defer></script>
 </body>
 </html>
+
+
+
+
 
 
 

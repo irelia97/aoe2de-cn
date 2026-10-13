@@ -1,0 +1,1103 @@
+{
+  "playerCount": 59,
+  "players": [
+    {
+      "name": "Yo",
+      "rl": [
+        "197964",
+        "1829754-hc",
+        "17908304"
+      ],
+      "live_links": {
+        "douyu": [
+          "https://www.douyu.com/753676"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Vivi",
+      "rl": [
+        "215442",
+        "1432837",
+        "1829738-hc",
+        "3077860",
+        "5602224",
+        "6109694",
+        "9414010",
+        "9695965",
+        "9873875",
+        "10198859",
+        "10710012",
+        "11406458",
+        "11406458",
+        "12926541",
+        "20435955",
+        "21333895",
+        "22225320",
+        "17001713"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/1825835036"
+        ],
+        "douyu": [
+          "https://www.douyu.com/1052202"
+        ],
+        "douyin": [
+          "https://live.douyin.com/328693937643"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Lyx",
+      "rl": [
+        "226575",
+        "8906900"
+      ],
+      "live_links": {
+        "douyu": [
+          "https://www.douyu.com/1029928"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Jibatong",
+      "rl": [
+        "6268226",
+        "6169169",
+        "19455781",
+        "19592234",
+        "20747143",
+        "16204681",
+        "1688652",
+        "19908733",
+        "25365699"
+      ],
+      "live_links": {
+        "douyin": [
+          "https://live.douyin.com/785583361067"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Bad Koala",
+      "rl": [
+        "211351",
+        "1435093",
+        "10592662"
+      ],
+      "live_links": {
+        "douyu": [
+          "https://www.douyu.com/9404502"
+        ],
+        "douyin": [
+          "https://live.douyin.com/318465225449"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "DuDuZhu",
+      "rl": [
+        "6251969",
+        "8589691"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/30941352"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "CC",
+      "rl": [
+        "446371",
+        "17471701",
+        "8736908",
+        "10748832",
+        "17722347",
+        "15733322",
+        "15808628",
+        "16244717",
+        "16538411",
+        "16639397",
+        "22069556",
+        "4426580",
+        "6045302"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/1880054694"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Clearlove",
+      "rl": [
+        "7240746",
+        "21402563",
+        "20244423"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/1709467438"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "LilyBear",
+      "rl": [
+        "4153011"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/lilybear_aoe"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Togawa__Sakikoi",
+      "rl": [
+        "1449222",
+        "20117785",
+        "4952428",
+        "15456412"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/22751576"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Still in Love",
+      "rl": [
+        "20566459",
+        "22978592",
+        "20728369",
+        "22446561"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/31366859"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "CNZS_骑士老爷",
+      "rl": [
+        "24073031"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/26413648"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "半人马座伽马星",
+      "rl": [
+        "3072492",
+        "12334520"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/26389361"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "可愛洗面奶",
+      "rl": [
+        "3193084",
+        "20627516",
+        "8769094",
+        "6411511",
+        "10356711"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/5155243"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "大白子",
+      "rl": [
+        "25042733"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/1957024441"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Sora Kuma",
+      "rl": [
+        "209118",
+        "712465",
+        "10360093"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/sorakumaaoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCae02KfwuahRPH8UtJCghNA/live"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Cloud",
+      "rl": [
+        "199419",
+        "872428"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/gktcloud"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UC0VVMDbRrm5ooyMpesEeVyA/live"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Wayne",
+      "rl": [
+        "4814983",
+        "6747650"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/waynechangaoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/watch?v=yuLlmHGixRc",
+          "https://www.youtube.com/channel/UC3dM4HsFy6j9AUkzlthRBiA/live"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "DemonSheep",
+      "rl": [
+        "226697"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/demonsheeptw"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCyUKYRY9JYwyhhhVbGLgSCg/live"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Rayz",
+      "rl": [
+        "6456674",
+        "8584614",
+        "11604775",
+        "11457005",
+        "11800743",
+        "11604775",
+        "15214143"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/rayz_aoe"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "Hera",
+      "rl": [
+        "199325",
+        "1847121-hc",
+        "3209724",
+        "4423546",
+        "12934666"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/hera"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCeqc9aYVAZcRQq9Ey0x26AQ/live",
+          "https://www.youtube.com/channel/UCFYYkZosXVL2t9w1DIkBCNg/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Liereyy",
+      "rl": [
+        "506898",
+        "1829588-hc"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/liereyy"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "TheViper",
+      "rl": [
+        "196240",
+        "1827609-hc",
+        "6020446",
+        "19018990"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/theviper"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UChOSBHAdhDG8J0yGHJrPoNQ/live"
+        ],
+        "kick": [
+          "https://kick.com/theviperaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "T90",
+      "rl": [
+        "197930",
+        "951203"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/t90official"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCZUT79WUUpZlZ-XMF7l4CFg/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Nili",
+      "rl": [
+        "197751"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/nili_aoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCXeY7zz-1LsyZdnpFbffdqA/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "MembTV",
+      "rl": [
+        "196407",
+        "17519780"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/membtv"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCZWm0WjyGzP6CEtm22zVvCQ/live"
+        ],
+        "kick": [
+          "https://kick.com/membtv"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Lewis",
+      "rl": [
+        "8793414"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/lewisaoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCvGb8jm6or4TItb10yNJKQw/live"
+        ],
+        "kick": [
+          "https://kick.com/lewisaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Sebastian",
+      "rl": [
+        "2783660",
+        "5194815",
+        "4541520",
+        "3392644"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/sebastian2002"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCfndZhdX7djV-cwo9bCyEIw/live"
+        ],
+        "kick": [
+          "https://kick.com/sebastian_aoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "ACCM",
+      "rl": [
+        "347269",
+        "3202763",
+        "1844119-hc",
+        "26080062"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/theaccm"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "MbL",
+      "rl": [
+        "251265",
+        "1826483-hc",
+        "2644601",
+        "4422938",
+        "15150039"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/mblaoc"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Vinch",
+      "rl": [
+        "271202",
+        "2886954",
+        "4298865",
+        "9696322",
+        "5007995"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/vinchiii"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Nicov",
+      "rl": [
+        "208393",
+        "1827959-hc",
+        "2609359",
+        "5400429",
+        "9473909"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/nicov_"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCzkVZ4Ci33LbQt_UHOvQEFw/live"
+        ],
+        "kick": [
+          "https://kick.com/nicovaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "TaToH",
+      "rl": [
+        "197388",
+        "968255",
+        "1819863-hc",
+        "3033716",
+        "5317568",
+        "8645496",
+        "8325522",
+        "10836335",
+        "18568493",
+        "21899132",
+        "19703030",
+        "24994665"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/tatohaoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCtPQLL9KACyYzoYXiMl1Nkg/live"
+        ],
+        "kick": [
+          "https://kick.com/tatohaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "DauT",
+      "rl": [
+        "198035",
+        "1832317-hc"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/daut"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Barles",
+      "rl": [
+        "666976",
+        "4014461",
+        "20647023"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/barles_aoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "saymyname",
+      "rl": [
+        "419803"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/saymynameaoe"
+        ],
+        "youtube_live": [
+          "http://www.youtube.com/channel/UCjIqdH3_66fmTIjFDtBM_pg/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "FreakinAndy",
+      "rl": [
+        "1531083",
+        "2559615",
+        "5557379",
+        "26047101"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/freakinandy"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Chart",
+      "rl": [
+        "217905",
+        "728551"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/chartaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "F1Re",
+      "rl": [
+        "196310",
+        "1819094-hc",
+        "5551398",
+        "9997273",
+        "14500794"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/f1reaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "slam",
+      "rl": [
+        "614315"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/slamjam_"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Villese",
+      "rl": [
+        "208611",
+        "1829715"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/villese"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "JonSlow",
+      "rl": [
+        "208269"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/jonslow_"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCI7xIJYOC2OEb6ttrsH2QHA/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Sitaux",
+      "rl": [
+        "1311198",
+        "212721",
+        "1630401",
+        "4351237",
+        "5230833",
+        "5845322",
+        "9254072",
+        "3289923",
+        "19046934",
+        "1782156"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/sitaux",
+          "https://www.twitch.tv/sitauxfr"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Rubenstock",
+      "rl": [
+        "431744"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/rubenstock"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Hoang",
+      "rl": [
+        "459658",
+        "2097181",
+        "3241077"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/hoangnguyen485"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UC4mChawns11BR-CFYxhd9zw/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Kasva",
+      "rl": [
+        "1224481",
+        "2759481",
+        "4795863",
+        "20557174",
+        "18713675"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/kasvaoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCFAiCVX7VqQaqGBPAxLRKnQ/live"
+        ],
+        "kick": [
+          "https://kick.com/kasvaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Goku",
+      "rl": [
+        "1893397",
+        "5638708",
+        "6850569",
+        "20321326"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/gokuaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Dragonstar",
+      "rl": [
+        "182749",
+        "2112598",
+        "3966024",
+        "8657232",
+        "4419155",
+        "21097888",
+        "21949530"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/dragonstaraoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UC91-JykOVR2PUWXAfyAG0Rg/live"
+        ],
+        "kick": [
+          "https://kick.com/dragonstar-aoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Survivalist",
+      "rl": [
+        "247224"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/survivalistaoe2de"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCmFJUeU8Oubp5Neldbq0JRA/live"
+        ],
+        "mixer": [
+          "https://mixer.com/SurvivalistAOE2DE"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Biry",
+      "rl": [
+        "2526695",
+        "2899276",
+        "111069",
+        "4893987",
+        "6170513",
+        "6779858",
+        "9280724",
+        "11011628",
+        "12952693",
+        "14403738",
+        "11862922",
+        "4358030",
+        "23053479",
+        "19216875"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/biryarg"
+        ],
+        "youtube_live": [
+          "http://www.youtube.com/channel/UC1tGtpMFHF88liDp0kYKtEQ/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "KingstoNe",
+      "rl": [
+        "2938425",
+        "3253348",
+        "2776293",
+        "4957841",
+        "15606105"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/kingstone_aoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Gabi",
+      "rl": [
+        "2444511",
+        "2762305",
+        "14595118",
+        "21060585"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/gabiaoe_"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "OrnLu",
+      "rl": [
+        "197707"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/ornlu_aoe"
+        ],
+        "youtube_live": [
+          "http://www.youtube.com/channel/UCnmc2T9WNYLel3Fv2EzaS4Q/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Quảng Trị",
+      "rl": [
+        "2660491"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/thanhcoquangtri_hope"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UC50eAGV8wBYCIS_0fMjpPpw/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Mihai",
+      "rl": [
+        "288714",
+        "17294605",
+        "26072627"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/mihai06_aoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Andre_2i",
+      "rl": [
+        "635884",
+        "11801213"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/Andre_2i"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCbDzWQFqK2nMtDI1OlJ6FGg/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Ozone",
+      "rl": [
+        "2654577",
+        "11962856",
+        "15499337"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/ozoneaoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCnOQQ24Hj9cLOJtW0IGWKqQ/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "HGB",
+      "rl": [
+        "4412109",
+        "5195050"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/hgb_aoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "TWest",
+      "rl": [
+        "2866",
+        "12624973"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/twestaoe"
+        ],
+        "youtube_live": [
+          "https://www.youtube.com/channel/UCkH00DEvivJzUfQk2KVsA4A/live"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Ciskhan",
+      "rl": [
+        "1136191",
+        "3320450",
+        "6020935",
+        "10285000"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/ciskhan_"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Prisma09",
+      "rl": [
+        "3176045",
+        "5821885",
+        "10104438"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/prisma09_"
+        ],
+        "kick": [
+          "https://kick.com/prisma09"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Lucho",
+      "rl": [
+        "10921131",
+        "9423131",
+        "11862330"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/Lucho_AoE"
+        ],
+        "kick": [
+          "https://kick.com/luchoaoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "ThunderboltX",
+      "rl": [
+        "3169100",
+        "19561073",
+        "21246678",
+        "25183359"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/thunderboltxaoc"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Red Phosphoru",
+      "rl": [
+        "10266593",
+        "19313591",
+        "20822864",
+        "21733994",
+        "22093910"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/redphosphoru"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "NeoZz",
+      "rl": [
+        "11275434",
+        "19867271"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/neozz_aoe"
+        ]
+      },
+      "isCN": false
+    },
+    {
+      "name": "Benanji",
+      "rl": [
+        "2463959",
+        "23770308",
+        "23930318"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/benanji_aoe"
+        ]
+      },
+      "isCN": false
+    }
+  ]
+}
+

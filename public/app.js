@@ -33,12 +33,18 @@ const leaderboardSummaryRequests = new Map();
 const fmt = new Intl.NumberFormat('zh-CN');
 const countryNames = new Intl.DisplayNames(['zh-CN'], { type: 'region' });
 const themeTabs = document.querySelector('#themeTabs');
-document.querySelector('#profileAliasesButton')?.addEventListener('click', event => {
-  event.preventDefault();
-  const target = document.querySelector('#profileAccounts');
-  if (!target) return;
-  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  history.replaceState(history.state, '', `${location.pathname}${location.search}#profileAccounts`);
+function setProfileAccountsModal(open) {
+  const modal = document.querySelector('#profileAccounts');
+  if (modal) modal.hidden = !open;
+  if (open) document.querySelector('#profileAccountsClose')?.focus();
+}
+document.querySelector('#profileAliasesButton')?.addEventListener('click', () => setProfileAccountsModal(true));
+document.querySelector('#profileAccountsClose')?.addEventListener('click', () => setProfileAccountsModal(false));
+document.querySelector('#profileAccounts')?.addEventListener('click', event => {
+  if (event.target.id === 'profileAccounts') setProfileAccountsModal(false);
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !document.querySelector('#profileAccounts')?.hidden) setProfileAccountsModal(false);
 });
 function applyTheme(theme, persist = true) {
   const selected = ['light', 'dark'].includes(theme) ? theme : 'dark';
@@ -335,10 +341,12 @@ let profileSuggestExpanded = false;
 let profileDetailsRequestId = 0;
 let profileMatchesRequestId = 0;
 let currentProfileId = '';
+let currentProfileAvatarUrl = '';
 const lastProfileIdStorageKey = 'aoe2de:last-profile-id:v1';
 let currentProfileLeaderboardRows = [];
 let currentProfileRecentResults = new Map();
 let currentProfileRecentStats = new Map();
+let currentProfileRecentModeCounts = null;
 let profileDetailsSocket = null;
 let profileDetailsTimeout = null;
 let profileDetailsRetryTimer = null;
@@ -399,6 +407,33 @@ function profileSuggestionMarkup(player, index) {
   const details = [escapeHtml(country), clan.trim(), rating.trim(), alias.trim(), lastMatch].filter(Boolean).join(' · ');
   const avatarFallback = escapeHtml((player.name || '?').slice(0, 1).toUpperCase());
   return `<a class="profile-suggestion${index === profileSuggestActiveIndex ? ' active' : ''}" role="option" aria-selected="${index === profileSuggestActiveIndex}" data-suggestion-index="${index}" data-steam="${escapeHtml(player.steamId || '')}" href="/profile/${encodeURIComponent(player.profileId)}"><span class="profile-suggestion-avatar">${avatarFallback}</span><span class="profile-suggestion-main"><span class="profile-suggestion-name">${escapeHtml(player.name)}</span><span class="profile-suggestion-sub">${details}</span></span><span class="profile-suggestion-arrow" aria-hidden="true">›</span></a>`;
+}
+function renderProfileExternalLinks(links, kind) {
+  const entries = Object.entries(links || {}).flatMap(([platform, urls]) => (Array.isArray(urls) ? urls : [urls]).filter(Boolean).map(url => ({ platform, url })));
+  if (!entries.length) return '';
+  const icon = { twitch: 'twitch.svg', youtube_live: 'youtube.svg', bilibili: 'bilibili.svg', douyu: 'douyu.png', douyin: 'douyin.svg', kick: 'kick.svg', youtube: 'youtube.svg', twitter: 'twitter.svg', discord: 'discord.svg', facebook_gaming: 'facebook_gaming.svg', steam: 'steam.svg', liquipedia: 'liquipedia.png', liquipedia_net: 'liquipedia.png', trovo: 'trovo.svg', mixer: 'mixer.svg' };
+  const fallbackLabel = { liquipedia: 'LQ', liquipedia_net: 'LQ', trovo: 'TV', mixer: 'MX' };
+  const externalUrl = (platform, value) => {
+    const raw = String(value || '').trim();
+    if (/^https?:\/\//i.test(raw)) return raw;
+    if (platform === 'liquipedia' || platform === 'liquipedia_net') return `https://liquipedia.net/ageofempires/${encodeURIComponent(raw)}`;
+    if (platform === 'steam' && /^\d{10,}$/.test(raw)) return `https://steamcommunity.com/profiles/${raw}`;
+    return raw;
+  };
+  const label = kind === 'live' ? '直播' : '社交';
+  return `<span class="profile-account-link-group" title="${label}链接"><span class="profile-account-link-kind">${label}</span>${entries.map(({ platform, url }) => `<a class="profile-account-link profile-account-link-${escapeHtml(platform)}" href="${escapeHtml(externalUrl(platform, url))}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(platform)}"><span aria-hidden="true">${icon[platform] ? `<img src="/assets/icons/${escapeHtml(icon[platform])}" alt="">` : `<span class="profile-link-fallback">${escapeHtml(fallbackLabel[platform] || platform.slice(0, 2).toUpperCase())}</span>`}</span><span class="sr-only">${escapeHtml(platform)}</span></a>`).join('')}</span>`;
+}
+function renderProfileIdentityLinks(accounts, profileId) {
+  const target = document.querySelector('#profileIdentityLinks');
+  if (!target) return;
+  const list = Array.isArray(accounts) ? accounts : [];
+  const matched = list.find(account => String(account.id ?? '') === String(profileId) && account.rlReference) || list.find(account => account.rlReference);
+  if (matched?.rlReference) renderProfileIdentityReference(matched.rlReference);
+}
+function renderProfileIdentityReference(reference) {
+  const target = document.querySelector('#profileIdentityLinks');
+  if (!target) return;
+  target.innerHTML = reference ? `${renderProfileExternalLinks(reference.liveLinks, 'live')}${renderProfileExternalLinks(reference.socialLinks, 'social')}` : '';
 }
 function renderPlayerDetailsRows(details) {
   const accounts = Array.isArray(details.accounts) ? details.accounts : [];
@@ -699,9 +734,89 @@ function profileMatchRatingDeltas(matches) {
 function fullSteamAvatarUrl(url) {
   return typeof url === 'string' ? url.replace(/_medium(?=\.[a-z]+(?:\?.*)?$)/i, '_full') : '';
 }
+function applyProfileOverviewAvatar(url, requestId = profileDetailsRequestId) {
+  const source = fullSteamAvatarUrl(url);
+  const avatar = document.querySelector('#profileOverviewAvatar');
+  if (!source || !avatar) return false;
+  const image = document.createElement('img');
+  image.alt = '';
+  image.decoding = 'async';
+  image.onload = () => {
+    if (requestId === profileDetailsRequestId && avatar.isConnected) avatar.replaceChildren(image);
+  };
+  image.src = source;
+  return true;
+}
+const profileModeDefinitions = [
+  { id: 3, match: 'RM 1v1', label: '1v1 随机地图', color: '#9fbd72' },
+  { id: 4, match: 'RM TG', label: '团队随机地图', color: '#6fa6ba' },
+  { id: 1, match: 'DM 1v1', label: '1v1 死亡竞赛', color: '#d7a65e' },
+  { id: 2, match: 'DM TG', label: '团队死亡竞赛', color: '#a27bc2' },
+  { id: 13, match: 'EW 1v1', label: '1v1 帝国战争', color: '#d47b68' },
+  { id: 14, match: 'EW TG', label: '团队帝国战争', color: '#70b6a8' },
+  { id: 'other', match: '', label: '其他 / 大厅', color: '#737c78' }
+];
+function profileAllModeCounts(leaderboards) {
+  const counts = new Map();
+  for (const row of Array.isArray(leaderboards) ? leaderboards : []) {
+    const games = Math.max(0, Number(row.wins) || 0) + Math.max(0, Number(row.losses) || 0);
+    if (games > 0) counts.set(Number(row.id), games);
+  }
+  return counts;
+}
+function profileRecentModeCounts(matches, playerId) {
+  const modeByMatch = new Map(profileModeDefinitions.filter(mode => mode.match).map(mode => [mode.match, mode.id]));
+  const counts = new Map();
+  for (const match of (Array.isArray(matches) ? matches : []).slice(0, 100)) {
+    const belongsToPlayer = (Array.isArray(match.players) ? match.players : []).some(player => String(player.id) === String(playerId));
+    if (!belongsToPlayer) continue;
+    const id = modeByMatch.get(String(match.leaderboard || '').trim()) ?? 'other';
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return counts;
+}
+function profileModeChartMarkup(counts, loading = false) {
+  if (loading) return '<div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div>';
+  const entries = profileModeDefinitions.map(mode => ({ ...mode, count: Number(counts?.get(mode.id) || 0) })).filter(mode => mode.count > 0);
+  const total = entries.reduce((sum, mode) => sum + mode.count, 0);
+  if (!total) return '<div class="profile-mode-chart-empty">暂无可统计的对局数据</div>';
+  const point = (angle, radius) => {
+    const radians = (angle - 90) * Math.PI / 180;
+    return { x: 60 + radius * Math.cos(radians), y: 60 + radius * Math.sin(radians) };
+  };
+  let cursor = 0;
+  const slices = entries.map(mode => {
+    const percent = mode.count / total * 100;
+    const startAngle = cursor / total * 360;
+    cursor += mode.count;
+    const endAngle = cursor / total * 360;
+    const start = point(startAngle, 56);
+    const end = point(endAngle, 56);
+    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+    const shape = entries.length === 1
+      ? '<circle cx="60" cy="60" r="56"></circle>'
+      : `<path d="M 60 60 L ${start.x.toFixed(3)} ${start.y.toFixed(3)} A 56 56 0 ${largeArc} 1 ${end.x.toFixed(3)} ${end.y.toFixed(3)} Z"></path>`;
+    const labelPoint = point((startAngle + endAngle) / 2, 36);
+    const label = percent >= 3
+      ? `<text x="${labelPoint.x.toFixed(2)}" y="${labelPoint.y.toFixed(2)}">${percent.toFixed(percent >= 10 ? 0 : 1)}%</text>`
+      : '';
+    return `<g fill="${mode.color}"><title>${escapeHtml(mode.label)}：${percent.toFixed(2)}%</title>${shape}</g>${label}`;
+  }).join('');
+  const summary = entries.map(mode => `${mode.label} ${(mode.count / total * 100).toFixed(2)}%`).join('，');
+  return `<svg class="profile-mode-pie" viewBox="0 0 120 120" role="img" aria-label="${escapeHtml(summary)}">${slices}</svg>`;
+}
+function renderProfileModeCharts() {
+  const allTarget = document.querySelector('#profileAllModeChart');
+  const recentTarget = document.querySelector('#profileRecentModeChart');
+  const legendTarget = document.querySelector('#profileModeLegend');
+  if (allTarget) allTarget.innerHTML = profileModeChartMarkup(currentProfileLeaderboardRows.length ? profileAllModeCounts(currentProfileLeaderboardRows) : null, !currentProfileLeaderboardRows.length);
+  if (recentTarget) recentTarget.innerHTML = profileModeChartMarkup(currentProfileRecentModeCounts, currentProfileRecentModeCounts === null);
+  if (legendTarget && !legendTarget.childElementCount) legendTarget.innerHTML = profileModeDefinitions.map(mode => `<li><i style="--mode-color:${mode.color}"></i><span>${escapeHtml(mode.label)}</span></li>`).join('');
+}
 function renderProfileLeaderboards(leaderboards, recentResults = currentProfileRecentResults, recentStats = currentProfileRecentStats) {
   const rows = Array.isArray(leaderboards) ? leaderboards : [];
   currentProfileLeaderboardRows = rows;
+  renderProfileModeCharts();
   const body = document.querySelector('#profileLeaderboardBody');
   const toggle = document.querySelector('#profileLeaderboardToggle');
   if (!body) return;
@@ -742,11 +857,12 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
       .then(data => {
         if (!avatar.isConnected || !data?.avatar) return;
         const image = document.createElement('img');
-        image.src = fullSteamAvatarUrl(data.avatar);
         image.alt = '';
-        image.loading = 'lazy';
-        image.onerror = () => image.remove();
-        avatar.replaceChildren(image);
+        image.decoding = 'async';
+        image.onload = () => {
+          if (avatar.isConnected) avatar.replaceChildren(image);
+        };
+        image.src = fullSteamAvatarUrl(data.avatar);
       }).catch(() => {});
   });
   if (toggle) {
@@ -966,6 +1082,8 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     matches = Array.isArray(first.matches) ? first.matches : [];
     currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
     currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
+    currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
+    renderProfileModeCharts();
     if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
     // Render the first upstream batch immediately while the server completes
     // the cache refresh and watermark scan in the background.
@@ -982,6 +1100,8 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
       matches = Array.isArray(complete.matches) ? complete.matches : matches;
       currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
       currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
+      currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
+      renderProfileModeCharts();
       if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
       hasMore = false;
       renderProfileLastMatchFromMatch(matches[0]);
@@ -992,6 +1112,8 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
   } catch {
     // Do not fall back to AoE2Recs matches: they may omit per-player ratingDiff.
     if (isCurrent()) {
+      currentProfileRecentModeCounts = new Map();
+      renderProfileModeCharts();
       const body = document.querySelector('#profileMatchesBody');
       if (body) body.innerHTML = '';
     }
@@ -1031,7 +1153,12 @@ function loadProfileAccounts(profileId, requestId) {
     .then(response => response.ok ? response.json() : Promise.reject(new Error('账号资料请求失败')))
     .then(data => {
       if (!isCurrent()) return;
+      if (data?.avatar) {
+        currentProfileAvatarUrl = data.avatar;
+        applyProfileOverviewAvatar(currentProfileAvatarUrl, requestId);
+      }
       const details = { player: { id: profileId }, avatar: data?.avatar || '', accounts: Array.isArray(data?.accounts) ? data.accounts : [] };
+      renderProfileIdentityLinks(details.accounts, profileId);
       document.querySelector('#profileDetailsBody').innerHTML = renderPlayerDetailsRows(details);
       loadProfileAccountAvatars();
     })
@@ -1046,15 +1173,12 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
   const avatar = document.querySelector('#profileOverviewAvatar');
   if (avatar) {
     avatar.replaceChildren();
-    const useProfileAvatar = String(profile.player?.id ?? '') === String(profileId) && profile.avatar;
+    avatar.textContent = playerName.slice(0, 1).toUpperCase();
+    const profileAvatarUrl = profile.avatar || currentProfileAvatarUrl;
+    const useProfileAvatar = Boolean(profileAvatarUrl);
     if (useProfileAvatar) {
-      const image = document.createElement('img');
-      image.src = fullSteamAvatarUrl(profile.avatar);
-      image.alt = '';
-      image.loading = 'lazy';
-      image.onerror = () => image.remove();
-      avatar.append(image);
-    } else avatar.textContent = playerName.slice(0, 1).toUpperCase();
+      applyProfileOverviewAvatar(profileAvatarUrl, requestId);
+    }
     if (!useProfileAvatar && /^\d+$/.test(String(profileId))) {
       fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' }).then(response => response.ok ? response.json() : null).then(data => {
         if (!avatar.isConnected || !data?.avatar) return;
@@ -1073,6 +1197,8 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
     const team = player.team || '暂无战队';
     meta.textContent = `${country} · ${team}`;
   }
+  renderProfileIdentityLinks(profile.accounts, profileId);
+  renderProfileIdentityReference(profile.rlReference || null);
   const lastMatch = document.querySelector('#profileIdentityLastMatch');
   if (lastMatch) {
     const latestMatch = Array.isArray(profile.matches) ? profile.matches[0] : null;
@@ -1101,17 +1227,96 @@ function routeToPlayerProfile(player) {
 function setProfileMessage(message, className = 'profile-details-empty') {
   document.querySelector('#profileDetailsBody').innerHTML = `<tr><td colspan="4" class="${className}">${message}</td></tr>`;
 }
+let mediaRequest = null;
+function mediaDate(value) {
+  const time = Date.parse(String(value || ''));
+  return Number.isFinite(time) ? new Date(time).toLocaleString('zh-CN') : '';
+}
+function mediaThumbnail(item, live = false) {
+  if (!item?.thumbnail) return '';
+  if (/^\/assets\//i.test(String(item.thumbnail))) return String(item.thumbnail);
+  const liveParams = live ? `&live=1&v=${Math.floor(Date.now() / (5 * 60 * 1000))}` : '';
+  return `/api/media/thumbnail?id=${encodeURIComponent(item.id || 'thumbnail')}&url=${encodeURIComponent(item.thumbnail)}${liveParams}`;
+}
+function renderMedia(data, showAllVideos = false) {
+  const videos = document.querySelector('#mediaVideos');
+  const liveCN = document.querySelector('#mediaLiveCN');
+  const liveForeign = document.querySelector('#mediaLiveForeign');
+  const liveSection = document.querySelector('#mediaLiveSection');
+  const moreLink = document.querySelector('#mediaVideosMore');
+  const backLink = document.querySelector('#mediaVideosBack');
+  const title = document.querySelector('#mediaTitle');
+  const subtitle = document.querySelector('#mediaSubtitle');
+  const videosHint = document.querySelector('#mediaVideosHint');
+  if (liveSection) liveSection.hidden = showAllVideos;
+  if (moreLink) moreLink.hidden = showAllVideos;
+  if (backLink) backLink.hidden = !showAllVideos;
+  if (title) title.textContent = showAllVideos ? '全部视频' : '视频直播';
+  if (subtitle) subtitle.textContent = showAllVideos ? '服务端当前保存的全部视频' : '开发者精选的帝国时代 II 视频与直播';
+  if (videosHint) videosHint.textContent = showAllVideos ? '服务端缓存' : '最新 10 个';
+  const updated = document.querySelector('#mediaUpdated');
+  if (updated) updated.textContent = data?.updatedAt ? `更新于 ${mediaDate(data.updatedAt)}` : '等待更新';
+  if (videos) {
+    const items = (Array.isArray(data?.videos) ? data.videos : []).slice(0, showAllVideos ? 50 : 10);
+    videos.innerHTML = items.length ? items.map(item => `<a class="media-card" href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener noreferrer"><div class="media-thumb">${item.thumbnail ? `<img src="${escapeHtml(mediaThumbnail(item))}" alt="" loading="lazy" onerror="this.parentElement.classList.add('no-image');this.remove()">` : ''}</div><div class="media-card-body"><strong title="${escapeHtml(item.title || '')}">${escapeHtml(item.title || '未命名视频')}</strong><span>${escapeHtml(item.channel || '')}${item.publishedAt ? ` · ${escapeHtml(mediaDate(item.publishedAt))}` : ''}</span></div></a>`).join('') : '<div class="media-empty">暂无已配置的视频源</div>';
+  }
+  if (liveCN || liveForeign) {
+    const items = Array.isArray(data?.live) ? data.live : [];
+    const platformNames = { twitch: 'Twitch', youtube: 'YouTube', youtube_live: 'YouTube', douyin: '抖音', douyu: '斗鱼', bilibili: '哔哩哔哩', kick: 'Kick' };
+    const ladderBadge = (label, stat) => stat && Number.isFinite(Number(stat.rating)) && Number(stat.rank) > 0
+      ? `<small><b>${label}</b> ${Number(stat.rating).toLocaleString('zh-CN')} <i>#${Number(stat.rank).toLocaleString('zh-CN')}</i></small>`
+      : '';
+    const markup = list => list.length ? list.map(item => {
+      const platform = platformNames[item.platform] || item.platform || '直播';
+      const countLabel = ['bilibili', 'douyu'].includes(item.platform) ? '人气' : '人观看';
+      const ladders = `${ladderBadge('1v1', item.leaderboards?.randomMap1v1)}${ladderBadge('团队', item.leaderboards?.randomMapTeam)}`;
+      const liveTitle = item.title || '正在直播';
+      return `<a class="media-card media-live-card is-live" href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener noreferrer"><div class="media-thumb">${item.thumbnail ? `<img src="${escapeHtml(mediaThumbnail(item, true))}" alt="" loading="lazy" onerror="this.parentElement.classList.add('no-image');this.remove()">` : ''}<span class="media-live-status">${escapeHtml(platform)}</span></div><div class="media-card-body"><strong class="media-live-title" title="${escapeHtml(liveTitle)}">${escapeHtml(liveTitle)}</strong><div class="media-live-bottom"><div class="media-live-host"><strong class="media-live-player-name" title="${escapeHtml(item.name || '未知主播')}">${escapeHtml(item.name || '未知主播')}</strong><span class="media-live-audience"><b class="media-spark" aria-hidden="true">✦</b> ${Number(item.viewers || 0).toLocaleString('zh-CN')} ${countLabel}</span></div>${ladders ? `<span class="media-live-ladders">${ladders}</span>` : ''}</div></div></a>`;
+    }).join('') : '<div class="media-empty">暂无开播直播间</div>';
+    if (liveCN) liveCN.innerHTML = markup(items.filter(item => item.isCN));
+    if (liveForeign) liveForeign.innerHTML = markup(items.filter(item => !item.isCN));
+  }
+}
+function loadMedia(showAllVideos = false) {
+  if (mediaRequest) return mediaRequest;
+  mediaRequest = fetch('/api/media', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败'))).then(data => { renderMedia(data, showAllVideos); return data; }).catch(() => { renderMedia({ videos: [], live: [] }, showAllVideos); }).finally(() => { mediaRequest = null; });
+  return mediaRequest;
+}
+setInterval(() => {
+  if (!/^\/media\/?$/.test(location.pathname)) return;
+  const bucket = String(Math.floor(Date.now() / (5 * 60 * 1000)));
+  for (const image of document.querySelectorAll('.media-live-card .media-thumb img')) {
+    const source = new URL(image.src, location.origin);
+    source.searchParams.set('v', bucket);
+    image.src = `${source.pathname}${source.search}`;
+  }
+}, 5 * 60 * 1000);
 function renderCurrentRoute(selectedPlayer = null) {
   const match = location.pathname.match(/^\/profile(?:\/(\d+))?\/?$/);
   const isProfilePage = Boolean(match);
+  const isMediaVideosPage = /^\/media\/videos\/?$/.test(location.pathname);
+  const isMediaPage = isMediaVideosPage || /^\/media\/?$/.test(location.pathname);
   const profileId = match?.[1] || '';
   document.body.classList.toggle('page-profile', isProfilePage);
+  document.body.classList.toggle('page-media', isMediaPage);
   document.querySelector('#player-profile').hidden = !isProfilePage;
+  document.querySelector('#media-page').hidden = !isMediaPage;
   document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => {
-    const active = link.dataset.page === (isProfilePage ? 'profile' : 'leaderboard');
+    const activePage = isProfilePage ? 'profile' : isMediaPage ? 'media' : 'leaderboard';
+    const active = link.dataset.page === activePage;
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : '天梯榜单';
+  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : '天梯榜单';
+  if (isMediaPage) {
+    profileDetailsRequestId++;
+    clearTimeout(profileDetailsTimeout);
+    clearTimeout(profileDetailsRetryTimer);
+    clearInterval(profileDetailsRequestTimer);
+    profileDetailsSocket?.close();
+    profileDetailsSocket = null;
+    loadMedia(isMediaVideosPage);
+    return;
+  }
   if (!isProfilePage) {
     const saved = history.state?.leaderboard;
     if (saved) {
@@ -1147,6 +1352,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   if (!profileId) {
     const aliasesButton = document.querySelector('#profileAliasesButton');
     if (aliasesButton) aliasesButton.hidden = true;
+    setProfileAccountsModal(false);
     if (currentProfileId) return;
     let savedProfileId = '';
     try { savedProfileId = localStorage.getItem(lastProfileIdStorageKey) || ''; } catch { /* Storage may be disabled. */ }
@@ -1163,6 +1369,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsSocket = null;
     document.querySelector('#profileIdentityName').textContent = '搜索并选择一名玩家';
     document.querySelector('#profileIdentityMeta').textContent = '';
+  document.querySelector('#profileIdentityLinks').innerHTML = '';
     document.querySelector('#profileIdentityLastMatch').textContent = '';
     setProfileMessage('请使用页面顶部的搜索框查找并选择玩家。');
     const leaderboardBody = document.querySelector('#profileLeaderboardBody');
@@ -1176,6 +1383,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   currentProfileId = String(profileId);
   const aliasesButton = document.querySelector('#profileAliasesButton');
   if (aliasesButton) aliasesButton.hidden = false;
+  setProfileAccountsModal(false);
   try { localStorage.setItem(lastProfileIdStorageKey, currentProfileId); } catch { /* Storage may be disabled. */ }
   if (selectedPlayer) {
     document.querySelector('#profileIdentityName').textContent = selectedPlayer.name || `玩家 ${profileId}`;
@@ -1191,14 +1399,18 @@ function loadAoE2RecsProfile(profileId, fallbackName = '') {
   profileDetailsSocket?.close();
   const requestId = ++profileDetailsRequestId;
   profileMatchesRequestId = requestId;
+  currentProfileAvatarUrl = '';
   currentProfileLeaderboardRows = [];
   currentProfileRecentResults = new Map();
   currentProfileRecentStats = new Map();
+  currentProfileRecentModeCounts = null;
+  renderProfileModeCharts();
   setProfileLoadingAnimation(false);
   loadWorldsEdgeMatches(profileId, { player: { id: profileId }, matches: [] }, requestId);
   loadProfileAccounts(profileId, requestId);
   const profileName = document.querySelector('#profileIdentityName');
   profileName.textContent = fallbackName || `玩家 ${profileId}`;
+  document.querySelector('#profileIdentityLinks').innerHTML = '';
   const matchesBody = document.querySelector('#profileMatchesBody');
   const matchesMore = document.querySelector('#profileMatchesMore');
   if (matchesBody) matchesBody.innerHTML = profileLoadingMarkup();
@@ -1323,7 +1535,8 @@ profileSearchForm.addEventListener('submit', async event => {
 });
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
-  history.pushState({}, '', link.dataset.page === 'profile' ? '/profile' : '/');
+  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'media' ? '/media' : '/';
+  history.pushState({}, '', target);
   renderCurrentRoute();
 }));
 document.addEventListener('click', event => {
@@ -1340,6 +1553,7 @@ window.addEventListener('popstate', () => renderCurrentRoute());
 renderCurrentRoute();
 refreshProfileSearchStatus();
 setInterval(refreshProfileSearchStatus, 5000);
+
 
 
 
