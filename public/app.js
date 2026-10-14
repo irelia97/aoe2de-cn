@@ -318,14 +318,14 @@ ladderChoices.querySelectorAll('.ladder-choice').forEach(button => button.addEve
   loadLeaderboard();
 }));
 function updateCountdown() {
-  if (location.pathname.startsWith('/profile')) return;
+  if (!/^\/$/.test(location.pathname)) return;
   const cached = leaderboardData.get(selectedLadder);
   const updateAt = cached?.expiresAt ?? leaderboardRetryAt.get(selectedLadder);
   const seconds = updateAt ? Math.max(0, Math.ceil((updateAt - Date.now()) / 1000)) : '—';
   document.querySelector('#countdown').textContent = seconds;
   if (seconds === 0 && !leaderboardRequests.has(selectedLadder)) loadLeaderboard();
 }
-if (!location.pathname.startsWith('/profile')) loadLeaderboard();
+if (/^\/$/.test(location.pathname)) loadLeaderboard();
 setInterval(updateCountdown, 1000);
 
 const profileSearchForm = document.querySelector('#profileSearchForm');
@@ -2023,10 +2023,6 @@ profileSearchForm.addEventListener('submit', async event => {
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
   const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : '/';
-  if (link.dataset.page === 'realtime' && location.pathname !== '/realtime') {
-    window.location.assign(target);
-    return;
-  }
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));
@@ -2042,14 +2038,6 @@ document.addEventListener('click', event => {
 });
 window.addEventListener('popstate', () => renderCurrentRoute());
 renderCurrentRoute();
-// Re-run realtime initialization after the first route render so direct loads
-// and browser refreshes cannot leave the monitor section empty.
-if (/^\/realtime\/?$/.test(location.pathname)) {
-  document.body.classList.add('page-realtime');
-  const realtimePage = document.querySelector('#realtime-page');
-  if (realtimePage) realtimePage.hidden = false;
-  loadRealtimeStates();
-}
 refreshProfileSearchStatus();
 setInterval(refreshProfileSearchStatus, 5000);
 
