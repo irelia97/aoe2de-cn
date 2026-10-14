@@ -1682,9 +1682,9 @@ async function buildProfileCache() {
     previousDb?.close();
     if (previousFilename && previousFilename !== finalFilename) await rm(join(dataDir, previousFilename), { force: true });
     await rm(legacyProfileCsvPath, { force: true });
+    if (sourceDumpPath !== profileLocalDumpPath) await rename(dumpPath, profileLocalDumpPath);
     await cleanupOldProfileIndexes(finalFilename);
     await cleanupProfileDumpArtifacts(finalFilename);
-    if (sourceDumpPath !== profileLocalDumpPath) await rename(dumpPath, profileLocalDumpPath);
     profileRefreshState.stage = '资料索引已就绪';
     console.log(`玩家资料索引更新完成：${profileRefreshState.processedRows.toLocaleString()} 条`);
     return profileCache;
