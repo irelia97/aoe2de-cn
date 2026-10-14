@@ -89,6 +89,7 @@ let bilibiliWbiKeyPromise = null;
 let bilibiliBrowserPromise = null;
 const bilibiliUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36';
 const mediaVideoCachePath = join(dataDir, 'media-videos.json');
+const mediaLiveCachePath = join(dataDir, 'media-live.json');
 const mediaVideoStatePath = join(dataDir, 'media-video-state.json');
 const mediaVideoPausePath = join(dataDir, 'media-video-paused');
 const mediaThumbnailCacheDir = join(dataDir, 'media-thumbnails');
@@ -141,6 +142,7 @@ const mediaVideoSourceStates = new Map();
 const mediaVideoCycleSeen = new Set();
 let mediaLiveRefreshPromise = null;
 let mediaPersistentVideosLoaded = false;
+let mediaPersistentLiveLoaded = false;
 let selectedStreamers = null;
 let rlReferenceById = null;
 
@@ -172,9 +174,10 @@ async function loadRlReference() {
   try {
     const data = JSON.parse(await readFile(rlReferencePath, 'utf8'));
     for (const player of Array.isArray(data.players) ? data.players : []) {
-      for (const id of Array.isArray(player.rl) ? player.rl : []) {
-        const key = String(id).trim();
-        if (key) rlReferenceById.set(key, { name: player.name || '', liveLinks: player.live_links || {}, socialLinks: player.social_links || {} });
+      const ids = (Array.isArray(player.rl) ? player.rl : []).map(id => String(id).trim()).filter(Boolean);
+      const canonicalProfileId = ids.find(id => /^\d+$/.test(id)) || ids[0] || '';
+      for (const key of ids) {
+        rlReferenceById.set(key, { name: player.name || '', canonicalProfileId, liveLinks: player.live_links || {}, socialLinks: player.social_links || {} });
       }
     }
   } catch (error) {
@@ -838,6 +841,24 @@ async function loadPersistentMediaVideos() {
   return mediaCache.data.videos;
 }
 
+async function loadPersistentMediaLive() {
+  if (mediaPersistentLiveLoaded) return mediaCache.data.live;
+  mediaPersistentLiveLoaded = true;
+  try {
+    const saved = JSON.parse(await readFile(mediaLiveCachePath, 'utf8'));
+    if (Array.isArray(saved.live)) mediaCache.data.live = saved.live;
+    const savedAt = Date.parse(saved.savedAt);
+    if (Number.isFinite(savedAt)) {
+      mediaCache.liveSavedAt = savedAt;
+      mediaCache.data.liveUpdatedAt = new Date(savedAt).toISOString();
+      mediaCache.data.updatedAt = mediaCache.data.liveUpdatedAt;
+    }
+  } catch {
+    // The disk cache is created after the first successful live refresh.
+  }
+  return mediaCache.data.live;
+}
+
 function randomMediaDelay(min, max) {
   return Math.round(min + Math.random() * Math.max(0, max - min));
 }
@@ -1003,13 +1024,13 @@ async function fetchYoutubeLive(source) {
     return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: sourceUrl, live: false, title: '', thumbnail: '', viewers: 0, checkedAt: new Date().toISOString() };
   }
   const html = decodeYoutubePageState(await fetchMediaText(sourceUrl));
-  const liveVideoId = html.match(/"videoId":"([\w-]{6,})"[\s\S]{0,7000}?"style":"LIVE"/i)?.[1]
-    || html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([\w-]{6,})"/i)?.[1]
+  const liveVideoId = html.match(/"videoId":"([A-Za-z0-9_-]{11})"[\s\S]{0,7000}?"style":"LIVE"/i)?.[1]
+    || html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([A-Za-z0-9_-]{11})"/i)?.[1]
     || '';
   const videoId = liveVideoId
-    || html.match(/[?&]v=([\w-]{6,})/i)?.[1]
-    || html.match(/"videoId":"([\w-]{6,})"/i)?.[1]
-    || html.match(/ytimg\.com\/vi\/([\w-]{6,})\//i)?.[1]
+    || html.match(/[?&]v=([A-Za-z0-9_-]{11})/i)?.[1]
+    || html.match(/"videoId":"([A-Za-z0-9_-]{11})"/i)?.[1]
+    || html.match(/ytimg\.com\/vi\/([A-Za-z0-9_-]{11})\//i)?.[1]
     || '';
   const videoPos = videoId ? html.indexOf(videoId) : -1;
   const videoWindow = videoPos >= 0 ? html.slice(Math.max(0, videoPos - 1200), videoPos + 6000) : '';
@@ -1144,11 +1165,12 @@ async function fetchMediaLive() {
         return { ...item, name: source.name, rl: source.rl || [], isCN: source.isCN, sourceOrder: source.sourceOrder };
       } catch (error) {
         console.warn(`[media] live source failed: ${source.name || source.platform}`, error.message);
-        return null;
+        return { __failed: true, platform: source.platform || '', url: source.url || '', name: source.name || '', sourceOrder: source.sourceOrder };
       }
     }));
     results.push(...batchResults.filter(Boolean));
   }
+  const failedSourceKeys = new Set(results.filter(item => item?.__failed).map(item => `${item.platform}|${item.url}`));
   const priority = { twitch: 6, youtube: 5, douyin: 4, douyu: 3, bilibili: 2 };
   const selected = new Map();
   for (const item of results.filter(entry => entry.live)) {
@@ -1158,19 +1180,22 @@ async function fetchMediaLive() {
   }
   const enriched = await Promise.all([...selected.values()].map(async item => {
     const { rl, ...publicItem } = item;
+    const profileIds = (Array.isArray(rl) ? rl : []).map(String).filter(id => /^\d+$/.test(id));
     try {
       const leaderboards = await fetchLivePlayerLeaderboardStats(rl);
-      return leaderboards ? { ...publicItem, leaderboards } : publicItem;
+      return leaderboards ? { ...publicItem, profileIds, leaderboards } : { ...publicItem, profileIds };
     } catch (error) {
       console.warn(`[media] live player stats failed: ${item.name || item.id}`, error.message);
-      return publicItem;
+      return { ...publicItem, profileIds };
     }
   }));
-  return enriched.sort((a, b) => {
+  const sorted = enriched.sort((a, b) => {
     if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
     if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
     return a.isCN ? -1 : 1;
   });
+  Object.defineProperty(sorted, 'failedSourceKeys', { value: failedSourceKeys, enumerable: false });
+  return sorted;
 }
 
 function refreshMediaVideos() {
@@ -1263,9 +1288,24 @@ function refreshMediaVideos() {
 
 function refreshMediaLive() {
   if (mediaLiveRefreshPromise) return mediaLiveRefreshPromise;
-  mediaLiveRefreshPromise = fetchMediaLive().then(live => {
+  mediaLiveRefreshPromise = loadPersistentMediaLive().then(() => fetchMediaLive()).then(async live => {
+    const failedSourceKeys = live.failedSourceKeys || new Set();
+    const merged = [...live];
+    const mergedKeys = new Set(merged.map(item => `${item.platform || ''}|${item.url || ''}`));
+    for (const previous of Array.isArray(mediaCache.data.live) ? mediaCache.data.live : []) {
+      const key = `${previous.platform || ''}|${previous.url || ''}`;
+      if (failedSourceKeys.has(key) && !mergedKeys.has(key)) {
+        merged.push(previous);
+        mergedKeys.add(key);
+      }
+    }
+    merged.sort((a, b) => {
+      if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
+      if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
+      return a.isCN ? -1 : 1;
+    });
     const now = Date.now();
-    mediaCache.data.live = live;
+    mediaCache.data.live = merged;
     mediaCache.data.liveUpdatedAt = new Date(now).toISOString();
     mediaCache.data.nextLiveRefreshAt = new Date(now + mediaLiveRefreshInterval).toISOString();
     mediaCache.data.updatedAt = new Date(now).toISOString();
@@ -1274,6 +1314,7 @@ function refreshMediaLive() {
       Date.parse(mediaCache.data.nextLiveRefreshAt)
     )).toISOString();
     mediaCache.liveSavedAt = now;
+    await writeFile(mediaLiveCachePath, JSON.stringify({ savedAt: new Date(now).toISOString(), live: merged }, null, 2), 'utf8');
     return mediaCache.data;
   }).finally(() => { mediaLiveRefreshPromise = null; });
   return mediaLiveRefreshPromise;
@@ -1311,7 +1352,7 @@ function refreshMediaCache() {
 }
 
 async function getMediaCache() {
-  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
+  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState(), loadPersistentMediaLive()]);
   ensureMediaVideoSourceStates();
   if (!mediaVideoSchedulerTimer && !mediaVideosRefreshPromise) scheduleMediaVideoRefresh();
   const now = Date.now();
@@ -1796,14 +1837,16 @@ function normalizeCompanionMatches(payload) {
     let leaderboard = leaderboardValue === 'dm_1v1' ? 'DM 1v1' : leaderboardValue === 'dm_tg' || leaderboardValue === 'dm_team' ? 'DM TG' : leaderboardValue === 'rm_1v1' ? 'RM 1v1' : leaderboardValue === 'rm_tg' || leaderboardValue === 'rm_team' ? 'RM TG' : leaderboardValue === 'ew_1v1' ? 'EW 1v1' : leaderboardValue === 'ew_tg' || leaderboardValue === 'ew_team' ? 'EW TG' : '';
     if (!leaderboard && /DEATHMATCH|^DM$/.test(rawType)) leaderboard = /1V1|1\s*V\s*1/.test(rawDiplomacy) ? 'DM 1v1' : 'DM TG';
     const players = [];
-    const teams = (Array.isArray(match.teams) ? match.teams : []).map(team => {
+    const teams = (Array.isArray(match.teams) ? match.teams : []).map((team, teamIndex) => {
       const members = [];
       for (const source of Array.isArray(team.players) ? team.players : []) {
         const player = {
           id: String(source.profileId), number: players.length, name: source.name || `玩家 ${source.profileId}`,
-          civilization: source.civName || source.civ || '未知民族', color_hex: source.colorHex || '#84928a',
+          civilization: source.civName || source.civ || '未知民族', civilization_id: source.civ || '', color_hex: source.colorHex || '#84928a',
           rating: Number.isFinite(Number(source.rating)) ? Number(source.rating) : null,
+          color: Number.isFinite(Number(source.color)) ? Number(source.color) : null,
           ratingDelta: Number.isFinite(Number(source.ratingDiff)) ? Number(source.ratingDiff) : null,
+          team: source.team ?? teamIndex + 1, country: source.country || '',
           winner: source.won === true
         };
         players.push(player);
@@ -1825,6 +1868,7 @@ function normalizeCompanionMatches(payload) {
       abandoned: match.abandoned === true,
       live: Boolean(started && !finished && !match.abandoned),
       duration: started && finished && finished >= started ? finished - started : 0,
+      server: match.server || '',
       players,
       teams
     };
@@ -1879,6 +1923,67 @@ async function fetchLatestWorldsEdgeMatchOnce(profileId) {
     }
   }
   throw lastError || new Error('AoE2 Companion 请求失败');
+}
+
+
+function normalizeRealtimeLatestMatch(match, profileId) {
+  if (!match || typeof match !== 'object') return { profileId: String(profileId), status: 'offline', match: null };
+  const started = Number(match.started || 0);
+  const finished = Number(match.finished || 0);
+  const inProgress = Boolean(match.live || (started > 0 && !finished));
+  const status = inProgress ? (String(match.leaderboard || '').trim() ? 'game' : 'lobby') : 'offline';
+  return {
+    profileId: String(profileId),
+    status,
+    match: {
+      id: match.id ?? null,
+      map: match.rms || '',
+      leaderboard: match.leaderboard || '',
+      lobby: match.lobby || '',
+      server: match.server || '',
+      started,
+      finished,
+      players: Array.isArray(match.players) ? match.players.map(player => ({
+        profileId: player.id ?? null,
+        name: player.name || '',
+        team: player.team ?? null,
+        civilization: player.civilization || '',
+        civilizationId: player.civilization_id || '',
+        colorHex: player.color_hex || '#6d7884',
+        country: player.country || '',
+        rating: player.rating ?? null,
+        color: player.color ?? null
+      })) : [],
+      teams: Array.isArray(match.teams) ? match.teams : []
+    }
+  };
+}
+
+async function fetchRealtimeStates(profileIds) {
+  const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+  // Each player is checked once per polling round using the one-row query.
+  // Requests run together so the page can render the round promptly.
+  const states = await Promise.all(ids.map(async profileId => {
+    try {
+      const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
+      return normalizeRealtimeLatestMatch(latest, profileId);
+    } catch (error) {
+      return { profileId, status: 'error', error: error.message || '查询失败', match: null };
+    }
+  }));
+  const activeIds = [...new Set(states.filter(state => (state.status === 'game' || state.status === 'lobby') && state.match).flatMap(state => Array.isArray(state.match.players) ? state.match.players.map(player => player.profileId) : []).map(value => String(value || '').trim()).filter(value => /^[0-9]+$/.test(value)))];
+  const ratings = new Map();
+  await Promise.all(activeIds.map(async profileId => {
+    try {
+      const rows = await fetchPersonalLeaderboardStats(profileId);
+      const row = Array.isArray(rows) ? rows.find(item => Number(item.id) === 3) : null;
+      if (row && Number.isFinite(Number(row.rating))) ratings.set(String(profileId), Number(row.rating));
+    } catch {}
+  }));
+  return states.map(state => ({
+    ...state,
+    match: state.match ? { ...state.match, players: state.match.players.map(player => ({ ...player, rating: ratings.get(String(player.profileId)) ?? null })) } : null
+  }));
 }
 
 async function getWorldsEdgeMatches(profileId, page = 1) {
@@ -2258,6 +2363,31 @@ function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === '/api/realtime') {
+    let profileIds = [];
+    try { const requested = url.searchParams.get("profile_ids"); if (requested) profileIds = JSON.parse(requested); else { const pool = JSON.parse(await readFile(join(dataDir, "realtime-profile-pool.json"), "utf8")); profileIds = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276]; } } catch { profileIds = [506898,8793414,212721,3025516,1966276]; }
+    const states = await fetchRealtimeStates(profileIds);
+    const ratingMap = new Map();
+    try { const board = await getLeaderboard(3); for (const row of board.rows || []) ratingMap.set(String(row.profileId), Number(row.rating)); } catch {}
+    const liveByProfile = new Map();
+    try {
+      const media = await getMediaCache();
+      for (const item of Array.isArray(media.live) ? media.live : []) {
+        if (!item?.live) continue;
+        const live = { title: item.title || '正在直播', url: item.url || '', platform: item.platform || '' };
+        for (const profileId of Array.isArray(item.profileIds) ? item.profileIds : []) liveByProfile.set(String(profileId), live);
+      }
+    } catch {}
+    const realtimeReferences = await loadRlReference();
+    const enrichedStates = states.map(state => {
+      const profile = localProfileDetails(state.profileId)?.player || {};
+      const own = state.match?.players?.find(player => String(player.profileId) === String(state.profileId)) || {};
+      const reference = realtimeReferences.get(String(state.profileId));
+      return { ...state, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: profile.name || own.name || `玩家 ${state.profileId}`, team: profile.team || "", country: profile.country_code || own.country || "", rating: ratingMap.get(String(state.profileId)) ?? own.rating ?? null } };
+    });
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify({ source: 'aoe2companion-latest', checkedAt: new Date().toISOString(), states: enrichedStates }));
+  }
   if (url.pathname === '/api/profile-search/status') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(profileStatePayload()));
@@ -2507,14 +2637,14 @@ http.createServer(async (req, res) => {
           const profileCacheKey = `profile:${profileId}`;
           const cachedAvatar = avatarCache.get(profileCacheKey);
           if (cachedAvatar?.expires > Date.now()) {
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
             return res.end(JSON.stringify(cachedAvatar));
           }
           const avatar = await fetchAoE2RecsAvatar();
           if (avatar) {
             const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
             avatarCache.set(profileCacheKey, cached);
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
             return res.end(JSON.stringify(cached));
           }
         } catch {}
@@ -2534,7 +2664,7 @@ http.createServer(async (req, res) => {
         cached = { avatar: safeAvatar, expires: Date.now() + 24 * 60 * 60_000 };
         avatarCache.set(steamId, cached);
       }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
       return res.end(JSON.stringify(cached));
     } catch (error) {
       if (validProfileId) {
@@ -2543,7 +2673,7 @@ http.createServer(async (req, res) => {
           if (avatar) {
             const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
             avatarCache.set(steamId, cached);
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
             return res.end(JSON.stringify(cached));
           }
         } catch {}
@@ -2553,14 +2683,19 @@ http.createServer(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|realtime|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const path = normalize(join(root, 'public', relative));
   if (!path.startsWith(join(root, 'public'))) {
     res.writeHead(403); return res.end('Forbidden');
   }
   try {
     const data = await readFile(path);
-    res.writeHead(200, { 'content-type': mime[extname(path)] || 'application/octet-stream' });
+    const extension = extname(path).toLowerCase();
+    const cacheableAsset = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf'].includes(extension);
+    res.writeHead(200, {
+      'content-type': mime[extension] || 'application/octet-stream',
+      'cache-control': cacheableAsset ? 'public, max-age=604800, immutable' : 'no-cache'
+    });
     res.end(data);
   } catch {
     res.writeHead(404); res.end('Not found');

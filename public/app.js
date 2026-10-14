@@ -78,11 +78,11 @@ const lazyDetails = new IntersectionObserver(entries => {
 function countryFlag(code) {
   code = normalizeCountryCode(code);
   if (!code || code.length !== 2) return '🌐';
-  return [...code.toUpperCase()].map(c => String.fromCodePoint(c.charCodeAt(0) + 127397)).join('');
+  return '<img class="country-flag-img" src="https://flagcdn.com/24x18/' + code.toLowerCase() + '.png" alt="' + code + '" loading="lazy">';
 }
 function normalizeCountryCode(code) {
   const normalized = String(code || '').toUpperCase();
-  return ['HK', 'MO'].includes(normalized) ? 'CN' : normalized;
+  return ['HK', 'MO', 'TW'].includes(normalized) ? 'CN' : normalized;
 }
 function countryName(code) {
   const raw = String(code || '').toUpperCase();
@@ -151,7 +151,7 @@ async function loadRowDetails(row) {
   const avatar = row.querySelector('.avatar');
   const steamId = row.dataset.steam;
   if (steamId) {
-    fetchJsonWithRetries(`/api/avatar?steamId=${encodeURIComponent(steamId)}`).then(data => {
+    fetchJsonWithRetries(`/api/avatar?steamId=${encodeURIComponent(steamId)}`, { cache: 'force-cache' }).then(data => {
       if (!avatar?.isConnected) return;
       if (!data) {
         return;
@@ -1547,12 +1547,201 @@ setInterval(() => {
     image.src = `${source.pathname}${source.search}`;
   }
 }, 5 * 60 * 1000);
+
+let realtimeRequest = null;
+let realtimePollTimer = null;
+let realtimeRequestId = 0;
+function realtimeElapsed(started) {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(started || 0));
+  if (!seconds) return '刚刚';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}小时前`;
+}
+function realtimeServerName(value) {
+  const text = String(value || '').trim().toLowerCase();
+  const names = { ukwest: '英国西部', uksouth: '英国南部', koreacentral: '韩国中部', centralindia: '印度中部', southcentralus: '美国中南部', eastus: '美国东部', eastus2: '美国东部 2', westus: '美国西部', westus2: '美国西部 2', westus3: '美国西部 3', japaneast: '日本东部', southeastasia: '东南亚', australiaeast: '澳大利亚东部', brazilsouth: '巴西南部', westeurope: '西欧', northeurope: '北欧' };
+  return names[text] || (text ? text : '未知服务器');
+}
+function realtimeLeaderboardName(value) {
+  const key = String(value || '').trim().toUpperCase().replace(/\s+/g, '_');
+  const names = { RM_1V1: '1v1 随机地图', RM_TG: '团队随机地图', DM_1V1: '1v1 死亡竞赛', DM_TG: '团队死亡竞赛', EW_1V1: '1v1 帝国战争', EW_TG: '团队帝国战争' };
+  return names[key] || String(value || '自定义房间');
+}
+function realtimeCivIconMarkup(value) {
+  const slug = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9_]+$/.test(slug)) return '<span class="realtime-civ-icon">♙</span>';
+  return '<img class="realtime-civ-icon" src="https://backend.cdn.aoe2companion.com/public/aoe2/de/civilizations/' + slug + '.png" alt="" loading="lazy" onerror="this.hidden=true">';
+}
+function realtimePlayerColor(value, index) {
+  const palette = ["#3b6eff", "#e12d39", "#35c759", "#f0d90b", "#18c8d8", "#a855f7", "#8b8b8b", "#f28c28"];
+  const color = Number(value);
+  return palette[color > 0 ? color - 1 : index] || "#6d7884";
+}
+function realtimeStateIsActive(state) {
+  return (state?.status === 'game' || state?.status === 'lobby') && state.match;
+}
+function realtimeStateRecentlyFinished(state) {
+  const finished = Number(state?.match?.finished || 0);
+  return finished > 0 && Date.now() - finished * 1000 < 5 * 60 * 1000;
+}
+function realtimeStatusActivity(state) {
+  if (!realtimeStateIsActive(state)) return '';
+  const match = state.match;
+  const map = mapDisplayName(match.map || '未知地图');
+  const players = Array.isArray(match.players) ? match.players : [];
+  const own = players.find(player => String(player.profileId) === String(state.profileId));
+  const leaderboard = String(match.leaderboard || '').toUpperCase();
+  const teamIds = new Set(players.map(player => String(player.team ?? '')).filter(Boolean));
+  const oneVsOne = leaderboard.includes('1V1') || (players.length === 2 && teamIds.size === 2);
+  const teamGame = leaderboard.includes('TG') || players.length > 2;
+  let label = map;
+  if (oneVsOne) {
+    const opponent = players.find(player => String(player.profileId) !== String(state.profileId) && (!own || String(player.team) !== String(own.team))) || players.find(player => String(player.profileId) !== String(state.profileId));
+    if (opponent) label = `${map} vs ${opponent.name || `玩家 ${opponent.profileId || ''}`}`;
+  } else if (teamGame) {
+    label = `${map} TG`;
+  }
+  return `<a class="realtime-status-live-link" href="aoe2de://1/${encodeURIComponent(String(match.id || null))}" title="在游戏内观战">◉ ${escapeHtml(label)}</a>`;
+}
+function renderRealtimeStatus(states) {
+  const target = document.querySelector('#realtimeStatusRows');
+  if (!target) return;
+  const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.live?.url || realtimeStateRecentlyFinished(state));
+  const identityMap = new Map();
+  const priority = state => [
+    realtimeStateIsActive(state) ? 3 : state?.live?.url ? 2 : 1,
+    Number(state?.match?.started || 0),
+    Number(state?.player?.rating || 0)
+  ];
+  for (const state of visible) {
+    const key = String(state.identity || state.profileId || '');
+    const current = identityMap.get(key);
+    if (!current) {
+      identityMap.set(key, state);
+      continue;
+    }
+    const nextPriority = priority(state);
+    const currentPriority = priority(current);
+    if (nextPriority[0] > currentPriority[0]
+      || (nextPriority[0] === currentPriority[0] && nextPriority[1] > currentPriority[1])
+      || (nextPriority[0] === currentPriority[0] && nextPriority[1] === currentPriority[1] && nextPriority[2] > currentPriority[2])) {
+      identityMap.set(key, state);
+    }
+  }
+  const list = [...identityMap.values()];
+  if (!list.length) { target.innerHTML = '<tr><td colspan="5">暂无选手</td></tr>'; return; }
+  target.innerHTML = list.map(state => {
+    const player = state.player || {};
+    const activity = realtimeStatusActivity(state);
+    const rating = Number.isFinite(Number(player.rating)) ? Number(player.rating).toLocaleString('zh-CN') : '—';
+    const name = escapeHtml(player.name || `玩家 ${state.profileId || ''}`);
+    const team = escapeHtml(player.team || '');
+    const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${escapeHtml(state.live.title || '正在直播')}</a>` : '';
+    return `<tr><td>${rating}</td><td><a class="realtime-status-player" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${live}</td></tr>`;
+  }).join('');
+}
+function realtimeGroupedPlayers(match) {
+  const players = Array.isArray(match?.players) ? match.players : [];
+  const leaderboard = String(match?.leaderboard || '').toUpperCase();
+  const teamGame = leaderboard.includes('TG') || players.length > 2;
+  if (!teamGame) return null;
+  const groups = new Map();
+  players.forEach((player,index) => {
+    const team=String(player.team ?? `team-${index+1}`);
+    if (!groups.has(team)) groups.set(team,[]);
+    groups.get(team).push({player,index});
+  });
+  return [...groups.entries()];
+}
+function realtimePlayerRow(player,index) {
+  const color=Number(player.color);
+  const number=Number.isFinite(color)&&color>0?color:index+1;
+  const rating=Number(player.rating);
+  const ratingText=Number.isFinite(rating)&&rating>0?rating.toLocaleString('zh-CN'):'-';
+  return `<div class="realtime-player-row"><span class="realtime-player-number" style="background:${escapeHtml(realtimePlayerColor(number,index))}">${number}</span><span class="realtime-country">${countryFlag(player.country)}</span><a class="realtime-player-name" href="/profile/${encodeURIComponent(String(player.profileId||null))}"><strong>${escapeHtml(player.name||`玩家 ${player.profileId||''}`)}</strong></a><span class="realtime-player-civ">${realtimeCivIconMarkup(player.civilizationId)}${escapeHtml(civilizationNameZh(player.civilization||'未知文明'))}</span><span class="realtime-player-rating">${ratingText}</span></div>`;
+}
+function renderRealtimeCards(payload) {
+  const container=document.querySelector('#realtimePlayers');
+  const statusPanel=document.querySelector('#realtimeStatusPanel');
+  const loading=document.querySelector('#realtimeLoading');
+  const updated=document.querySelector('#realtimeUpdated');
+  if (!container) return;
+  const states=Array.isArray(payload?.states)?payload.states:[];
+  renderRealtimeStatus(states);
+  if (loading) loading.hidden=true;
+  if (statusPanel) statusPanel.hidden=false;
+  container.hidden=false;
+  const matchAverageRating = state => {
+    const ratings=(Array.isArray(state?.match?.players)?state.match.players:[]).map(player=>Number(player.rating)).filter(rating=>Number.isFinite(rating)&&rating>0);
+    return ratings.length?ratings.reduce((sum,rating)=>sum+rating,0)/ratings.length:-Infinity;
+  };
+  const games=[...new Map(states.filter(realtimeStateIsActive).map(state=>[String(state.match.id||state.profileId),state])).values()]
+    .sort((a,b)=>matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
+  if (updated) updated.textContent=payload?.checkedAt?`更新于 ${new Date(payload.checkedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`:'等待更新';
+  if (!games.length) {
+    container.innerHTML='<div class="realtime-empty"><div class="realtime-empty-icon">◌</div><h3>当前没有检测到进行中的对局</h3><p>检测池中的玩家均未返回正在进行的最新对局。</p></div>';
+    return;
+  }
+  container.innerHTML=games.map(state=>{
+    const match=state.match;
+    const players=Array.isArray(match.players)?match.players:[];
+    const groups=realtimeGroupedPlayers(match);
+    const rows=groups?groups.map(([team,members])=>`<div class="realtime-team-group"><span class="realtime-team-label">队伍 ${escapeHtml(team)}</span>${members.map(({player,index})=>realtimePlayerRow(player,index)).join('')}</div>`).join(''):players.map((player,index)=>realtimePlayerRow(player,index)).join('');
+    const ranked=match.leaderboard?'排位':'大厅';
+    const mode=realtimeLeaderboardName(match.leaderboard);
+    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(mapDisplayName(match.map||'未知地图'))}</strong><time>${realtimeElapsed(match.started)}</time><a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a></div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● 游戏中</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
+  }).join('');
+}
+
+async function loadRealtimeStates() {
+  if (!/^\/realtime\/?$/.test(location.pathname)) return;
+  const requestId = ++realtimeRequestId;
+  try {
+    realtimeRequest?.abort?.();
+    realtimeRequest = new AbortController();
+    const response = await fetch('/api/realtime', { cache: 'no-store', signal: realtimeRequest.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (requestId === realtimeRequestId) renderRealtimeCards(payload);
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      const container = document.querySelector('#realtimePlayers');
+      const loading = document.querySelector('#realtimeLoading');
+      if (container && requestId === realtimeRequestId) {
+        if (loading) loading.hidden = true;
+        container.hidden = false;
+        container.innerHTML = '<div class="realtime-empty"><div class="realtime-empty-icon">!</div><h3>实时对局暂时无法更新</h3><p>稍后会自动重试。</p></div>';
+      }
+    }
+  }
+}
+function showRealtimeLoading() {
+  const loading = document.querySelector('#realtimeLoading');
+  const statusPanel = document.querySelector('#realtimeStatusPanel');
+  const container = document.querySelector('#realtimePlayers');
+  if (loading) loading.hidden = false;
+  if (statusPanel) statusPanel.hidden = true;
+  if (container) container.hidden = true;
+}
+function startRealtimePolling() {
+  clearInterval(realtimePollTimer);
+  showRealtimeLoading();
+  loadRealtimeStates();
+  realtimePollTimer = setInterval(() => {
+    if (/^\/realtime\/?$/.test(location.pathname)) loadRealtimeStates();
+  }, 60_000);
+}
+
 function renderCurrentRoute(selectedPlayer = null) {
   const match = location.pathname.match(/^\/profile(?:\/(\d+))?\/?$/);
   const isProfilePage = Boolean(match);
   const isMediaVideosPage = /^\/media\/videos\/?$/.test(location.pathname);
   const isMediaPage = isMediaVideosPage || /^\/media\/?$/.test(location.pathname);
   const isUpdatesPage = /^\/updates\/?$/.test(location.pathname);
+  const isRealtimePage = /^\/realtime\/?$/.test(location.pathname);
   const buildOrderMatch = location.pathname.match(/^\/build-orders(?:\/([a-z0-9-]+))?\/?$/i);
   const isBuildOrdersPage = Boolean(buildOrderMatch);
   const buildOrderSlug = buildOrderMatch?.[1] || '';
@@ -1561,17 +1750,20 @@ function renderCurrentRoute(selectedPlayer = null) {
   document.body.classList.toggle('page-profile', isProfilePage);
   document.body.classList.toggle('page-media', isMediaPage);
   document.body.classList.toggle('page-updates', isUpdatesPage);
+  document.body.classList.toggle('page-realtime', isRealtimePage);
   document.body.classList.toggle('page-build-orders', isBuildOrdersPage);
   document.querySelector('#player-profile').hidden = !isProfilePage;
   document.querySelector('#media-page').hidden = !isMediaPage;
   document.querySelector('#updates-page').hidden = !isUpdatesPage;
+  document.querySelector('#realtime-page').hidden = !isRealtimePage;
   document.querySelector('#build-orders-page').hidden = !isBuildOrdersPage;
   document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => {
-    const activePage = isProfilePage ? 'profile' : isMediaPage ? 'media' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : 'leaderboard';
+    const activePage = isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isMediaPage ? 'media' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : 'leaderboard';
     const active = link.dataset.page === activePage;
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : '天梯榜单';
+  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : '天梯榜单';
+  if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; realtimeRequest?.abort?.(); }
   if (isMediaPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
@@ -1580,6 +1772,16 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsSocket?.close();
     profileDetailsSocket = null;
     loadMedia(isMediaVideosPage);
+    return;
+  }
+  if (isRealtimePage) {
+    profileDetailsRequestId++;
+    startRealtimePolling();
+    clearTimeout(profileDetailsTimeout);
+    clearTimeout(profileDetailsRetryTimer);
+    clearInterval(profileDetailsRequestTimer);
+    profileDetailsSocket?.close();
+    profileDetailsSocket = null;
     return;
   }
   if (isUpdatesPage) {
@@ -1820,7 +2022,11 @@ profileSearchForm.addEventListener('submit', async event => {
 });
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
-  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : '/';
+  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : '/';
+  if (link.dataset.page === 'realtime' && location.pathname !== '/realtime') {
+    window.location.assign(target);
+    return;
+  }
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));
@@ -1836,6 +2042,14 @@ document.addEventListener('click', event => {
 });
 window.addEventListener('popstate', () => renderCurrentRoute());
 renderCurrentRoute();
+// Re-run realtime initialization after the first route render so direct loads
+// and browser refreshes cannot leave the monitor section empty.
+if (/^\/realtime\/?$/.test(location.pathname)) {
+  document.body.classList.add('page-realtime');
+  const realtimePage = document.querySelector('#realtime-page');
+  if (realtimePage) realtimePage.hidden = false;
+  loadRealtimeStates();
+}
 refreshProfileSearchStatus();
 setInterval(refreshProfileSearchStatus, 5000);
 

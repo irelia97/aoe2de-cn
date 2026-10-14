@@ -29,6 +29,7 @@ export const mediaSources = {
     { platform: 'bilibili', id: '326545342', name: '半人马座伽马星', url: 'https://space.bilibili.com/326545342' },
     { platform: 'bilibili', id: '22836441', name: '一之瀬姬月', url: 'https://space.bilibili.com/22836441' },
     { platform: 'bilibili', id: '281894927', name: '喷泉之下', url: 'https://space.bilibili.com/281894927' },
+    { platform: 'bilibili', id: '1185628', name: 'spadetwo', url: 'https://space.bilibili.com/281894927' },
   ],
   live: []
 };
@@ -43,6 +44,7 @@ export const mediaVideoWhitelist = [
   'CNZS骑士老爷_帝国时代2',
   '框a战神',
   '半人马座伽马星',
+  'spadetwo',
 ];
 
 

@@ -152,8 +152,7 @@
           "https://live.bilibili.com/26389361"
         ]
       },
-      "social_links": {
-      }
+      "social_links": {}
     },
     {
       "name": "可愛洗面奶",
@@ -169,8 +168,7 @@
           "https://live.bilibili.com/5155243"
         ]
       },
-      "social_links": {
-      }
+      "social_links": {}
     },
     {
       "name": "小加",
@@ -190,8 +188,7 @@
           "https://live.bilibili.com/24052847"
         ]
       },
-      "social_links": {
-      }
+      "social_links": {}
     },
     {
       "name": "一之濑雪斗",
@@ -205,8 +202,7 @@
           "https://live.bilibili.com/5957880"
         ]
       },
-      "social_links": {
-      }
+      "social_links": {}
     },
     {
       "name": "Xiaofan",
@@ -10724,7 +10720,30 @@
         ]
       },
       "social_links": {}
+    },
+    {
+      "name": "冥想控",
+      "rl": [
+        "280902"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/3859473"
+        ]
+      },
+      "social_links": {}
+    },
+    {
+      "name": "spadetwo",
+      "rl": [
+        "1185628"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/23195173"
+        ]
+      },
+      "social_links": {}
     }
   ]
 }
-

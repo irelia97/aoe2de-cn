@@ -1,5 +1,5 @@
 {
-  "playerCount": 59,
+  "playerCount": 70,
   "players": [
     {
       "name": "Yo",
@@ -1130,7 +1130,30 @@
         ]
       },
       "isCN": false
+    },
+    {
+      "name": "冥想控",
+      "rl": [
+        "280902"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/3859473"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "spadetwo",
+      "rl": [
+        "1185628"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/23195173"
+        ]
+      },
+      "isCN": true
     }
   ]
 }
-

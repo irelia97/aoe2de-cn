@@ -1,3 +1,5 @@
 .cache/
 node_modules/
+.npm/
+*.bak-*
 HANDOFF.md
