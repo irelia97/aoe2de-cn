@@ -448,10 +448,26 @@ function parseBilibiliArticlePage(html, fallback = {}) {
 async function fetchBilibiliArticlePageViaBrowser(id) {
   const articleUrl = `https://www.bilibili.com/read/cv${encodeURIComponent(id)}`;
   try {
-    const command = `$ProgressPreference='SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing -Uri '${articleUrl}' -Headers @{ 'User-Agent'='Mozilla/5.0'; Referer='${bilibiliUpdatesReadlistUrl}' }).Content`;
-    const result = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', command], { timeout: 60_000, maxBuffer: 20 * 1024 * 1024, windowsHide: true });
-    if (result.stdout && result.stdout.includes('opus-module-content')) return result.stdout;
+    const headers = {
+      'user-agent': bilibiliUserAgent,
+      referer: bilibiliUpdatesReadlistUrl,
+      'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8'
+    };
+    if (bilibiliCookie) headers.cookie = bilibiliCookie;
+    const response = await fetch(articleUrl, { headers, signal: AbortSignal.timeout(60_000) });
+    if (response.ok) {
+      const html = await response.text();
+      if (html.includes('opus-module-content')) return html;
+    }
   } catch {}
+  // Keep the PowerShell path as a Windows-only fallback for existing installations.
+  if (process.platform === 'win32') {
+    try {
+      const command = `$ProgressPreference='SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing -Uri '${articleUrl}' -Headers @{ 'User-Agent'='Mozilla/5.0'; Referer='${bilibiliUpdatesReadlistUrl}' }).Content`;
+      const result = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', command], { timeout: 60_000, maxBuffer: 20 * 1024 * 1024, windowsHide: true });
+      if (result.stdout && result.stdout.includes('opus-module-content')) return result.stdout;
+    } catch {}
+  }
   const browser = await getBilibiliBrowser();
   const context = await browser.newContext({
     userAgent: bilibiliUserAgent,
