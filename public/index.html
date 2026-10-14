@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=updates-v17" />
+  <link rel="stylesheet" href="/styles.css?v=page-background-v2" />
 </head>
 <body>
   <div class="shell">
@@ -19,13 +19,13 @@
         <span><strong>帝国天梯</strong><small>AOE II · DEFINITIVE EDITION</small></span>
       </a>
       <div class="side-label">数据中心</div>
-      <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon">▤</span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon">◎</span>玩家资料<span class="nav-dot"></span></a><a class="nav-item" data-page="media" href="/media"><span class="nav-icon">▶</span>视频直播<span class="nav-dot"></span></a><a class="nav-item" data-page="updates" href="/updates"><span class="nav-icon">✦</span>更新汇总<span class="nav-dot"></span></a><a class="nav-item disabled" href="#" title="即将推出"><span class="nav-icon">◷</span>对局记录<span class="coming">SOON</span></a></nav>
+      <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon">▤</span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon">◎</span>玩家资料<span class="nav-dot"></span></a><a class="nav-item" data-page="media" href="/media"><span class="nav-icon">▶</span>视频直播<span class="nav-dot"></span></a><a class="nav-item" data-page="updates" href="/updates"><span class="nav-icon">✦</span>更新汇总<span class="nav-dot"></span></a><a class="nav-item" data-page="build-orders" href="/build-orders"><span class="nav-icon">♜</span>开局指南<span class="nav-dot"></span></a><a class="nav-item disabled" href="#" title="即将推出"><span class="nav-icon">◷</span>对局记录<span class="coming">SOON</span></a></nav>
       <div class="side-bottom"><div class="live-card"><span class="live-orb"></span><div><b>数据服务在线</b><small>连接 World's Edge</small></div><span class="live-check">✓</span></div><p>数据来自 Age of Empires II: DE<br/>公开天梯服务</p></div>
     </aside>
 
     <main id="leaderboard">
       <header class="topbar"><div class="breadcrumbs">数据中心 <span>/</span> <b>天梯榜单</b></div><form id="profileSearchForm" class="profile-search-form topbar-search"><label class="sr-only" for="profileSearchInput">输入玩家昵称</label><div id="player-search" class="profile-search-input-wrap"><input id="profileSearchInput" name="q" type="search" minlength="2" maxlength="80" placeholder="输入玩家昵称" autocomplete="off" required /><div id="profileSearchSuggestions" class="profile-suggestions" role="listbox" aria-label="玩家候选" hidden></div></div><div id="profileSearchMeta" class="sr-only" aria-live="polite"></div></form><div class="top-right"><div class="theme-tabs" id="themeTabs" role="group" aria-label="网页色调"><button type="button" data-theme-value="light">白天</button><button type="button" data-theme-value="dark">夜间</button></div><span class="top-divider"></span><span class="live-label"><i></i> LIVE DATA</span><span class="top-divider"></span><span class="edition">DEFINITIVE EDITION</span></div></header>
-      <section class="intro"><div class="eyebrow"><span></span> RANKED LADDER <span class="eyebrow-line"></span></div><h1>天梯<span>榜单</span></h1><p>榜单只收录前2000名选手</p></section>
+      <section class="intro"><div class="intro-copy"><div class="eyebrow"><span></span> RANKED LADDER <span class="eyebrow-line"></span></div><div class="intro-title-line"><h1>天梯<span>榜单</span></h1><img class="leaderboard-title-art" src="/assets/title.png" alt="" aria-hidden="true"></div><p>榜单只收录前2000名选手</p></div></section>
 
       <section class="stats-strip">
         <div class="stat-block"><span class="stat-icon green">↗</span><div><small>平均分</small><strong id="statAverage">—</strong></div></div>
@@ -56,10 +56,19 @@
         <div class="updates-toolbar"><label for="updatesArticleSelect">选择文章</label><select id="updatesArticleSelect"><option>正在加载文章列表…</option></select><span id="updatesStatus" aria-live="polite"></span></div>
         <div class="updates-reader"><aside class="updates-toc" id="updatesToc" aria-label="文章目录" hidden></aside><article class="updates-article" id="updatesArticle"><div class="updates-empty">正在加载最新文章…</div></article><button class="updates-back-to-top" id="updatesBackToTop" type="button" aria-label="回到顶部" hidden><span aria-hidden="true">↑</span>回到顶部</button></div>
       </section>
+      <section class="build-orders-page" id="build-orders-page" hidden>
+        <div class="build-orders-hero"><div><div class="section-kicker">FIELD MANUAL</div><h2>能直接照着打的开局指南</h2><p>从最初的六名村民到军事转型，按步骤执行每套开局。</p></div><span id="buildOrdersUpdated">—</span></div>
+        <div class="build-orders-library" id="buildOrdersLibrary">
+          <div class="build-orders-filters"><label class="build-orders-search"><span class="sr-only">搜索开局或文明</span><input id="buildOrdersSearch" type="search" placeholder="搜索开局名称或文明…" autocomplete="off"></label><div class="build-orders-filter-buttons" id="buildOrdersFilters"><button type="button" class="selected" data-filter="all">全部</button><button type="button" data-filter="standard">通用开局</button><button type="button" data-filter="signature">特色战术</button><button type="button" data-filter="video">带视频</button></div><strong id="buildOrdersCount">0 篇</strong></div>
+          <section class="build-orders-group" id="buildOrdersStandardSection"><div class="build-orders-group-heading"><div><span>STANDARD BUILDS</span><h3>通用开局</h3><p>适用于多种文明与地图的基础战术。</p></div><b id="buildOrdersStandardCount">—</b></div><div class="build-orders-grid" id="buildOrdersStandard"><div class="build-orders-empty">等待导入新的内容来源…</div></div></section>
+          <section class="build-orders-group" id="buildOrdersSignatureSection"><div class="build-orders-group-heading"><div><span>SPECIALIZED &amp; SIGNATURE</span><h3>特色战术</h3><p>针对特定文明、作者或特殊时机设计的开局。</p></div><b id="buildOrdersSignatureCount">—</b></div><div class="build-orders-grid" id="buildOrdersSignature"></div></section>
+        </div>
+        <article class="build-order-detail" id="buildOrderDetail" hidden><button class="build-order-back" id="buildOrderBack" type="button">← 返回全部开局</button><div id="buildOrderDetailBody"></div></article>
+      </section>
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=updates-v17" defer></script>
+  <script src="/app.js?v=build-orders-v3" defer></script>
 </body>
 </html>
 

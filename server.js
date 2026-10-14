@@ -10,6 +10,8 @@ import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { ProxyAgent, WebSocket, setGlobalDispatcher } from 'undici';
 import { chromium } from 'playwright';
+import { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects } from 'hyparquet';
+import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 const execFileAsync = promisify(execFile);
 
@@ -22,9 +24,11 @@ const aoe2RecsProfileCacheDir = join(dataDir, 'aoe2recs-profiles');
 const gameAssetCacheDir = join(dataDir, 'game-assets');
 const profilePointerPath = join(dataDir, 'profile-index-current.json');
 const profileDownloadPausePath = join(dataDir, 'profile-download-paused');
-const profileLocalDumpPath = join(dataDir, 'profile.csv');
-const profileDumpUrl = 'https://dump.cdn.aoe2companion.com/profile.csv';
-const profileRefreshInterval = 25 * 60 * 60_000;
+const profileLocalDumpPath = join(dataDir, 'profile.parquet');
+const legacyProfileCsvPath = join(dataDir, 'profile.csv');
+const profileDumpUrl = 'https://dump.cdn.aoe2companion.com/profile.parquet';
+const profileRefreshRetryInterval = 60 * 60_000;
+const forceProfileRefresh = process.env.PROFILE_REFRESH_NOW === '1';
 const port = Number(process.env.PORT || 3000);
 const api = 'https://aoe-api.worldsedgelink.com/community/leaderboard/getLeaderBoard2';
 const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争' };
@@ -40,12 +44,12 @@ const aoe2InsightsSummaryCache = new Map();
 const aoe2InsightsSummaryRefreshes = new Map();
 const aoe2InsightsSummaryTtl = 6 * 60 * 60_000;
 // Refresh cadence is defined per leaderboard. The two most frequently viewed
-// ladders update every minute at fixed wall-clock marks; the other ladders are
+// ladders update every three minutes at fixed wall-clock marks; the other ladders are
 // refreshed once every six hours and staggered by one hour to spread upstream
 // requests across the six-hour cycle.
 const leaderboardSchedules = {
-  3: { period: 60_000, offset: 0 },
-  4: { period: 60_000, offset: 30_000 },
+  3: { period: 180_000, offset: 0 },
+  4: { period: 180_000, offset: 30_000 },
   1: { period: 6 * 60 * 60_000, offset: 1 * 60 * 60_000 },
   2: { period: 6 * 60 * 60_000, offset: 2 * 60 * 60_000 },
   13: { period: 6 * 60 * 60_000, offset: 3 * 60 * 60_000 },
@@ -80,8 +84,10 @@ const bilibiliCookie = process.env.BILIBILI_COOKIE || process.env.BILI_COOKIE ||
 })();
 console.log(`[media] bilibili browser cookie loaded: ${bilibiliCookie.length > 0 ? 'yes' : 'no'} (${bilibiliCookie.length} chars)`);
 let bilibiliWbiKeys = null;
+let bilibiliWbiKeyDay = 0;
 let bilibiliWbiKeyPromise = null;
 let bilibiliBrowserPromise = null;
+const bilibiliUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36';
 const mediaVideoCachePath = join(dataDir, 'media-videos.json');
 const mediaVideoStatePath = join(dataDir, 'media-video-state.json');
 const mediaVideoPausePath = join(dataDir, 'media-video-paused');
@@ -90,9 +96,12 @@ const bilibiliUpdatesCachePath = join(dataDir, 'bilibili-updates.json');
 const bilibiliUpdatesReadlistUrl = 'https://www.bilibili.com/read/readlist/rl153587';
 const bilibiliUpdatesListApi = 'https://api.bilibili.com/x/article/list/web/articles?id=153587&web_location=333.1400';
 const bilibiliUpdatesRefreshInterval = 12 * 60 * 60_000;
+const bilibiliVideoTagsCache = new Map();
 let bilibiliUpdatesCache = null;
 let bilibiliUpdatesRefreshPromise = null;
 let bilibiliUpdatesRefreshTimer = null;
+const buildOrdersCachePath = join(dataDir, 'build-orders.json');
+let buildOrdersCache = null;
 const selectedStreamersPath = join(root, 'map', 'aoc-selected-streamers.json');
 const rlReferencePath = join(root, 'map', 'aoc-player-links.json');
 
@@ -106,6 +115,16 @@ function mediaVideoPaused() {
     }
   } catch {}
   return true;
+}
+
+function mediaVideoPauseUntil() {
+  if (!existsSync(mediaVideoPausePath)) return 0;
+  try {
+    const until = Date.parse(readFileSync(mediaVideoPausePath, 'utf8').trim());
+    return Number.isFinite(until) ? until : 0;
+  } catch {
+    return 0;
+  }
 }
 const mediaCache = {
   data: { videos: [], live: [], updatedAt: null, nextRefreshAt: null, videosUpdatedAt: null, liveUpdatedAt: null, nextVideosRefreshAt: null, nextLiveRefreshAt: null },
@@ -179,16 +198,33 @@ function bilibiliHeaders(extra = {}) {
     'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
     origin: 'https://www.bilibili.com',
     referer: 'https://www.bilibili.com/',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'user-agent': bilibiliUserAgent,
     ...(bilibiliCookie ? { cookie: bilibiliCookie } : {}),
     ...extra
   };
 }
 
-const wbiMixinKeyTable = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 19, 29, 13, 39, 28, 60, 23, 51, 6, 41, 26, 14, 11, 20, 24, 37, 55, 40, 7, 2, 48, 17, 3, 42, 12, 52, 21, 30, 56, 34, 1, 16, 4, 22, 54, 38, 25, 36, 57, 59];
+function hasBilibiliSoftRisk(value, depth = 0) {
+  if (depth > 7 || value == null) return false;
+  if (typeof value === 'string') return value.includes('v_voucher');
+  if (Array.isArray(value)) return value.some(item => hasBilibiliSoftRisk(item, depth + 1));
+  if (typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, item]) => key.includes('v_voucher') || hasBilibiliSoftRisk(item, depth + 1));
+}
+
+const wbiMixinKeyTable = [
+  46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+  27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+  37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+  22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
+];
 
 async function loadBilibiliWbiKeys() {
-  if (bilibiliWbiKeys) return bilibiliWbiKeys;
+  const today = Math.floor(Date.now() / 86_400_000);
+  if (bilibiliWbiKeys && bilibiliWbiKeyDay === today) return bilibiliWbiKeys;
   if (bilibiliWbiKeyPromise) return bilibiliWbiKeyPromise;
   bilibiliWbiKeyPromise = (async () => {
     const response = await fetch('https://api.bilibili.com/x/web-interface/nav', { headers: bilibiliHeaders(), signal: AbortSignal.timeout(15_000) });
@@ -200,6 +236,7 @@ async function loadBilibiliWbiKeys() {
     const subKey = subUrl.split('/').pop()?.split('.')[0] || '';
     if (!imgKey || !subKey) throw new Error('B站 WBI 密钥为空');
     bilibiliWbiKeys = { imgKey, subKey, mixinKey: wbiMixinKeyTable.map(index => `${imgKey}${subKey}`[index] || '').join('').slice(0, 32) };
+    bilibiliWbiKeyDay = today;
     return bilibiliWbiKeys;
   })().finally(() => { bilibiliWbiKeyPromise = null; });
   return bilibiliWbiKeyPromise;
@@ -232,6 +269,12 @@ async function fetchMediaJson(url, options = {}) {
   }
   const payload = await response.json();
   const hostname = new URL(url).hostname;
+  if (/(?:^|\.)bilibili\.com$/i.test(hostname) && hasBilibiliSoftRisk(payload)) {
+    const error = new Error('B站返回软风控占位数据，暂不更新缓存');
+    error.bilibiliCode = -352;
+    error.softRisk = true;
+    throw error;
+  }
   if (/(?:^|\.)bilibili\.com$/i.test(hostname) && Number.isFinite(Number(payload?.code)) && Number(payload.code) !== 0) {
     const error = new Error(`B站接口返回业务码 ${payload.code}${payload.message ? `：${payload.message}` : ''}`);
     error.bilibiliCode = Number(payload.code);
@@ -241,7 +284,11 @@ async function fetchMediaJson(url, options = {}) {
 }
 
 async function fetchMediaText(url) {
-  const response = await fetch(url, { headers: { accept: 'text/html, application/atom+xml, application/xml', 'user-agent': 'Mozilla/5.0 AOE2DE-CN media monitor/1.0' }, signal: AbortSignal.timeout(20_000) });
+  const hostname = new URL(url).hostname;
+  const headers = /(?:^|\.)bilibili\.com$/i.test(hostname)
+    ? bilibiliHeaders({ accept: 'text/html, application/atom+xml, application/xml' })
+    : { accept: 'text/html, application/atom+xml, application/xml', 'user-agent': bilibiliUserAgent };
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`媒体页面返回 HTTP ${response.status}`);
   return response.text();
 }
@@ -407,8 +454,8 @@ async function fetchBilibiliArticlePageViaBrowser(id) {
   } catch {}
   const browser = await getBilibiliBrowser();
   const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-    extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' }
+    userAgent: bilibiliUserAgent,
+    extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8', referer: 'https://www.bilibili.com/' }
   });
   if (bilibiliCookie) {
     await context.addCookies(bilibiliCookie.split(';').map(pair => {
@@ -534,6 +581,27 @@ async function startBilibiliUpdatesLifecycle() {
   console.log(`[updates] next collection check: ${new Date(Date.now() + delay).toISOString()}`);
 }
 
+async function readBuildOrdersCache() {
+  if (buildOrdersCache) return buildOrdersCache;
+  try {
+    buildOrdersCache = JSON.parse(await readFile(buildOrdersCachePath, 'utf8'));
+  } catch {
+    buildOrdersCache = { formatVersion: 1, updatedAt: null, items: [] };
+  }
+  if (!Array.isArray(buildOrdersCache.items)) buildOrdersCache.items = [];
+  return buildOrdersCache;
+}
+
+async function getBuildOrders(slug = '') {
+  const current = await readBuildOrdersCache();
+  const items = Array.isArray(current.items) ? current.items : [];
+  return {
+    updatedAt: current.updatedAt || null,
+    items,
+    item: items.find(entry => entry.slug === slug) || null
+  };
+}
+
 async function getMediaThumbnail(url, id, maxAgeMs = 0) {
   const safeId = String(id || 'thumbnail').replace(/[^a-zA-Z0-9_-]/g, '_');
   const target = join(mediaThumbnailCacheDir, `${safeId}.img`);
@@ -587,8 +655,40 @@ async function fetchBilibiliVideo(source) {
   });
 }
 
+async function fetchBilibiliVideoTags(bvid) {
+  const key = String(bvid || '').trim();
+  if (!key) return [];
+  if (bilibiliVideoTagsCache.has(key)) return bilibiliVideoTagsCache.get(key);
+  const payload = await fetchMediaJson(`https://api.bilibili.com/x/web-interface/view/detail/tag?bvid=${encodeURIComponent(key)}`);
+  const tags = Array.isArray(payload?.data) ? payload.data : Object.values(payload?.data || {});
+  const names = tags.map(tag => String(tag?.tag_name || tag?.name || '').trim()).filter(Boolean);
+  bilibiliVideoTagsCache.set(key, names);
+  return names;
+}
+
+function bilibiliTagMatchesEmpire2(tags) {
+  return tags.some(tag => {
+    const value = String(tag || '').replace(/\s+/g, '').toUpperCase();
+    return /帝国时代(?:2|２|二|贰|貳|II|Ⅱ)(?![0-9０-９IVXLCDMⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ])/u.test(value);
+  });
+}
+
 async function fetchBilibiliVideos(source) {
-  return fetchBilibiliVideosInBrowser(source);
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await fetchBilibiliVideosViaApi(source);
+    } catch (error) {
+      lastError = error;
+      const retryable = Number(error?.status) === 412
+        || [-412, -352, -403, -509].includes(Number(error?.bilibiliCode));
+      if (!retryable || attempt >= 2) break;
+      const delay = attempt === 0 ? 5_000 : 10_000;
+      console.warn(`[media] B站视频接口触发风控，${delay / 1000}s 后重试: ${source.name || source.id}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
 }
 
 function bilibiliChromePath() {
@@ -678,15 +778,29 @@ async function fetchMediaVideoSource(source) {
   else if (source.platform === 'bilibili') results = await fetchBilibiliVideos(source);
   else if (source.platform === 'youtube') results = await fetchRssVideos({ ...source, feedUrl: source.feedUrl || `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(source.channelId || '')}` });
   else if (source.platform === 'rss' && source.feedUrl) results = await fetchRssVideos(source);
-  return results
-    .filter(item => {
-      if (mediaVideoWhitelist.some(name => String(item.channel || '').trim() === name)) return true;
-      if (item.pinned) return true;
+  const filtered = [];
+  for (const item of results) {
+      if (mediaVideoWhitelist.some(name => String(item.channel || '').trim() === name)) {
+        filtered.push(item);
+        continue;
+      }
+      if (item.pinned) {
+        filtered.push(item);
+        continue;
+      }
       const title = String(item.title || '').replace(/\s+/g, '');
-      if (!title) return false;
-      if (/帝国(?:时代)?[34]/.test(title)) return false;
-      return title.includes('帝国') || title.includes('帝国时代');
-    })
+      let matches = Boolean(title) && !/帝国(?:时代)?[34]/.test(title) && (title.includes('帝国') || title.includes('帝国时代'));
+      if (!matches && source.platform === 'bilibili' && /^BV[0-9A-Za-z]{10}$/i.test(String(item.id || ''))) {
+        try {
+          const tags = await fetchBilibiliVideoTags(item.id);
+          matches = bilibiliTagMatchesEmpire2(tags);
+        } catch (error) {
+          console.warn(`[media] B站视频标签获取失败: ${item.id}`, error.message);
+        }
+      }
+      if (matches) filtered.push(item);
+  }
+  return filtered
     .sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
 }
 
@@ -814,7 +928,17 @@ function updateMediaVideoNextRefreshAt() {
 function scheduleMediaVideoRefresh() {
   if (mediaVideoSchedulerTimer) clearTimeout(mediaVideoSchedulerTimer);
   if (mediaVideoPaused()) {
-    mediaVideoSchedulerTimer = null;
+    const resumeAt = mediaVideoPauseUntil();
+    if (resumeAt > Date.now()) {
+      mediaVideoSchedulerTimer = setTimeout(() => {
+        mediaVideoSchedulerTimer = null;
+        refreshMediaVideos()
+          .catch(error => console.warn('[media] 视频刷新失败:', error.message))
+          .finally(scheduleMediaVideoRefresh);
+      }, Math.max(0, resumeAt - Date.now()));
+    } else {
+      mediaVideoSchedulerTimer = null;
+    }
     updateMediaVideoNextRefreshAt();
     return;
   }
@@ -836,21 +960,49 @@ async function fetchBilibiliLive(source) {
   return { id: `bilibili:${source.roomId}`, platform: 'bilibili', name: source.name || '', url: source.url || `https://live.bilibili.com/${source.roomId}`, live: online, title: room.title || '', thumbnail: room.user_cover || room.keyframe || room.cover || '', startedAt: room.live_time || null, viewers: Number(room.online) || 0, checkedAt: new Date().toISOString() };
 }
 
+function decodeYoutubePageState(html) {
+  return String(html || '')
+    .replace(/\\x22/gi, '"')
+    .replace(/\\x27/gi, "'")
+    .replace(/\\x3d/gi, '=')
+    .replace(/\\x26/gi, '&')
+    .replace(/\\u0022/gi, '"')
+    .replace(/\\u0027/gi, "'")
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\u0026/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&');
+}
+
 async function fetchYoutubeLive(source) {
-  const html = await fetchMediaText(source.liveUrl || source.url);
-  const videoId = html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([\w-]{6,})"/)?.[1]
-    || html.match(/[?&]v=([\w-]{6,})/)?.[1]
-    || html.match(/"videoId":"([\w-]{6,})"/)?.[1]
-    || html.match(/ytimg\.com\/vi\/([\w-]{6,})\//)?.[1]
+  const sourceUrl = source.liveUrl || source.url || '';
+  let parsedSourceUrl = null;
+  try { parsedSourceUrl = new URL(sourceUrl); } catch {}
+  const isSingleVideoUrl = Boolean(parsedSourceUrl && (
+    /(^|\.)youtube\.com$/i.test(parsedSourceUrl.hostname) && parsedSourceUrl.pathname.replace(/\/$/, '') === '/watch' && parsedSourceUrl.searchParams.has('v')
+    || /(^|\.)youtu\.be$/i.test(parsedSourceUrl?.hostname || '')
+  ));
+  if (isSingleVideoUrl) {
+    return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: sourceUrl, live: false, title: '', thumbnail: '', viewers: 0, checkedAt: new Date().toISOString() };
+  }
+  const html = decodeYoutubePageState(await fetchMediaText(sourceUrl));
+  const liveVideoId = html.match(/"videoId":"([\w-]{6,})"[\s\S]{0,7000}?"style":"LIVE"/i)?.[1]
+    || html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([\w-]{6,})"/i)?.[1]
+    || '';
+  const videoId = liveVideoId
+    || html.match(/[?&]v=([\w-]{6,})/i)?.[1]
+    || html.match(/"videoId":"([\w-]{6,})"/i)?.[1]
+    || html.match(/ytimg\.com\/vi\/([\w-]{6,})\//i)?.[1]
     || '';
   const videoPos = videoId ? html.indexOf(videoId) : -1;
   const videoWindow = videoPos >= 0 ? html.slice(Math.max(0, videoPos - 1200), videoPos + 6000) : '';
-  const channelLiveBadge = /"text":"LIVE"|"imageName":"LIVE"/i.test(videoWindow);
+  const channelLiveBadge = /"text":"LIVE"|"imageName":"LIVE"|"style":"LIVE"|"iconType":"LIVE"/i.test(videoWindow);
   const online = !/"status"\s*:\s*"LIVE_STREAM_OFFLINE"/i.test(html)
-    && ( /"isLiveNow"\s*:\s*true|<meta itemprop=["']isLiveBroadcast["'] content=["']True|liveStreamabilityRenderer"\s*:\s*\{[^}]*"videoId"/i.test(html) || channelLiveBadge );
+    && ( /"isLiveNow"\s*:\s*true|<meta itemprop=["']isLiveBroadcast["'] content=["']True|liveStreamabilityRenderer"\s*:\s*\{[^}]*"videoId"/i.test(html) || Boolean(liveVideoId) || channelLiveBadge );
   const title = mediaText(html.match(/<meta property=["']og:title["'] content=["']([^"']+)/i)?.[1] || '');
   const viewers = Number(html.match(/(?:concurrentViewers|viewCount|viewerCount)[^\d]{0,20}(\d+)/i)?.[1] || 0);
-  return { id: `youtube:${source.channelId || source.liveUrl}`, platform: 'youtube', name: source.name || '', url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : (source.url || source.liveUrl), live: online, title, thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '', viewers, checkedAt: new Date().toISOString() };
+  return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : sourceUrl, live: online, title, thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '', viewers, checkedAt: new Date().toISOString() };
 }
 
 async function fetchDouyinLive(source) {
@@ -1114,6 +1266,25 @@ function refreshMediaLive() {
 async function startMediaVideoScheduler() {
   await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
   ensureMediaVideoSourceStates();
+  if (process.env.MEDIA_VIDEO_RESET === '1') {
+    const resetAt = Date.now();
+    mediaVideoNextRequestAt = 0;
+    mediaVideoBlockedUntil = 0;
+    mediaVideoRateLimitStrikes = 0;
+    mediaVideoCycleSeen.clear();
+    for (const source of Array.isArray(mediaSources.videos) ? mediaSources.videos : []) {
+      const state = mediaVideoSourceStates.get(mediaVideoSourceKey(source));
+      if (state) {
+        state.nextCheckAt = resetAt;
+        state.lastAttemptAt = 0;
+        state.lastSuccessAt = 0;
+        state.failureCount = 0;
+        state.idleSuccesses = 0;
+      }
+    }
+    await savePersistentMediaVideoState();
+    console.log('[media] video scheduler reset; starting from the first configured source');
+  }
   await refreshMediaVideos();
   scheduleMediaVideoRefresh();
   return mediaCache.data;
@@ -1302,9 +1473,9 @@ function scheduleLeaderboardRefresh() {
 scheduleLeaderboardRefresh();
 setInterval(() => { refreshMediaLive().catch(error => console.warn('[media] live refresh failed:', error.message)); }, mediaLiveRefreshInterval);
 
-async function downloadProfileCsv(tempPath) {
-  const response = await fetch(profileDumpUrl, { headers: { accept: 'text/csv' }, signal: AbortSignal.timeout(60 * 60_000) });
-  if (!response.ok || !response.body) throw new Error(`Profile dump 返回 HTTP ${response.status}`);
+async function downloadProfileParquet(tempPath) {
+  const response = await fetch(profileDumpUrl, { headers: { accept: 'application/vnd.apache.parquet' }, signal: AbortSignal.timeout(60 * 60_000) });
+  if (!response.ok || !response.body) throw new Error(`Profile Parquet 返回 HTTP ${response.status}`);
   profileRefreshState.totalBytes = Number(response.headers.get('content-length')) || 0;
   const file = await open(tempPath, 'w');
   try {
@@ -1366,6 +1537,30 @@ async function importProfileCsv(db, csvPath) {
   if (!profileRefreshState.processedRows) throw new Error('Profile CSV 中没有读取到玩家资料');
 }
 
+async function importProfileParquet(db, parquetPath) {
+  profileRefreshState.stage = '读取 Parquet 并整理玩家资料';
+  const insert = db.prepare('INSERT OR REPLACE INTO profiles(profile_id, steam_id, name, clan, last_match_time, country) VALUES (?, ?, ?, ?, ?, ?)');
+  const file = await asyncBufferFromFile(parquetPath);
+  const metadata = await parquetMetadataAsync(file);
+  const totalRows = Number(metadata.num_rows) || 0;
+  const columns = ['profileId', 'steamId', 'name', 'clan', 'country'];
+  const batchSize = 50_000;
+  db.exec('BEGIN');
+  for (let rowStart = 0; rowStart < totalRows; rowStart += batchSize) {
+    const rows = await parquetReadObjects({ file, compressors, columns, rowStart, rowEnd: Math.min(totalRows, rowStart + batchSize) });
+    for (const row of rows) {
+      const profileId = String(row.profileId ?? '').trim();
+      const name = String(row.name ?? '').trim();
+      if (!/^\d+$/.test(profileId) || !name) continue;
+      insert.run(profileId, String(row.steamId ?? '').trim(), name, String(row.clan ?? '').trim(), '', String(row.country ?? '').trim());
+      profileRefreshState.processedRows += 1;
+    }
+    db.exec('COMMIT; BEGIN');
+  }
+  db.exec('COMMIT');
+  if (!profileRefreshState.processedRows) throw new Error('Profile Parquet 中没有读取到玩家资料');
+}
+
 function profileStatePayload() {
   return {
     ready: Boolean(profileDb),
@@ -1389,6 +1584,7 @@ async function loadProfileCache() {
     const meta = loadedDb.prepare("SELECT value FROM profile_meta WHERE key = 'updatedAt'").get();
     profileDb = loadedDb;
     profileCache = { filename, updatedAt: meta?.value || pointer.updatedAt || null, format: pointer.format || null };
+    if (profileCache.format === 'parquet') await rm(legacyProfileCsvPath, { force: true });
     profileRefreshState.stage = '资料索引已就绪';
     await cleanupOldProfileIndexes(filename);
     await cleanupProfileDumpArtifacts(filename);
@@ -1417,7 +1613,7 @@ async function cleanupProfileDumpArtifacts(currentFilename) {
 
 async function buildProfileCache() {
   profileRefreshState.refreshing = true;
-  profileRefreshState.stage = '下载 CSV Profile dump';
+  profileRefreshState.stage = '下载 Parquet Profile dump';
   profileRefreshState.downloadedBytes = 0;
   profileRefreshState.totalBytes = 0;
   profileRefreshState.processedRows = 0;
@@ -1426,8 +1622,8 @@ async function buildProfileCache() {
   const id = `${Date.now()}-${randomUUID()}`;
   const tempFilename = `profile-index-${id}.sqlite.tmp`;
   const finalFilename = `profile-index-${id}.sqlite`;
-  const tempDumpFilename = `profile-dump-${id}.csv.tmp`;
-  const dumpFilename = `profile-dump-${id}.csv`;
+  const tempDumpFilename = `profile-dump-${id}.parquet.tmp`;
+  const dumpFilename = `profile-dump-${id}.parquet`;
   const tempPath = join(dataDir, tempFilename);
   const finalPath = join(dataDir, finalFilename);
   const tempDumpPath = join(dataDir, tempDumpFilename);
@@ -1439,18 +1635,18 @@ async function buildProfileCache() {
       const localDump = await stat(profileLocalDumpPath);
       if (!localDump.isFile() || localDump.size <= 0) throw new Error('本地 Profile dump 为空');
       sourceDumpPath = profileLocalDumpPath;
-      profileRefreshState.stage = '读取本地 CSV Profile dump';
+      profileRefreshState.stage = '读取本地 Parquet Profile dump';
       profileRefreshState.downloadedBytes = localDump.size;
       profileRefreshState.totalBytes = localDump.size;
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
-      await downloadProfileCsv(tempDumpPath);
+      await downloadProfileParquet(tempDumpPath);
       await rename(tempDumpPath, dumpPath);
     }
     profileRefreshState.stage = '建立玩家资料索引';
     db = new DatabaseSync(tempPath);
     db.exec('PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; CREATE TABLE profiles(profile_id TEXT PRIMARY KEY, steam_id TEXT, name TEXT NOT NULL, clan TEXT, last_match_time TEXT, country TEXT); CREATE TABLE profile_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);');
-    await importProfileCsv(db, sourceDumpPath);
+    await importProfileParquet(db, sourceDumpPath);
     if (!profileRefreshState.processedRows) throw new Error('Profile dump 中没有读取到玩家资料');
     profileRefreshState.stage = '建立昵称搜索索引';
     db.exec("CREATE VIRTUAL TABLE profile_search USING fts5(name, content='profiles', content_rowid='rowid', tokenize='trigram'); INSERT INTO profile_search(profile_search) VALUES('rebuild');");
@@ -1461,17 +1657,18 @@ async function buildProfileCache() {
     await rename(tempPath, finalPath);
     const nextDb = new DatabaseSync(finalPath);
     const pointerTemp = `${profilePointerPath}.tmp`;
-    await writeFile(pointerTemp, JSON.stringify({ filename: finalFilename, updatedAt, format: 'csv' }), 'utf8');
+    await writeFile(pointerTemp, JSON.stringify({ filename: finalFilename, updatedAt, format: 'parquet' }), 'utf8');
     await rename(pointerTemp, profilePointerPath);
     const previousDb = profileDb;
     const previousFilename = profileCache?.filename;
     profileDb = nextDb;
-    profileCache = { filename: finalFilename, updatedAt, format: 'csv' };
+    profileCache = { filename: finalFilename, updatedAt, format: 'parquet' };
     previousDb?.close();
     if (previousFilename && previousFilename !== finalFilename) await rm(join(dataDir, previousFilename), { force: true });
+    await rm(legacyProfileCsvPath, { force: true });
     await cleanupOldProfileIndexes(finalFilename);
     await cleanupProfileDumpArtifacts(finalFilename);
-    await rm(dumpPath, { force: true });
+    if (sourceDumpPath !== profileLocalDumpPath) await rename(dumpPath, profileLocalDumpPath);
     profileRefreshState.stage = '资料索引已就绪';
     console.log(`玩家资料索引更新完成：${profileRefreshState.processedRows.toLocaleString()} 条`);
     return profileCache;
@@ -1495,6 +1692,16 @@ function refreshProfileCache() {
   return profileRefreshPromise;
 }
 
+function nextProfileRefreshAt(now = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date(now));
+  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  let target = Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day), 6, 30, 0, 0);
+  if (target <= now) target += 24 * 60 * 60_000;
+  return target;
+}
+
 async function startProfileCacheLifecycle() {
   await loadProfileCache();
   try {
@@ -1504,14 +1711,13 @@ async function startProfileCacheLifecycle() {
     profileRefreshState.error = null;
     return;
   } catch {}
-  const age = profileCache?.updatedAt ? Date.now() - Date.parse(profileCache.updatedAt) : Infinity;
-  // Respect the dump timestamp for CSV indexes so a freshly imported index
-  // does not trigger an immediate replacement on the next restart.
-  const delay = Number.isFinite(age) && age < profileRefreshInterval ? profileRefreshInterval - age : 0;
+  const needsParquetMigration = profileCache?.format !== 'parquet';
+  const delay = forceProfileRefresh || needsParquetMigration ? 0 : Math.max(0, nextProfileRefreshAt() - Date.now());
   profileRefreshTimer = setTimeout(async function refreshAtInterval() {
     try { await refreshProfileCache(); }
     catch (error) { console.error('玩家资料 dump 更新失败:', error.message); }
-    profileRefreshTimer = setTimeout(refreshAtInterval, profileRefreshState.error ? 60 * 60_000 : profileRefreshInterval);
+    const nextDelay = profileRefreshState.error ? profileRefreshRetryInterval : Math.max(1_000, nextProfileRefreshAt() - Date.now());
+    profileRefreshTimer = setTimeout(refreshAtInterval, nextDelay);
   }, delay);
 }
 
@@ -2238,6 +2444,17 @@ http.createServer(async (req, res) => {
     }
   }
 
+  if (url.pathname === '/api/build-orders') {
+    try {
+      const data = await getBuildOrders(url.searchParams.get('slug') || '');
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(data));
+    } catch (error) {
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ error: error.message || '获取开局指南失败' }));
+    }
+  }
+
   if (url.pathname === '/api/avatar') {
     let steamId = url.searchParams.get('steamId') || '';
     const profileId = url.searchParams.get('profileId') || '';
@@ -2304,7 +2521,7 @@ http.createServer(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates)\/?$/.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const path = normalize(join(root, 'public', relative));
   if (!path.startsWith(join(root, 'public'))) {
     res.writeHead(403); return res.end('Forbidden');
