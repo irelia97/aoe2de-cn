@@ -2240,6 +2240,22 @@ function searchProfiles(query, leaderboardId) {
   return results.slice(0, 30);
 }
 
+function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
+  const versionText = String(version || 'snapshot').replace(/[^a-zA-Z0-9_.:-]/g, '_');
+  const etag = `"${versionText}"`;
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    etag,
+    'cache-control': `public, max-age=${Math.max(1, Math.floor(maxAgeSeconds || 60))}, stale-while-revalidate=30`
+  };
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  res.writeHead(200, headers);
+  return res.end(JSON.stringify(data));
+}
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/profile-search/status') {
@@ -2416,8 +2432,8 @@ http.createServer(async (req, res) => {
     }
     try {
       const data = await getLeaderboard(id);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify(data));
+      const maxAgeSeconds = Math.max(1, Math.ceil((Number(data.cacheExpiresAt || 0) - Date.now()) / 1000));
+      return sendVersionedJson(req, res, data, `leaderboard-${id}-${data.updatedAt || data.cacheExpiresAt || 'snapshot'}`, maxAgeSeconds);
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: error.message || '获取天梯数据失败' }));
@@ -2441,8 +2457,8 @@ http.createServer(async (req, res) => {
   if (url.pathname === '/api/media') {
     try {
       const data = await getMediaCache();
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify(data));
+      const maxAgeSeconds = Math.max(1, Math.ceil((Date.parse(data.nextRefreshAt || '') - Date.now()) / 1000));
+      return sendVersionedJson(req, res, data, `media-${data.updatedAt || 'snapshot'}`, maxAgeSeconds);
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: error.message || '获取视频直播数据失败' }));

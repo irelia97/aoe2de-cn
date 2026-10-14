@@ -268,7 +268,7 @@ async function loadLeaderboard(force = false) {
     let data;
     while (true) {
       try {
-        const response = await fetch(`/api/leaderboard?id=${ladderId}`, { cache: 'no-store' });
+        const response = await fetch(`/api/leaderboard?id=${ladderId}`, { cache: 'default' });
         data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         break;
@@ -1292,7 +1292,7 @@ function renderMedia(data, showAllVideos = false) {
 }
 function loadMedia(showAllVideos = false) {
   if (mediaRequest) return mediaRequest;
-  mediaRequest = fetch('/api/media', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败'))).then(data => { renderMedia(data, showAllVideos); return data; }).catch(() => { renderMedia({ videos: [], live: [] }, showAllVideos); }).finally(() => { mediaRequest = null; });
+  mediaRequest = fetch('/api/media', { cache: 'default' }).then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败'))).then(data => { renderMedia(data, showAllVideos); return data; }).catch(() => { renderMedia({ videos: [], live: [] }, showAllVideos); }).finally(() => { mediaRequest = null; });
   return mediaRequest;
 }
 let updatesRequest = null;
