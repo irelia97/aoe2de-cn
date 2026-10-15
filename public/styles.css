@@ -1121,3 +1121,39 @@ html[data-resolved-theme="light"] .pagination-ellipsis{color:#626b60}
 /* Keep the realtime breadcrumb aligned with the shared topbar. */
 body.page-realtime #leaderboard>.topbar{width:100%;height:63px;margin:0;padding-top:0;padding-bottom:0;box-sizing:border-box}
 @media(max-width:620px){body.page-realtime #leaderboard>.topbar{height:auto;min-height:48px;padding-top:8px;padding-bottom:8px}}
+
+.profile-country-inline{display:inline-flex!important;align-items:center;gap:5px;margin-top:0!important}.profile-country-inline .country-flag-img{width:18px;height:auto;vertical-align:middle}.profile-country-inline>span{display:inline!important;margin-top:0!important}.profile-country-separator{display:inline!important;margin:0 4px!important}
+
+#profileIdentityMeta{display:flex!important;align-items:center;gap:0;line-height:18px}#profileIdentityMeta .profile-country-inline{line-height:18px;vertical-align:middle}#profileIdentityMeta .profile-country-inline .country-flag-img{display:block;flex:none;width:18px;height:13px;object-fit:cover}#profileIdentityMeta .profile-team-inline{display:inline!important;margin-top:0!important;line-height:18px}
+
+.nav-icon .crossed-swords-icon{stroke-width:1.8!important;stroke-linecap:round;stroke-linejoin:round}
+
+/* Hide shared breadcrumb row while retaining its DOM for route updates. */
+.breadcrumbs{visibility:hidden!important}
+.nav-icon.nav-ranked-swords{font-family:Arial,"Noto Sans Symbols 2",sans-serif;font-size:20px!important;font-weight:900;line-height:1;letter-spacing:-3px;text-shadow:0 0 5px currentColor}
+
+/* Keep the shared topbar aligned across every module. */
+@media (min-width: 901px){
+  #leaderboard>.topbar{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) minmax(260px,360px) minmax(0,1fr);
+    column-gap:24px;
+    height:63px;
+    align-items:center;
+  }
+  #leaderboard>.topbar>.breadcrumbs{grid-column:1;justify-self:start;width:100%;}
+  #leaderboard>.topbar>.topbar-search{grid-column:2;justify-self:center;width:100%;max-width:360px;}
+  #leaderboard>.topbar>.top-right{grid-column:3;justify-self:end;}
+}
+
+/* Realtime content intentionally spans wide, but its topbar keeps the shared right inset. */
+@media (min-width: 901px){
+  body.page-realtime #leaderboard>.topbar{
+    width:calc(100% - 56px)!important;
+    margin-right:56px!important;
+  }
+}
+
+/* Compact the realtime spectator control. */
+.page-realtime .realtime-watch-link{width:24px;height:22px;margin-left:5px;border-radius:5px;font-size:17px;text-shadow:0 0 5px rgba(24,215,176,.8);box-shadow:0 0 7px rgba(24,215,176,.18)}
+.page-realtime .realtime-watch-link:hover{box-shadow:0 0 10px rgba(24,215,176,.45)}

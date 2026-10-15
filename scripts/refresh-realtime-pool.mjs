@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const cacheDir = join(root, '.cache');
-const sourcePath = join(root, 'try.txt');
+const sourcePath = join(root, 'config', 'players_pool.txt');
 const outputPath = join(cacheDir, 'realtime-profile-pool.json');
 const cutoff = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
 

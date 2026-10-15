@@ -1,5 +1,5 @@
 export function createProfileService(deps) {
-  const { getProfileDb, leaderboardCache, ladderOrder, types, personalStatsCache, personalStatsCacheTtl, fetchUpstreamWithRateLimit } = deps;
+  const { getProfileDb, leaderboardCache, ladderOrder, types, personalStatsCache, personalStatsCacheTtl, fetchUpstreamWithRateLimit, forceChinaCountry } = deps;
   const fetch = globalThis.fetch;
   function localProfileDetails(profileId) {
     const profileDb = getProfileDb();
@@ -13,7 +13,7 @@ export function createProfileService(deps) {
     const clan = row.clan || leaderboardRow?.clan || inferredClan;
     return {
       avatar: '',
-      player: { id: row.profileId, name: row.name || `玩家 ${row.profileId}`, country_code: row.country || leaderboardRow?.country || '', team: clan, steamId: row.steamId || '', lastMatchTime: row.lastMatchTime || '' },
+      player: { id: row.profileId, name: row.name || `玩家 ${row.profileId}`, country_code: forceChinaCountry(row.profileId, row.country || leaderboardRow?.country || ''), team: clan, steamId: row.steamId || '', lastMatchTime: row.lastMatchTime || '' },
       accounts: [],
       live: null,
       matches: [],

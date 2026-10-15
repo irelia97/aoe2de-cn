@@ -91,9 +91,10 @@ const lazyDetails = new IntersectionObserver(entries => {
 }, { rootMargin: '350px 0px' });
 
 function countryFlag(code) {
-  code = normalizeCountryCode(code);
+  const raw = String(code || '').toUpperCase();
+  code = raw === 'HK' ? 'HK' : normalizeCountryCode(raw);
   if (!code || code.length !== 2) return '🌐';
-  return '<img class="country-flag-img" src="https://flagcdn.com/24x18/' + code.toLowerCase() + '.png" alt="' + code + '" loading="lazy">';
+  return '<img class="country-flag-img" src="https://flagcdn.com/24x18/' + code.toLowerCase() + '.png" alt="' + code + '" title="' + escapeHtml(countryName(raw)) + '" loading="lazy">';
 }
 function normalizeCountryCode(code) {
   const normalized = String(code || '').toUpperCase();
@@ -108,8 +109,16 @@ function leaderboardCountryFlag(code) {
   const flagCode = normalized === 'TW' ? 'CN' : normalized;
   return '<img class="country-flag-img" src="https://flagcdn.com/24x18/' + flagCode.toLowerCase() + '.png" alt="' + flagCode + '" loading="lazy">';
 }
+function profileCountryMarkup(code) {
+  const normalized = String(code || '').trim();
+  if (!normalized) return '未知国籍';
+  return `<span class="profile-country-inline">${countryFlag(normalized)}<span>${escapeHtml(countryName(normalized))}</span></span>`;
+}
 function countryName(code) {
   const raw = String(code || '').toUpperCase();
+  if (raw === 'CN') return '中国';
+  if (raw === 'HK') return '中国香港';
+  if (raw === 'MO') return '中国澳门';
   if (raw === 'TW') return '中国台湾';
   code = normalizeCountryCode(raw);
   if (!code || code.length !== 2) return '未知地区';
@@ -1211,7 +1220,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
     // Render the first upstream batch immediately while the server completes
     // the cache refresh and watermark scan in the background.
-    hasMore = false;
+    hasMore = true;
     visibleCount = 20;
     renderProfileLastMatchFromMatch(matches[0]);
     render();
@@ -1337,9 +1346,9 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
   }
   const meta = document.querySelector('#profileIdentityMeta');
   if (meta) {
-    const country = player.country_code ? countryName(player.country_code) : '未知国籍';
+    const country = profileCountryMarkup(player.country_code);
     const team = player.team || '暂无战队';
-    meta.textContent = `${country} · ${team}`;
+    meta.innerHTML = `${country}<span class="profile-country-separator">·</span><span class="profile-team-inline">${escapeHtml(team)}</span>`;
   }
   renderProfileIdentityLinks(profile.accounts, profileId);
   renderProfileIdentityReference(profile.rlReference || null);
@@ -1816,7 +1825,7 @@ function renderRealtimeCards(payload) {
     return ratings.length?ratings.reduce((sum,rating)=>sum+rating,0)/ratings.length:-Infinity;
   };
   const games=[...new Map(states.filter(realtimeStateIsActive).map(state=>[String(state.match.id||state.profileId),state])).values()]
-    .sort((a,b)=>matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
+    .sort((a,b)=>(a.status==='lobby'?0:1)-(b.status==='lobby'?0:1)||matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
   if (updated) updated.textContent=payload?.checkedAt?`更新于 ${new Date(payload.checkedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`:'等待更新';
   if (!games.length) {
     container.innerHTML='<div class="realtime-empty"><div class="realtime-empty-icon">◌</div><h3>当前没有检测到进行中的对局</h3><p>检测池中的玩家均未返回正在进行的最新对局。</p></div>';
@@ -1828,8 +1837,10 @@ function renderRealtimeCards(payload) {
     const groups=realtimeGroupedPlayers(match);
     const rows=groups?groups.map(([team,members])=>`<div class="realtime-team-group"><span class="realtime-team-label">队伍 ${escapeHtml(team)}</span>${members.map(({player,index})=>realtimePlayerRow(player,index)).join('')}</div>`).join(''):players.map((player,index)=>realtimePlayerRow(player,index)).join('');
     const ranked=match.leaderboard?'排位':'大厅';
-    const mode=realtimeLeaderboardName(match.leaderboard);
-    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(mapDisplayName(match.map||'未知地图'))}</strong><time>${realtimeElapsed(match.started)}</time><a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a></div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● 游戏中</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
+    const mode=realtimeLeaderboardName(match.leaderboard) || '大厅';
+    const activity=state.status==='lobby'?'大厅中':'游戏中';
+    const watch=state.status==='game'?`<a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a>`:'';
+    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(mapDisplayName(match.map||'未知地图'))}</strong><time>${realtimeElapsed(match.started)}</time>${watch}</div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● ${activity}</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
   }).join('');
 }
 
@@ -1873,7 +1884,7 @@ function startRealtimePolling() {
   // The browser only reads the server cache. The server's single scheduled
   // refresh loop is the only path that calls the upstream match API.
   loadRealtimeStates();
-  realtimePollTimer = setInterval(loadRealtimeStates, 60 * 1000);
+  realtimePollTimer = setInterval(loadRealtimeStates, 15 * 1000);
 }
 
 function renderCurrentRoute(selectedPlayer = null) {
@@ -2016,7 +2027,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   try { localStorage.setItem(lastProfileIdStorageKey, currentProfileId); } catch { /* Storage may be disabled. */ }
   if (selectedPlayer) {
     document.querySelector('#profileIdentityName').textContent = selectedPlayer.name || `玩家 ${profileId}`;
-    document.querySelector('#profileIdentityMeta').textContent = `${selectedPlayer.country ? countryName(selectedPlayer.country) : '未知国籍'} · ${selectedPlayer.clan || '暂无战队'}`;
+    document.querySelector('#profileIdentityMeta').innerHTML = `${profileCountryMarkup(selectedPlayer.country)}<span class="profile-country-separator">·</span><span class="profile-team-inline">${escapeHtml(selectedPlayer.clan || '暂无战队')}</span>`;
   }
   loadProfileLeaderboards(profileId);
   loadAoE2RecsProfile(profileId, selectedPlayer?.name || history.state?.name || '');

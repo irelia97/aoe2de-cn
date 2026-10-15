@@ -18,6 +18,7 @@ import { createMatchesService } from './server/services/matches-service.js';
 import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
 import { createProfileService } from './server/services/profile-service.js';
 import { createGameAssetService } from './server/services/game-assets.js';
+import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
@@ -1426,7 +1427,7 @@ async function fetchLeaderboard(id, pageCount = 3, startPage = 1) {
     if (pages.length) await new Promise(resolve => setTimeout(resolve, 250));
     pages.push(await fetchLeaderboardPage(id, page));
   }
-  const rows = leaderboardRowsFromPayloads(pages);
+  const rows = leaderboardRowsFromPayloads(pages).map(row => isForcedChinaProfile(row.profileId) ? { ...row, country: 'cn' } : row);
   const total = Math.min(maxLeaderboardRows, Number(pages[0]?.rankTotal || 0) || rows.length);
   return {
     leaderboardId: id,
@@ -1919,7 +1920,9 @@ const profileService = createProfileService({
   types,
   personalStatsCache,
   personalStatsCacheTtl,
-  fetchUpstreamWithRateLimit
+  fetchUpstreamWithRateLimit,
+  forceChinaCountry,
+  WebSocket
 });
 const { localProfileDetails, profileLeaderboardSummary, fetchPersonalLeaderboardStats } = profileService;
 
@@ -1937,7 +1940,9 @@ const realtimeService = createRealtimeService({
   loadRlReference,
   fetchPersonalLeaderboardStats,
   worldsEdgeMatchCache,
-  worldsEdgeMatchCachePath
+  worldsEdgeMatchCachePath,
+  forceChinaCountry,
+  WebSocket
 });
 
 async function getWorldsEdgeMatches(profileId, page = 1) {
@@ -2623,7 +2628,8 @@ http.createServer(async (req, res) => {
     try {
       const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8'));
       const ids = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276];
-      await realtimeService.refreshRealtimePayload(ids);
+      await realtimeService.startRealtimeWebSockets(ids);
+      if (!realtimeService.realtimeWebSocketsHealthy(ids)) await realtimeService.refreshRealtimePayload(ids);
     } catch (error) { console.warn('[realtime] scheduled refresh failed:', error.message); }
   };
   setTimeout(refreshRealtimeOnServer, 1000).unref();
