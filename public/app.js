@@ -654,6 +654,7 @@ const mapNamesZh = {
   "Team Islands": "团队岛屿",
   "Full Random": "完全随机地图",
   "Scandinavia": "斯堪的纳维亚",
+  "Socotra": "索科特拉岛",
   "Mongolia": "蒙古",
   "Salt Marsh": "盐碱沼泽",
   "Yucatan": "尤卡坦",
@@ -760,7 +761,7 @@ const mapNamesZh = {
   "Victory Cinematic": "胜利过场动画",
   "Loss Cinematic": "失败过场动画",
   "Scenario Instruction Map": "场景指南地图",
-  "QS Runestones": "QS 符文石",
+  "QS Runestones": "QS 符文石群",
   "QS Arena": "QS 竞技场",
   "QS Black Forest": "QS 黑森林",
   "Great Wall": "长城",
@@ -1732,7 +1733,8 @@ function realtimeServerName(value) {
 }
 function realtimeLeaderboardName(value) {
   const key = String(value || '').trim().toUpperCase().replace(/\s+/g, '_');
-  const names = { RM_1V1: '1v1 随机地图', RM_TG: '团队随机地图', DM_1V1: '1v1 死亡竞赛', DM_TG: '团队死亡竞赛', EW_1V1: '1v1 帝国战争', EW_TG: '团队帝国战争' };
+  const names = { RM_1V1: '1v1 随机地图', RM_TG: '团队随机地图', RM_TEAM: '团队随机地图', DM_1V1: '1v1 死亡竞赛', DM_TG: '团队死亡竞赛', DM_TEAM: '团队死亡竞赛', EW_1V1: '1v1 帝国战争', EW_TG: '团队帝国战争', EW_TEAM: '团队帝国战争', UNRANKED: '大厅局' };
+  if (key.startsWith('QP_')) return `快速${realtimeLeaderboardName(key.slice(3))}`;
   return names[key] || String(value || '自定义房间');
 }
 function realtimeCivIconMarkup(value) {
@@ -1856,7 +1858,8 @@ function renderRealtimeCards(payload) {
     const players=Array.isArray(match.players)?match.players:[];
     const groups=realtimeGroupedPlayers(match);
     const rows=groups?groups.map(([team,members])=>`<div class="realtime-team-group"><span class="realtime-team-label">队伍 ${escapeHtml(team)}</span>${members.map(({player,index})=>realtimePlayerRow(player,index)).join('')}</div>`).join(''):players.map((player,index)=>realtimePlayerRow(player,index)).join('');
-    const ranked=match.leaderboard?'排位':'大厅';
+    const leaderboardKey=String(match.leaderboard||'').trim().toLowerCase();
+    const ranked=!leaderboardKey?'大厅':leaderboardKey==='unranked'||leaderboardKey.startsWith('qp_')?'非排位':'排位';
     const mode=realtimeLeaderboardName(match.leaderboard) || '大厅';
     const activity=state.status==='lobby'?'大厅中':'游戏中';
     const watch=state.status==='game'?`<a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a>`:'';

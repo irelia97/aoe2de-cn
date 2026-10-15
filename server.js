@@ -1064,7 +1064,14 @@ async function fetchYoutubeLive(source) {
     return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: sourceUrl, live: false, title: '', thumbnail: '', viewers: 0, checkedAt: new Date().toISOString() };
   }
   const html = decodeYoutubePageState(await fetchMediaText(sourceUrl));
-  const liveVideoId = html.match(/"videoId":"([A-Za-z0-9_-]{11})"[\s\S]{0,7000}?"style":"LIVE"/i)?.[1]
+  // The channel /live page contains several recommended videos. Prefer the
+  // videoDetails block explicitly marked isLive, otherwise a recommended
+  // video can be mistaken for the current broadcast (wrong title/cover).
+  const liveDetails = html.match(/"videoDetails":\{([\s\S]{0,12000}?)"isLive":true/i)?.[1] || '';
+  const liveDetailsId = liveDetails.match(/"videoId":"([A-Za-z0-9_-]{11})"/i)?.[1] || '';
+  const liveDetailsTitle = mediaText(liveDetails.match(/"title":"((?:\\.|[^"\\])*)"/i)?.[1] || '');
+  const liveVideoId = liveDetailsId
+    || html.match(/"videoId":"([A-Za-z0-9_-]{11})"[\s\S]{0,7000}?"style":"LIVE"/i)?.[1]
     || html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([A-Za-z0-9_-]{11})"/i)?.[1]
     || '';
   const videoId = liveVideoId
@@ -1077,7 +1084,10 @@ async function fetchYoutubeLive(source) {
   const channelLiveBadge = /"text":"LIVE"|"imageName":"LIVE"|"style":"LIVE"|"iconType":"LIVE"/i.test(videoWindow);
   const online = !/"status"\s*:\s*"LIVE_STREAM_OFFLINE"/i.test(html)
     && ( /"isLiveNow"\s*:\s*true|<meta itemprop=["']isLiveBroadcast["'] content=["']True|liveStreamabilityRenderer"\s*:\s*\{[^}]*"videoId"/i.test(html) || Boolean(liveVideoId) || channelLiveBadge );
-  const title = mediaText(html.match(/<meta property=["']og:title["'] content=["']([^"']+)/i)?.[1] || '');
+  const title = liveDetailsTitle
+    || mediaText(html.match(/<meta[^>]+(?:property|name)=["']og:title["'][^>]+content=["']([^"']+)/i)?.[1] || '')
+    || mediaText(html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:title["']/i)?.[1] || '')
+    || source.name;
   const viewers = Number(html.match(/(?:concurrentViewers|viewCount|viewerCount)[^\d]{0,20}(\d+)/i)?.[1] || 0);
   return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : sourceUrl, live: online, title, thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '', viewers, checkedAt: new Date().toISOString() };
 }
