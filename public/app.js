@@ -2,6 +2,7 @@ const body = document.querySelector('#leaderboardBody');
 const ladderChoices = document.querySelector('#ladderChoices');
 const countryFilter = document.querySelector('#countryFilter');
 let currentRows = [];
+let currentTotalRows = 0;
 const leaderboardViewStorageKey = 'aoe2de:leaderboard-view:v1';
 function readSavedLeaderboardView() {
   try {
@@ -27,9 +28,23 @@ let selectedLadder = savedLeaderboardView?.ladder || 3;
 let selectedCountry = savedLeaderboardView?.country || 'all';
 const leaderboardData = new Map();
 const leaderboardRequests = new Map();
+const leaderboardPageRequests = new Map();
 const leaderboardRetryAt = new Map();
 const leaderboardSummaryCache = new Map();
 const leaderboardSummaryRequests = new Map();
+const leaderboardLocalCachePrefix = 'aoe2de:leaderboard-cache:v1:';
+function readLeaderboardLocalCache(id) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(`${leaderboardLocalCachePrefix}${id}`) || 'null');
+    if (!cached?.data || typeof cached.data !== 'object') return null;
+    return { data: cached.data, expiresAt: Number(cached.expiresAt) || 0, savedAt: Number(cached.savedAt) || 0 };
+  } catch { return null; }
+}
+function saveLeaderboardLocalCache(id, data) {
+  try {
+    localStorage.setItem(`${leaderboardLocalCachePrefix}${id}`, JSON.stringify({ data, expiresAt: Number(data.cacheExpiresAt) || Date.now() + 60_000, savedAt: Date.now() }));
+  } catch { /* Storage may be disabled or full. */ }
+}
 const fmt = new Intl.NumberFormat('zh-CN');
 const countryNames = new Intl.DisplayNames(['zh-CN'], { type: 'region' });
 const themeTabs = document.querySelector('#themeTabs');
@@ -84,6 +99,14 @@ function normalizeCountryCode(code) {
   const normalized = String(code || '').toUpperCase();
   return ['HK', 'MO', 'TW'].includes(normalized) ? 'CN' : normalized;
 }
+function leaderboardCountryCode(code) {
+  return String(code || '').trim().toUpperCase();
+}
+function leaderboardCountryFlag(code) {
+  const normalized = leaderboardCountryCode(code);
+  if (!/^[A-Z]{2}$/.test(normalized)) return '🌐';
+  return '<img class="country-flag-img" src="https://flagcdn.com/24x18/' + normalized.toLowerCase() + '.png" alt="' + normalized + '" loading="lazy">';
+}
 function countryName(code) {
   const raw = String(code || '').toUpperCase();
   if (raw === 'TW') return '中国台湾';
@@ -136,10 +159,10 @@ function rowMarkup(row, displayRank = Number(row.rank)) {
   const rank = Number(displayRank);
   const medal = rank <= 3 ? ` medal-${rank}` : '';
   const streak = Number(row.streak || 0);
-  const countryCode = normalizeCountryCode(row.country);
+  const countryCode = leaderboardCountryCode(row.country);
   const country = countryName(countryCode);
   const countryCell = selectedCountry === 'all'
-    ? `<div class="country-cell" title="${escapeHtml(country)}"><span class="flag">${countryFlag(countryCode)}</span><span class="country-name">${escapeHtml(country)}</span></div>`
+    ? `<div class="country-cell" title="${escapeHtml(country)}"><span class="flag">${leaderboardCountryFlag(countryCode)}</span><span class="country-name">${escapeHtml(country)}</span></div>`
     : `<span class="world-rank-cell">#${fmt.format(Number(row.rank))}</span>`;
   const avatar = `<span class="avatar" title="${escapeHtml(row.name)} 的 Steam 头像" data-avatar="${escapeHtml(row.steamId || '')}"><span class="avatar-fallback">${escapeHtml((row.name || '?').slice(0, 1).toUpperCase())}</span></span>`;
   const lastMatch = formatTimeAgo(row.lastMatchDate);
@@ -171,14 +194,15 @@ async function loadRowDetails(row) {
 function renderRows(rows) {
   currentRows = rows;
   updateCountryFilterOptions(rows);
-  currentPage = Math.min(currentPage, Math.max(1, Math.ceil(rows.length / 100)));
+  const availableRows = selectedCountry === 'all' ? (currentTotalRows || rows.length) : rows.length;
+  currentPage = Math.min(currentPage, Math.max(1, Math.ceil(availableRows / 100)));
   renderPage();
 }
 function updateCountryFilterOptions(rows) {
   const countries = new Map();
   for (const code of ['CN', 'VN', 'US', 'CA', 'BR', 'AR']) countries.set(code, countryName(code));
   for (const row of rows) {
-    const code = normalizeCountryCode(row.country);
+    const code = leaderboardCountryCode(row.country);
     if (code.length === 2) countries.set(code, countryName(code));
   }
   if (selectedCountry !== 'all' && !countries.has(selectedCountry)) countries.set(selectedCountry, countryName(selectedCountry));
@@ -192,28 +216,51 @@ function updateCountryFilterOptions(rows) {
   countryFilter.innerHTML = `<option value="all">全部国家/地区</option>${options.map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(name)}</option>`).join('')}`;
   countryFilter.value = selectedCountry;
 }
+function renderPagination(pageCount, currentPage) {
+  const pages = [];
+  const add = value => { if (pages[pages.length - 1] !== value) pages.push(value); };
+  for (let page = 1; page <= pageCount; page += 1) {
+    if (page === 1 || page === pageCount || Math.abs(page - currentPage) <= 2) add(page);
+    else if (pages[pages.length - 1] !== 'ellipsis') add('ellipsis');
+  }
+  return pages.map(page => page === 'ellipsis'
+    ? '<span class="pagination-ellipsis" aria-hidden="true">…</span>'
+    : `<button class="page-number${page === currentPage ? ' selected' : ''}" data-page="${page}"${page === currentPage ? ' aria-current="page"' : ''}>${page}</button>`).join('');
+}
 function renderPage() {
   const filteredRows = selectedCountry === 'all'
     ? currentRows
-    : currentRows.filter(row => normalizeCountryCode(row.country) === selectedCountry);
-  const pageCount = Math.max(1, Math.ceil(filteredRows.length / 100));
+    : currentRows.filter(row => leaderboardCountryCode(row.country) === selectedCountry);
+  const totalRows = selectedCountry === 'all' ? (currentTotalRows || filteredRows.length) : filteredRows.length;
+  const pageCount = Math.max(1, Math.ceil(totalRows / 100));
   currentPage = Math.min(currentPage, pageCount);
   const startIndex = (currentPage - 1) * 100;
   const pageRows = filteredRows.slice(startIndex, startIndex + 100);
+  const cachedEntry = leaderboardData.get(selectedLadder);
+  const loadedPages = Array.isArray(cachedEntry?.data?.loadedPages) ? cachedEntry.data.loadedPages : [];
+  const pageLoaded = selectedCountry !== 'all' || loadedPages.includes(currentPage);
   const countryHeader = document.querySelector('#countryColumnHeader');
   if (countryHeader) countryHeader.textContent = selectedCountry === 'all' ? '国家/地区' : '世界排名';
-  body.innerHTML = pageRows.length ? pageRows.map((row, index) => rowMarkup(row, selectedCountry === 'all' ? row.rank : startIndex + index + 1)).join('') : `<tr><td colspan="8" class="loading">${currentRows.length ? '该国籍暂无上榜玩家' : '暂无榜单数据'}</td></tr>`;
+  const emptyMessage = !pageLoaded ? '<span class="loader"></span>正在加载该分页…' : currentRows.length ? '该国籍暂无上榜玩家' : '暂无榜单数据';
+  body.innerHTML = pageRows.length ? pageRows.map((row, index) => rowMarkup(row, selectedCountry === 'all' ? row.rank : startIndex + index + 1)).join('') : `<tr><td colspan="8" class="loading">${emptyMessage}</td></tr>`;
   const renderedRows = [...body.querySelectorAll('.player-row')];
   renderedRows.forEach(row => lazyDetails.observe(row));
   const start = filteredRows.length ? startIndex + 1 : 0;
   const end = Math.min(startIndex + pageRows.length, filteredRows.length);
   document.querySelector('#resultRange').textContent = `显示 ${start}–${end} / ${filteredRows.length}`;
   const pagination = document.querySelector('#pagination');
-  pagination.innerHTML = `<button class="page-arrow" data-page="${currentPage - 1}" ${currentPage === 1 ? 'disabled' : ''} aria-label="上一页">‹</button>${Array.from({ length: pageCount }, (_, i) => `<button class="page-number${i + 1 === currentPage ? ' selected' : ''}" data-page="${i + 1}" aria-current="${i + 1 === currentPage ? 'page' : 'false'}">${i + 1}</button>`).join('')}<button class="page-arrow" data-page="${currentPage + 1}" ${currentPage === pageCount ? 'disabled' : ''} aria-label="下一页">›</button>`;
+  pagination.innerHTML = `<button class="page-arrow" data-page="${currentPage - 1}" ${currentPage === 1 ? 'disabled' : ''} aria-label="上一页">‹</button>${renderPagination(pageCount, currentPage)}<button class="page-arrow" data-page="${currentPage + 1}" ${currentPage === pageCount ? 'disabled' : ''} aria-label="下一页">›</button>`;
   pagination.querySelectorAll('button:not(:disabled)').forEach(button => button.addEventListener('click', () => {
     currentPage = Number(button.dataset.page);
     persistLeaderboardView();
-    renderPage();
+    const cachedEntry = leaderboardData.get(selectedLadder);
+    const loadedPages = Array.isArray(cachedEntry?.data?.loadedPages) ? cachedEntry.data.loadedPages : [];
+    if (selectedCountry === 'all' && !loadedPages.includes(currentPage)) {
+      body.innerHTML = '<tr><td colspan="8" class="loading"><span class="loader"></span>正在加载该分页…</td></tr>';
+      loadLeaderboardPage(currentPage);
+    } else {
+      renderPage();
+    }
     document.querySelector('.table-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
 }
@@ -248,13 +295,21 @@ async function loadLeaderboardSummary() {
   return request;
 }
 function displayLeaderboard(data) {
-  renderRows(data.rows);
+  currentTotalRows = Number(data.total) || (Array.isArray(data.rows) ? data.rows.length : 0);
+  renderRows(Array.isArray(data.rows) ? data.rows : []);
   document.querySelector('#boardType').textContent = data.label;
   loadLeaderboardSummary();
 }
 async function loadLeaderboard(force = false) {
   const ladderId = selectedLadder;
-  const cached = leaderboardData.get(ladderId);
+  let cached = leaderboardData.get(ladderId);
+  if (!cached) {
+    const local = readLeaderboardLocalCache(ladderId);
+    if (local) {
+      cached = { data: local.data, expiresAt: local.expiresAt || Date.now() };
+      leaderboardData.set(ladderId, cached);
+    }
+  }
   if (cached) {
     displayLeaderboard(cached.data);
     if (!force && cached.expiresAt > Date.now()) return;
@@ -284,6 +339,7 @@ async function loadLeaderboard(force = false) {
     }
     const expiresAt = Number(data.cacheExpiresAt) || Date.now() + 60_000;
     leaderboardData.set(ladderId, { data, expiresAt });
+    saveLeaderboardLocalCache(ladderId, data);
     leaderboardRetryAt.delete(ladderId);
     if (ladderId === selectedLadder) displayLeaderboard(data);
   } catch (error) {
@@ -297,6 +353,34 @@ async function loadLeaderboard(force = false) {
   leaderboardRequests.set(ladderId, request);
   try { await request; } finally { leaderboardRequests.delete(ladderId); }
 }
+async function loadLeaderboardPage(page) {
+  const ladderId = selectedLadder;
+  const requestedPage = Math.max(1, Number(page) || 1);
+  const key = `${ladderId}:${requestedPage}`;
+  if (leaderboardPageRequests.has(key)) return leaderboardPageRequests.get(key);
+  const request = (async () => {
+    try {
+      const response = await fetch(`/api/leaderboard?id=${encodeURIComponent(ladderId)}&page=${encodeURIComponent(requestedPage)}`, { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      const entry = leaderboardData.get(ladderId);
+      if (!entry) return;
+      const rows = new Map((entry.data.rows || []).map(row => [String(row.profileId), row]));
+      for (const row of data.rows || []) rows.set(String(row.profileId), row);
+      entry.data = { ...entry.data, ...data, rows: [...rows.values()].sort((a, b) => Number(a.rank) - Number(b.rank)), loadedPages: [...new Set([...(entry.data.loadedPages || []), ...(data.loadedPages || [requestedPage])])].sort((a, b) => a - b) };
+      entry.expiresAt = Number(data.cacheExpiresAt) || entry.expiresAt;
+      if (ladderId === selectedLadder) displayLeaderboard(entry.data);
+    } catch (error) {
+      if (ladderId === selectedLadder) {
+        body.innerHTML = `<tr><td colspan="8" class="error-state"><span class="error-icon">!</span><div><b>该分页暂时无法获取</b><small>${escapeHtml(error.message || '请稍后重试')}</small></div></td></tr>`;
+      }
+    }
+  })();
+  leaderboardPageRequests.set(key, request);
+  try { await request; } finally { leaderboardPageRequests.delete(key); }
+  return request;
+}
+
 ladderChoices.querySelectorAll('.ladder-choice').forEach(button => button.addEventListener('click', () => {
   const ladderId = Number(button.dataset.ladder);
   if (ladderId === selectedLadder) return;
@@ -508,6 +592,18 @@ function saveAoE2RecsProfileCache(profileId, profile) {
   } catch {
     // Quota or privacy settings may disable local storage; keep the live result usable.
   }
+}
+const profileMatchesLocalCachePrefix = 'aoe2de:profile-matches:v1:';
+const profileMatchesLocalCacheTtl = 10 * 60 * 1000;
+function readProfileMatchesLocalCache(profileId) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(`${profileMatchesLocalCachePrefix}${profileId}`) || 'null');
+    if (!Array.isArray(cached?.matches) || !Number.isFinite(cached.savedAt)) return null;
+    return { matches: cached.matches, savedAt: cached.savedAt };
+  } catch { return null; }
+}
+function saveProfileMatchesLocalCache(profileId, matches) {
+  try { localStorage.setItem(`${profileMatchesLocalCachePrefix}${profileId}`, JSON.stringify({ savedAt: Date.now(), matches: Array.isArray(matches) ? matches.slice(0, 100) : [] })); } catch { /* Storage may be disabled or full. */ }
 }
 function formatProfileDate(timestamp) {
   const value = Number(timestamp);
@@ -1074,6 +1170,20 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
   let hasMore = false;
   let visibleCount = 20;
   let loading = false;
+  const localMatches = readProfileMatchesLocalCache(profileId);
+  const localFresh = Boolean(localMatches && Date.now() - localMatches.savedAt < profileMatchesLocalCacheTtl);
+  const applyMatches = () => {
+    currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
+    currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
+    currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
+    renderProfileModeCharts();
+    if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
+    renderProfileLastMatchFromMatch(matches[0]);
+  };
+  if (localMatches) {
+    matches = localMatches.matches;
+    applyMatches();
+  }
   const render = () => {
     if (!isCurrent()) return;
     renderProfileMatches(profile, matches, visibleCount);
@@ -1089,7 +1199,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     if (!response.ok) throw new Error('近期对局请求失败');
     return response.json();
   };
-  try {
+  if (!localFresh) try {
     const first = await fetchPage(0, 100, true);
     if (!isCurrent()) return;
     matches = Array.isArray(first.matches) ? first.matches : [];
@@ -1111,6 +1221,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
       const complete = await fetchPage(0, 100);
       if (!isCurrent()) return;
       matches = Array.isArray(complete.matches) ? complete.matches : matches;
+      saveProfileMatchesLocalCache(profileId, matches);
       currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
       currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
       currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
@@ -1130,6 +1241,20 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
       const body = document.querySelector('#profileMatchesBody');
       if (body) body.innerHTML = '';
     }
+  }
+  if (localMatches && localFresh) {
+    render();
+    fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}&latest=1`, { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        const latest = Array.isArray(data?.matches) ? data.matches[0] : null;
+        if (!latest || !isCurrent()) return;
+        const known = new Set(matches.map(match => String(match.id)));
+        matches = [latest, ...matches.filter(match => String(match.id) !== String(latest.id))].slice(0, 100);
+        applyMatches();
+        render();
+        if (!known.has(String(latest.id))) saveProfileMatchesLocalCache(profileId, matches);
+      }).catch(() => {});
   }
   if (!more) return;
   more.onclick = async () => {
@@ -1166,10 +1291,7 @@ function loadProfileAccounts(profileId, requestId) {
     .then(response => response.ok ? response.json() : Promise.reject(new Error('账号资料请求失败')))
     .then(data => {
       if (!isCurrent()) return;
-      if (data?.avatar) {
-        currentProfileAvatarUrl = data.avatar;
-        applyProfileOverviewAvatar(currentProfileAvatarUrl, requestId);
-      }
+      if (data?.avatar) currentProfileAvatarUrl = data.avatar;
       const details = { player: { id: profileId }, avatar: data?.avatar || '', accounts: Array.isArray(data?.accounts) ? data.accounts : [] };
       renderProfileIdentityLinks(details.accounts, profileId);
       document.querySelector('#profileDetailsBody').innerHTML = renderPlayerDetailsRows(details);
@@ -1187,21 +1309,29 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
   if (avatar) {
     avatar.replaceChildren();
     avatar.textContent = playerName.slice(0, 1).toUpperCase();
-    const profileAvatarUrl = profile.avatar || currentProfileAvatarUrl;
-    const useProfileAvatar = Boolean(profileAvatarUrl);
-    if (useProfileAvatar) {
-      applyProfileOverviewAvatar(profileAvatarUrl, requestId);
-    }
-    if (!useProfileAvatar && /^\d+$/.test(String(profileId))) {
-      fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' }).then(response => response.ok ? response.json() : null).then(data => {
-        if (!avatar.isConnected || !data?.avatar) return;
-        const image = document.createElement('img');
-        image.src = data.avatar;
-        image.alt = '';
-        image.loading = 'lazy';
-        image.onerror = () => image.remove();
-        avatar.replaceChildren(image);
-      }).catch(() => {});
+    const fallbackAvatarUrl = profile.avatar || currentProfileAvatarUrl;
+    const applyFallbackAvatar = () => {
+      if (fallbackAvatarUrl && avatar.isConnected) applyProfileOverviewAvatar(fallbackAvatarUrl, requestId);
+    };
+    if (/^\d+$/.test(String(profileId))) {
+      // 先走服务端头像缓存；缓存失效后由服务端查询 Steam，失败再回退 AoE2Recs 资料头像。
+      fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' })
+        .then(response => response.ok ? response.json() : null)
+        .then(data => {
+          if (!avatar.isConnected) return;
+          if (data?.avatar) {
+            const image = document.createElement('img');
+            image.src = data.avatar;
+            image.alt = '';
+            image.loading = 'lazy';
+            image.onerror = applyFallbackAvatar;
+            avatar.replaceChildren(image);
+          } else {
+            applyFallbackAvatar();
+          }
+        }).catch(applyFallbackAvatar);
+    } else {
+      applyFallbackAvatar();
     }
   }
   const meta = document.querySelector('#profileIdentityMeta');
@@ -1421,12 +1551,16 @@ function loadUpdates(articleId = '') {
   return request;
 }
 const updatesBackToTop = document.querySelector('#updatesBackToTop');
+const leaderboardBackToTop = document.querySelector('#leaderboardBackToTop');
 const updatesToc = document.querySelector('#updatesToc');
 function syncUpdatesBackToTop() {
-  if (!updatesBackToTop) return;
-  updatesBackToTop.hidden = !/^\/updates\/?$/.test(location.pathname) || window.scrollY < 480;
+  const isUpdates = /^\/updates\/?$/.test(location.pathname);
+  const isLeaderboard = /^\/?$/.test(location.pathname);
+  if (updatesBackToTop) updatesBackToTop.hidden = !isUpdates || window.scrollY < 480;
+  if (leaderboardBackToTop) leaderboardBackToTop.hidden = !isLeaderboard || window.scrollY < 480;
 }
 updatesBackToTop?.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+leaderboardBackToTop?.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
 updatesToc?.addEventListener('wheel', event => {
   const maxScrollTop = updatesToc.scrollHeight - updatesToc.clientHeight;
   if (maxScrollTop <= 0 || !event.deltaY) return;
@@ -1551,6 +1685,7 @@ setInterval(() => {
 let realtimeRequest = null;
 let realtimePollTimer = null;
 let realtimeRequestId = 0;
+let realtimeLastPayload = null;
 function realtimeElapsed(started) {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(started || 0));
   if (!seconds) return '刚刚';
@@ -1669,6 +1804,7 @@ function renderRealtimeCards(payload) {
   const loading=document.querySelector('#realtimeLoading');
   const updated=document.querySelector('#realtimeUpdated');
   if (!container) return;
+  realtimeLastPayload = payload || { states: [] };
   const states=Array.isArray(payload?.states)?payload.states:[];
   renderRealtimeStatus(states);
   if (loading) loading.hidden=true;
@@ -1728,11 +1864,15 @@ function showRealtimeLoading() {
 }
 function startRealtimePolling() {
   clearInterval(realtimePollTimer);
-  showRealtimeLoading();
+  if (realtimeLastPayload) {
+    renderRealtimeCards(realtimeLastPayload);
+  } else {
+    showRealtimeLoading();
+  }
+  // The browser only reads the server cache. The server's single scheduled
+  // refresh loop is the only path that calls the upstream match API.
   loadRealtimeStates();
-  realtimePollTimer = setInterval(() => {
-    if (/^\/realtime\/?$/.test(location.pathname)) loadRealtimeStates();
-  }, 60_000);
+  realtimePollTimer = setInterval(loadRealtimeStates, 60 * 1000);
 }
 
 function renderCurrentRoute(selectedPlayer = null) {
@@ -1775,6 +1915,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     return;
   }
   if (isRealtimePage) {
+    window.scrollTo({ top: 0, behavior: 'auto' });
     profileDetailsRequestId++;
     startRealtimePolling();
     clearTimeout(profileDetailsTimeout);
@@ -1902,9 +2043,15 @@ function loadAoE2RecsProfile(profileId, fallbackName = '') {
   const matchesMore = document.querySelector('#profileMatchesMore');
   if (matchesBody) matchesBody.innerHTML = profileLoadingMarkup();
   if (matchesMore) { matchesMore.hidden = true; matchesMore.disabled = false; matchesMore.onclick = null; }
-  setProfileMessage(profileSectionLoadingMarkup());
+  const localProfile = readAoE2RecsProfileCache(profileId);
+  if (localProfile) {
+    renderAoE2RecsProfile(localProfile, profileId, fallbackName, requestId);
+  } else {
+    setProfileMessage(profileSectionLoadingMarkup());
+  }
   const controller = new AbortController();
   profileDetailsTimeout = setTimeout(() => controller.abort(), 150_000);
+  if (localProfile) return;
   fetch(`/api/profile-details?id=${encodeURIComponent(profileId)}`, { cache: 'no-store', signal: controller.signal })
     .then(response => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);

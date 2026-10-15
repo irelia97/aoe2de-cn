@@ -671,7 +671,7 @@ html[data-resolved-theme="light"] .profile-match-card.is-live .profile-match-liv
 html[data-resolved-theme="light"] .realtime-heading h2,html[data-resolved-theme="light"] .realtime-stat strong,html[data-resolved-theme="light"] .realtime-toolbar h3,html[data-resolved-theme="light"] .realtime-empty h3,html[data-resolved-theme="light"] .realtime-method strong{color:#4d3925}html[data-resolved-theme="light"] .realtime-stat,html[data-resolved-theme="light"] .realtime-empty,html[data-resolved-theme="light"] .realtime-method{background:rgba(255,250,239,.68);border-color:rgba(122,89,45,.22)}
 @media(max-width:760px){.realtime-heading{align-items:flex-start;flex-direction:column}.realtime-heading-status{align-self:flex-start}.realtime-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.realtime-grid{grid-template-columns:1fr}.realtime-toolbar{align-items:flex-start;flex-direction:column}.realtime-legend{flex-wrap:wrap}}
 
-.page-realtime .topbar-search{visibility:hidden;pointer-events:none}
+.page-realtime .topbar-search{visibility:visible;pointer-events:auto}.page-media .topbar-search,.page-updates .topbar-search,.page-build-orders .topbar-search{display:none}
 
 .realtime-page{display:flex;flex-direction:column;min-height:calc(100vh - 112px)}
 .realtime-heading{flex:none}
@@ -1112,3 +1112,12 @@ html[data-resolved-theme="light"] .page-realtime .realtime-match-tags span{
 }
 html[data-resolved-theme="light"] .page-realtime .realtime-team-group+.realtime-team-group{border-top-color:rgba(105,83,56,.22)}
 html[data-resolved-theme="light"] .page-realtime .realtime-team-label{color:#8a6327}
+.leaderboard-back-to-top{position:fixed;right:28px;bottom:28px;z-index:8;display:inline-flex;align-items:center;gap:10px;padding:14px 20px;border:1px solid #80633c;border-radius:5px;background:#292d29;color:#ead19a;font:700 14px var(--sans);box-shadow:0 8px 24px rgba(0,0,0,.3);cursor:pointer;transition:transform .15s,background .15s,border-color .15s}.leaderboard-back-to-top[hidden]{display:none}.leaderboard-back-to-top:hover{transform:translateY(-2px);border-color:#c08c3e;background:#343934}.leaderboard-back-to-top span{font-size:21px;line-height:1}
+html[data-resolved-theme=light] .leaderboard-back-to-top{border-color:#a58a5d;background:#fff;color:#654d25;box-shadow:0 8px 22px rgba(58,48,30,.16)}
+
+.pagination-ellipsis{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:24px;color:#929c8f;font:10px var(--mono)}
+html[data-resolved-theme="light"] .pagination-ellipsis{color:#626b60}
+
+/* Keep the realtime breadcrumb aligned with the shared topbar. */
+body.page-realtime #leaderboard>.topbar{width:100%;height:63px;margin:0;padding-top:0;padding-bottom:0;box-sizing:border-box}
+@media(max-width:620px){body.page-realtime #leaderboard>.topbar{height:auto;min-height:48px;padding-top:8px;padding-bottom:8px}}

@@ -9,9 +9,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=realtime-v32-navicons2" />
+  <link rel="stylesheet" href="/styles.css?v=realtime-v33-search" />
 </head>
 <body>
+  <script>if (/^\/realtime\/?$/.test(location.pathname)) document.body.classList.add("page-realtime");</script>
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="/" aria-label="帝国天梯首页">
@@ -39,6 +40,7 @@
         <div class="table-wrap"><table><thead><tr><th class="rank-col">排名</th><th class="country-col" id="countryColumnHeader">国家/地区</th><th class="player-col">游戏昵称</th><th class="rating-col">积分 / 历史最高</th><th class="record-col">胜 / 负</th><th class="win-col">胜率</th><th class="streak-col">连胜</th><th class="game-col">上次游戏时间</th></tr></thead><tbody id="leaderboardBody"><tr><td colspan="8" class="loading"><span class="loader"></span>正在加载天梯数据…</td></tr></tbody></table></div>
         <div class="table-footer"><span id="resultRange">显示 1–100 / 500</span><nav class="pagination" id="pagination" aria-label="榜单分页"></nav></div>
       </section>
+      <button class="leaderboard-back-to-top" id="leaderboardBackToTop" type="button" aria-label="回到顶部" hidden><span aria-hidden="true">↑</span>回到顶部</button>
       <section class="profile-details-card" id="player-profile" hidden>
         <div class="profile-details-heading"><div><div class="section-kicker">PLAYER PROFILE</div><h2>玩家资料</h2></div></div>
         <div class="profile-identity"><div id="profileLoadingAnimation" class="profile-loading-animation profile-card-loading" hidden role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div><div class="profile-identity-avatar-column"><span class="profile-overview-avatar" id="profileOverviewAvatar">?</span><span id="profileIdentityLastMatch"></span></div><div class="profile-identity-content"><div class="profile-name-row"><strong id="profileIdentityName">搜索并选择一名玩家</strong><button type="button" id="profileAliasesButton" hidden>查看别名</button></div><span id="profileIdentityMeta"></span><span id="profileIdentityLinks" class="profile-identity-links"></span></div><div class="profile-identity-mode-charts" aria-label="游戏模式占比"><figure><div id="profileAllModeChart" class="profile-mode-chart-content"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div><figcaption>全部排位对局</figcaption></figure><figure><div id="profileRecentModeChart" class="profile-mode-chart-content"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div><figcaption>近 100 场对局</figcaption></figure><ul id="profileModeLegend" class="profile-identity-mode-legend" aria-label="模式颜色说明"></ul></div></div>

@@ -40,6 +40,38 @@ const personalStatsCache = new Map();
 const personalStatsCacheTtl = 10 * 60_000;
 const livePlayerStatsCache = new Map();
 const livePlayerStatsRefreshes = new Map();
+const livePlayerStatsCacheTtl = 60 * 60_000;
+const upstreamRateLimitUntil = new Map();
+
+function rateLimitError(host, retryAfterMs = 60_000) {
+  const error = new Error(`${host} 返回 HTTP 429，已进入退避冷却`);
+  error.rateLimited = true;
+  error.retryAfterMs = retryAfterMs;
+  return error;
+}
+
+function retryAfterMilliseconds(response) {
+  const header = response.headers.get('retry-after');
+  if (!header) return 60_000;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(60_000, seconds * 1000);
+  const timestamp = Date.parse(header);
+  return Number.isFinite(timestamp) ? Math.max(60_000, timestamp - Date.now()) : 60_000;
+}
+
+async function fetchUpstreamWithRateLimit(url, options = {}) {
+  const host = new URL(url).hostname;
+  const now = Date.now();
+  const blockedUntil = upstreamRateLimitUntil.get(host) || 0;
+  if (blockedUntil > now) throw rateLimitError(host, blockedUntil - now);
+  const response = await fetch(url, options);
+  if (response.status === 429) {
+    const retryAfterMs = retryAfterMilliseconds(response);
+    upstreamRateLimitUntil.set(host, Date.now() + retryAfterMs);
+    throw rateLimitError(host, retryAfterMs);
+  }
+  return response;
+}
 const aoe2InsightsSummaryCache = new Map();
 const aoe2InsightsSummaryRefreshes = new Map();
 const aoe2InsightsSummaryTtl = 6 * 60 * 60_000;
@@ -47,6 +79,7 @@ const aoe2InsightsSummaryTtl = 6 * 60 * 60_000;
 // ladders update every three minutes at fixed wall-clock marks; the other ladders are
 // refreshed once every six hours and staggered by one hour to spread upstream
 // requests across the six-hour cycle.
+const maxLeaderboardRows = 2000;
 const leaderboardSchedules = {
   3: { period: 180_000, offset: 0 },
   4: { period: 180_000, offset: 30_000 },
@@ -1107,13 +1140,13 @@ async function fetchLivePlayerLeaderboardStats(rlIds) {
   if (!profileIds.length) return null;
   const key = profileIds.join(',');
   const cached = livePlayerStatsCache.get(key);
-  if (cached && Date.now() - cached.savedAt < personalStatsCacheTtl) return cached.data;
+  if (cached && Date.now() - cached.savedAt < livePlayerStatsCacheTtl) return cached.data;
   if (livePlayerStatsRefreshes.has(key)) return livePlayerStatsRefreshes.get(key);
 
   const refresh = (async () => {
     const endpoint = new URL('https://aoe-api.worldsedgelink.com/community/leaderboard/getPersonalStat');
     endpoint.search = new URLSearchParams({ title: 'age2', profile_ids: JSON.stringify(profileIds.map(Number)) });
-    const response = await fetch(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+    const response = await fetchUpstreamWithRateLimit(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`直播玩家天梯接口返回 HTTP ${response.status}`);
     const payload = await response.json();
     if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '直播玩家天梯接口返回失败');
@@ -1178,17 +1211,18 @@ async function fetchMediaLive() {
     const current = selected.get(key);
     if (!current || (priority[item.platform] || 1) > (priority[current.platform] || 1)) selected.set(key, item);
   }
-  const enriched = await Promise.all([...selected.values()].map(async item => {
+  const enriched = [];
+  for (const item of selected.values()) {
     const { rl, ...publicItem } = item;
     const profileIds = (Array.isArray(rl) ? rl : []).map(String).filter(id => /^\d+$/.test(id));
     try {
       const leaderboards = await fetchLivePlayerLeaderboardStats(rl);
-      return leaderboards ? { ...publicItem, profileIds, leaderboards } : { ...publicItem, profileIds };
+      enriched.push(leaderboards ? { ...publicItem, profileIds, leaderboards } : { ...publicItem, profileIds });
     } catch (error) {
       console.warn(`[media] live player stats failed: ${item.name || item.id}`, error.message);
-      return { ...publicItem, profileIds };
+      enriched.push({ ...publicItem, profileIds });
     }
-  }));
+  }
   const sorted = enriched.sort((a, b) => {
     if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
     if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
@@ -1402,25 +1436,44 @@ async function getGameAsset(kind, slug) {
   return gameAssetRefreshes.get(key);
 }
 
-async function fetchLeaderboard(id) {
-  // The game service caps each response at 100 players, so collect twenty pages.
-  const pages = await Promise.all(Array.from({ length: 20 }, async (_, page) => {
-    const upstream = new URL(api);
-    upstream.search = new URLSearchParams({ title: 'age2', leaderboard_id: String(id), sortBy: '1', start: String(page * 100 + 1), count: '100' });
-    const response = await fetch(upstream, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`上游服务返回 HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '游戏数据服务暂不可用');
-    return payload;
-  }));
+function leaderboardRowsFromPayloads(id, pages) {
   const groups = pages.flatMap(payload => payload.statGroups || []);
   const stats = new Map(pages.flatMap(payload => payload.leaderboardStats || []).map(row => [row.statgroup_id, row]));
-  const rows = groups.flatMap(group => (group.members || []).map(member => {
+  return groups.flatMap(group => (group.members || []).map(member => {
     const stat = stats.get(group.id);
     const steamId = member.name?.match(/^\/steam\/(\d+)$/)?.[1] || '';
     return stat ? { rank: stat.rank, name: member.alias || member.name || '未知玩家', alias: member.alias || '', clan: member.clan || '', country: member.country || '', rating: stat.rating, highestRating: stat.highestrating ?? stat.rating, wins: stat.wins, losses: stat.losses, streak: stat.streak, lastMatchDate: stat.lastmatchdate ?? null, profileId: member.profile_id, steamId } : [];
-  })).sort((a, b) => a.rank - b.rank).slice(0, 2000);
-  return { leaderboardId: id, label: types[id], total: pages[0].rankTotal || rows.length, updatedAt: new Date().toISOString(), rows };
+  })).sort((a, b) => a.rank - b.rank);
+}
+
+async function fetchLeaderboardPage(id, page) {
+  const upstream = new URL(api);
+  upstream.search = new URLSearchParams({ title: 'age2', leaderboard_id: String(id), sortBy: '1', start: String((page - 1) * 100 + 1), count: '100' });
+  const response = await fetchUpstreamWithRateLimit(upstream, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`上游服务返回 HTTP ${response.status}`);
+  const payload = await response.json();
+  if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '游戏数据服务暂不可用');
+  return payload;
+}
+
+async function fetchLeaderboard(id, pageCount = 3, startPage = 1) {
+  const pages = [];
+  for (let page = startPage; page < startPage + pageCount; page += 1) {
+    if (pages.length) await new Promise(resolve => setTimeout(resolve, 250));
+    pages.push(await fetchLeaderboardPage(id, page));
+  }
+  const rows = leaderboardRowsFromPayloads(id, pages);
+  const total = Math.min(maxLeaderboardRows, Number(pages[0]?.rankTotal || 0) || rows.length);
+  return {
+    leaderboardId: id,
+    label: types[id],
+    total,
+    pageSize: 100,
+    pageCount: Math.min(Math.ceil(maxLeaderboardRows / 100), Math.max(1, Math.ceil(total / 100))),
+    loadedPages: Array.from({ length: pageCount }, (_, index) => startPage + index),
+    updatedAt: new Date().toISOString(),
+    rows: rows.slice(0, Math.min(pageCount * 100, total, maxLeaderboardRows))
+  };
 }
 
 function parseInsightsCard(html, title) {
@@ -1477,9 +1530,22 @@ function settleCacheWaiters(id, error) {
   for (const waiter of waiters) error ? waiter.reject(error) : waiter.resolve();
 }
 
+function mergeLeaderboardData(base, pageData) {
+  const rows = new Map((base?.rows || []).map(row => [String(row.profileId), row]));
+  for (const row of pageData.rows || []) rows.set(String(row.profileId), row);
+  return {
+    ...(base || pageData),
+    total: Math.min(maxLeaderboardRows, pageData.total || base?.total || rows.size),
+    pageSize: 100,
+    pageCount: Math.min(Math.ceil(maxLeaderboardRows / 100), pageData.pageCount || base?.pageCount || Math.max(1, Math.ceil((pageData.total || rows.size) / 100))),
+    loadedPages: [...new Set([...(base?.loadedPages || []), ...(pageData.loadedPages || [])])].sort((a, b) => a - b),
+    rows: [...rows.values()].filter(row => Number(row.rank) <= maxLeaderboardRows).sort((a, b) => Number(a.rank) - Number(b.rank)).slice(0, maxLeaderboardRows)
+  };
+}
+
 function refreshLeaderboard(id) {
   if (leaderboardRefreshes.has(id)) return leaderboardRefreshes.get(id);
-  const refresh = fetchLeaderboard(id).then(data => {
+  const refresh = fetchLeaderboard(id, 3, 1).then(data => {
     const expiresAt = nextLeaderboardRefreshAt(id);
     leaderboardCache.set(id, { data, expiresAt });
     settleCacheWaiters(id);
@@ -1495,14 +1561,34 @@ function refreshLeaderboard(id) {
 async function getLeaderboard(id) {
   let cached = leaderboardCache.get(id);
   if (!cached) {
-    // Warm an empty cache on first access; scheduled refreshes still follow the
-    // fixed second marks below.
     await refreshLeaderboard(id);
     cached = leaderboardCache.get(id);
   }
-  // Stale snapshots remain usable while the scheduled refresh is in progress.
   const now = Date.now();
   return { ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now) };
+}
+
+async function getLeaderboardPage(id, page) {
+  const requestedPage = Math.min(Math.ceil(maxLeaderboardRows / 100), Math.max(1, Number(page) || 1));
+  let cached = leaderboardCache.get(id);
+  if (!cached) cached = { data: await getLeaderboard(id), expiresAt: nextLeaderboardRefreshAt(id) };
+  if (requestedPage > 3 && !cached.data.loadedPages?.includes(requestedPage)) {
+    const key = `${id}:${requestedPage}`;
+    let refresh = leaderboardRefreshes.get(key);
+    if (!refresh) {
+      refresh = fetchLeaderboard(id, 1, requestedPage).then(pageData => {
+        const current = leaderboardCache.get(id) || cached;
+        const merged = mergeLeaderboardData(current.data, pageData);
+        leaderboardCache.set(id, { data: merged, expiresAt: current.expiresAt || nextLeaderboardRefreshAt(id) });
+        return merged;
+      }).finally(() => leaderboardRefreshes.delete(key));
+      leaderboardRefreshes.set(key, refresh);
+    }
+    await refresh;
+    cached = leaderboardCache.get(id);
+  }
+  const now = Date.now();
+  return { ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now), requestedPage };
 }
 
 function nextLeaderboardRefreshAt(id, now = Date.now()) {
@@ -1884,7 +1970,7 @@ async function fetchWorldsEdgeMatchesOnce(profileId, page = 1, perPage = 100) {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchUpstreamWithRateLimit(endpoint, {
         headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36', accept: 'application/json' },
         signal: AbortSignal.timeout(30_000)
       });
@@ -1894,6 +1980,7 @@ async function fetchWorldsEdgeMatchesOnce(profileId, page = 1, perPage = 100) {
       return { matches, hasMore: matches.length >= Math.min(100, Math.max(1, perPage)) };
     } catch (error) {
       lastError = error;
+      if (error.rateLimited) throw error;
       if (attempt < 4) await new Promise(resolve => setTimeout(resolve, Math.min(1000 * (attempt + 1), 4000)));
     }
   }
@@ -1909,7 +1996,7 @@ async function fetchLatestWorldsEdgeMatchOnce(profileId) {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchUpstreamWithRateLimit(endpoint, {
         headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36', accept: 'application/json' },
         signal: AbortSignal.timeout(30_000)
       });
@@ -1919,6 +2006,7 @@ async function fetchLatestWorldsEdgeMatchOnce(profileId) {
       return matches[0] || null;
     } catch (error) {
       lastError = error;
+      if (error.rateLimited) throw error;
       if (attempt < 4) await new Promise(resolve => setTimeout(resolve, Math.min(1000 * (attempt + 1), 4000)));
     }
   }
@@ -1934,7 +2022,7 @@ function normalizeRealtimeLatestMatch(match, profileId) {
   const now = Math.floor(Date.now() / 1000);
   // An unfinished record can be left behind by a disconnected or abandoned
   // lobby. Keep only plausible current matches in the realtime monitor.
-  const activeAge = started > 0 && started <= now + 300 && now - started <= 12 * 60 * 60;
+  const activeAge = started > 0 && started <= now + 300 && now - started <= 3 * 60 * 60;
   const inProgress = Boolean(!abandoned && activeAge && (match.live || !finished));
   const status = inProgress ? (String(match.leaderboard || '').trim() ? 'game' : 'lobby') : 'offline';
   return {
@@ -1949,34 +2037,109 @@ function normalizeRealtimeLatestMatch(match, profileId) {
       started,
       finished,
       abandoned,
-      players: Array.isArray(match.players) ? match.players.map(player => ({
-        profileId: player.id ?? null,
-        name: player.name || '',
-        team: player.team ?? null,
-        civilization: player.civilization || '',
-        civilizationId: player.civilization_id || '',
-        colorHex: player.color_hex || '#6d7884',
-        country: player.country || '',
-        rating: player.rating ?? null,
-        color: player.color ?? null
-      })) : [],
+      players: Array.isArray(match.players) ? match.players.map(player => {
+        const playerId = player.id ?? null;
+        const local = playerId != null ? localProfileDetails(playerId)?.player : null;
+        return {
+          profileId: playerId,
+          name: player.name || local?.name || '',
+          team: player.team ?? null,
+          civilization: player.civilization || '',
+          civilizationId: player.civilization_id || '',
+          colorHex: player.color_hex || '#6d7884',
+          country: player.country || local?.country_code || '',
+          rating: player.rating ?? null,
+          color: player.color ?? null
+        };
+      }) : [],
       teams: Array.isArray(match.teams) ? match.teams : []
     }
   };
+}
+
+let realtimePayloadCache = null;
+let realtimeRefreshPromise = null;
+const realtimePayloadPath = join(dataDir, 'realtime-payload.json');
+
+async function buildRealtimePayload(profileIds) {
+  const states = await fetchRealtimeStates(profileIds);
+  const ratingMap = new Map();
+  try { const board = await getLeaderboard(3); for (const row of board.rows || []) ratingMap.set(String(row.profileId), Number(row.rating)); } catch {}
+  const liveByProfile = new Map();
+  try {
+    const media = await getMediaCache();
+    for (const item of Array.isArray(media.live) ? media.live : []) {
+      if (!item?.live) continue;
+      const live = { title: item.title || '正在直播', url: item.url || '', platform: item.platform || '' };
+      for (const profileId of Array.isArray(item.profileIds) ? item.profileIds : []) liveByProfile.set(String(profileId), live);
+    }
+  } catch {}
+  const realtimeReferences = await loadRlReference();
+  const enrichedStates = states.map(state => {
+    const profile = localProfileDetails(state.profileId)?.player || {};
+    const own = state.match?.players?.find(player => String(player.profileId) === String(state.profileId)) || {};
+    const reference = realtimeReferences.get(String(state.profileId));
+    return { ...state, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: profile.name || own.name || `玩家 ${state.profileId}`, team: profile.team || "", country: profile.country_code || own.country || "", rating: ratingMap.get(String(state.profileId)) ?? own.rating ?? null } };
+  });
+  return { source: 'aoe2companion-latest', checkedAt: new Date().toISOString(), states: enrichedStates };
+}
+
+async function refreshRealtimePayload(profileIds) {
+  const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+  const key = ids.join(',');
+  if (realtimeRefreshPromise) return realtimeRefreshPromise;
+  realtimeRefreshPromise = (async () => {
+    const payload = await buildRealtimePayload(ids);
+    realtimePayloadCache = { key, payload };
+    await writeFile(realtimePayloadPath, JSON.stringify({ key, payload }), 'utf8');
+    console.log(`[realtime] cache refreshed: ${payload.states.length} states`);
+    return payload;
+  })();
+  try { return await realtimeRefreshPromise; } finally { realtimeRefreshPromise = null; }
+}
+
+async function readCachedRealtimeLatestMatch(profileId) {
+  const key = String(profileId);
+  let current = worldsEdgeMatchCache.get(key);
+  if (!current) {
+    try {
+      const disk = JSON.parse(await readFile(worldsEdgeMatchCachePath(key), 'utf8'));
+      if (disk && Array.isArray(disk.matches)) {
+        current = disk;
+        worldsEdgeMatchCache.set(key, current);
+      }
+    } catch {}
+  }
+  return current?.matches?.[0] || null;
 }
 
 async function fetchRealtimeStates(profileIds) {
   const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
   // Each player is checked once per polling round using the one-row query.
   // Requests run together so the page can render the round promptly.
-  const states = await Promise.all(ids.map(async profileId => {
-    try {
-      const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
-      return normalizeRealtimeLatestMatch(latest, profileId);
-    } catch (error) {
-      return { profileId, status: 'error', error: error.message || '查询失败', match: null };
-    }
-  }));
+  const states = [];
+  const batchSize = 5;
+  const batchIntervalMs = 2000;
+  for (let offset = 0; offset < ids.length; offset += batchSize) {
+    const batch = ids.slice(offset, offset + batchSize);
+    const batchStates = await Promise.all(batch.map(async profileId => {
+      try {
+        const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
+        return normalizeRealtimeLatestMatch(latest, profileId);
+      } catch (error) {
+        if (error.rateLimited) {
+          const cached = await readCachedRealtimeLatestMatch(profileId);
+          if (cached) {
+            const fallback = normalizeRealtimeLatestMatch(cached, profileId);
+            return { ...fallback, stale: true, rateLimited: true };
+          }
+        }
+        return { profileId, status: 'error', error: error.message || '查询失败', match: null };
+      }
+    }));
+    states.push(...batchStates);
+    if (offset + batchSize < ids.length) await new Promise(resolve => setTimeout(resolve, batchIntervalMs));
+  }
   const activeIds = [...new Set(states.filter(state => (state.status === 'game' || state.status === 'lobby') && state.match).flatMap(state => Array.isArray(state.match.players) ? state.match.players.map(player => player.profileId) : []).map(value => String(value || '').trim()).filter(value => /^[0-9]+$/.test(value)))];
   const ratings = new Map();
   await Promise.all(activeIds.map(async profileId => {
@@ -2158,7 +2321,13 @@ async function fetchPersonalLeaderboardStats(profileId) {
   if (cached && Date.now() - cached.savedAt < personalStatsCacheTtl) return cached.data;
   const endpoint = new URL('https://aoe-api.worldsedgelink.com/community/leaderboard/getPersonalStat');
   endpoint.search = new URLSearchParams({ title: 'age2', profile_ids: JSON.stringify([Number(profileId)]) });
-  const response = await fetch(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+  let response;
+  try {
+    response = await fetchUpstreamWithRateLimit(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+  } catch (error) {
+    if (error.rateLimited && cached) return cached.data;
+    throw error;
+  }
   if (!response.ok) throw new Error(`个人天梯接口返回 HTTP ${response.status}`);
   const payload = await response.json();
   if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '个人天梯接口返回失败');
@@ -2371,28 +2540,24 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/realtime') {
     let profileIds = [];
-    try { const requested = url.searchParams.get("profile_ids"); if (requested) profileIds = JSON.parse(requested); else { const pool = JSON.parse(await readFile(join(dataDir, "realtime-profile-pool.json"), "utf8")); profileIds = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276]; } } catch { profileIds = [506898,8793414,212721,3025516,1966276]; }
-    const states = await fetchRealtimeStates(profileIds);
-    const ratingMap = new Map();
-    try { const board = await getLeaderboard(3); for (const row of board.rows || []) ratingMap.set(String(row.profileId), Number(row.rating)); } catch {}
-    const liveByProfile = new Map();
-    try {
-      const media = await getMediaCache();
-      for (const item of Array.isArray(media.live) ? media.live : []) {
-        if (!item?.live) continue;
-        const live = { title: item.title || '正在直播', url: item.url || '', platform: item.platform || '' };
-        for (const profileId of Array.isArray(item.profileIds) ? item.profileIds : []) liveByProfile.set(String(profileId), live);
-      }
-    } catch {}
-    const realtimeReferences = await loadRlReference();
-    const enrichedStates = states.map(state => {
-      const profile = localProfileDetails(state.profileId)?.player || {};
-      const own = state.match?.players?.find(player => String(player.profileId) === String(state.profileId)) || {};
-      const reference = realtimeReferences.get(String(state.profileId));
-      return { ...state, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: profile.name || own.name || `玩家 ${state.profileId}`, team: profile.team || "", country: profile.country_code || own.country || "", rating: ratingMap.get(String(state.profileId)) ?? own.rating ?? null } };
-    });
+    try { const requested = url.searchParams.get('profile_ids'); if (requested) profileIds = JSON.parse(requested); else { const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8')); profileIds = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276]; } } catch { profileIds = [506898,8793414,212721,3025516,1966276]; }
+    const ids = [...new Set(profileIds.map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const key = ids.join(',');
+    if (!realtimePayloadCache) {
+      try {
+        const disk = JSON.parse(await readFile(realtimePayloadPath, 'utf8'));
+        if (disk?.key === key && disk.payload?.states) realtimePayloadCache = disk;
+      } catch {}
+    }
+    // This endpoint is cache-only. The scheduled server task is the only code
+    // path that calls the upstream match API; browser reads never trigger refresh.
+    if (realtimePayloadCache?.key === key) {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(realtimePayloadCache.payload));
+    }
+    const emptyPayload = { source: 'aoe2companion-latest', checkedAt: null, states: [] };
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-    return res.end(JSON.stringify({ source: 'aoe2companion-latest', checkedAt: new Date().toISOString(), states: enrichedStates }));
+    return res.end(JSON.stringify(emptyPayload));
   }
   if (url.pathname === '/api/profile-search/status') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -2457,6 +2622,22 @@ http.createServer(async (req, res) => {
     if (!/^\d+$/.test(profileId)) {
       res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: '无效的选手 ID' }));
+    }
+    if (url.searchParams.get('latest') === '1') {
+      try {
+        const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end(JSON.stringify({ matches: latest ? [latest] : [], latest: true }));
+      } catch {
+        try {
+          const fallback = await getWorldsEdgeMatches(profileId, 1);
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          return res.end(JSON.stringify({ matches: fallback.matches?.[0] ? [fallback.matches[0]] : [], latest: true, stale: true }));
+        } catch (error) {
+          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          return res.end(JSON.stringify({ error: error.message || '获取最新对局失败' }));
+        }
+      }
     }
     const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
     const limit = Math.min(100, Math.max(20, Number(url.searchParams.get('limit') || 100)));
@@ -2567,7 +2748,8 @@ http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ error: '不支持的榜单类型' }));
     }
     try {
-      const data = await getLeaderboard(id);
+      const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+      const data = await getLeaderboardPage(id, page);
       const maxAgeSeconds = Math.max(1, Math.ceil((Number(data.cacheExpiresAt || 0) - Date.now()) / 1000));
       return sendVersionedJson(req, res, data, `leaderboard-${id}-${data.updatedAt || data.cacheExpiresAt || 'snapshot'}`, maxAgeSeconds);
     } catch (error) {
@@ -2711,6 +2893,15 @@ http.createServer(async (req, res) => {
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
   startBilibiliUpdatesLifecycle().catch(error => console.warn('[updates] lifecycle startup failed:', error.message));
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
+  const refreshRealtimeOnServer = async () => {
+    try {
+      const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8'));
+      const ids = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276];
+      await refreshRealtimePayload(ids);
+    } catch (error) { console.warn('[realtime] scheduled refresh failed:', error.message); }
+  };
+  setTimeout(refreshRealtimeOnServer, 1000).unref();
+  setInterval(refreshRealtimeOnServer, 60 * 1000).unref();
 });
 
 
