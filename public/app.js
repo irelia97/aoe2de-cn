@@ -105,7 +105,8 @@ function leaderboardCountryCode(code) {
 function leaderboardCountryFlag(code) {
   const normalized = leaderboardCountryCode(code);
   if (!/^[A-Z]{2}$/.test(normalized)) return '🌐';
-  return '<img class="country-flag-img" src="https://flagcdn.com/24x18/' + normalized.toLowerCase() + '.png" alt="' + normalized + '" loading="lazy">';
+  const flagCode = normalized === 'TW' ? 'CN' : normalized;
+  return '<img class="country-flag-img" src="https://flagcdn.com/24x18/' + flagCode.toLowerCase() + '.png" alt="' + flagCode + '" loading="lazy">';
 }
 function countryName(code) {
   const raw = String(code || '').toUpperCase();
@@ -206,7 +207,7 @@ function updateCountryFilterOptions(rows) {
     if (code.length === 2) countries.set(code, countryName(code));
   }
   if (selectedCountry !== 'all' && !countries.has(selectedCountry)) countries.set(selectedCountry, countryName(selectedCountry));
-  const priority = ['CN', 'TW', 'VN', 'US', 'CA', 'BR', 'AR'];
+  const priority = ['CN', 'HK', 'TW', 'VN', 'US', 'CA', 'BR', 'AR'];
   const options = [...countries].sort((a, b) => {
     const aPriority = priority.indexOf(a[0]);
     const bPriority = priority.indexOf(b[0]);

@@ -1472,7 +1472,7 @@ async function fetchAoE2InsightsSummary(leaderboardId, country) {
       ? Number(String(parseInsightsCard(globalHtml, 'Players') || '').replace(/,/g, '')) || 0
       : Number(fallbackBoard?.total || fallbackRatings.length);
     if (!country || country === 'all') return { averageRating, countryPlayers: totalPlayers, totalPlayers, top100Country: Math.min(100, totalPlayers) };
-    const codes = country === 'CN' ? ['cn', 'hk', 'mo'] : [country.toLowerCase()];
+    const codes = country === 'CN' ? ['cn', 'mo'] : [country.toLowerCase()];
     const pages = await Promise.all(codes.map(code => fetchInsightsSummaryPage(leaderboardId, code)));
     const countryStats = pages.map(html => ({
       players: Number(String(parseInsightsCard(html, 'Players') || '').replace(/,/g, '')) || 0,
