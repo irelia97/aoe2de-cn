@@ -1930,7 +1930,12 @@ function normalizeRealtimeLatestMatch(match, profileId) {
   if (!match || typeof match !== 'object') return { profileId: String(profileId), status: 'offline', match: null };
   const started = Number(match.started || 0);
   const finished = Number(match.finished || 0);
-  const inProgress = Boolean(match.live || (started > 0 && !finished));
+  const abandoned = match.abandoned === true;
+  const now = Math.floor(Date.now() / 1000);
+  // An unfinished record can be left behind by a disconnected or abandoned
+  // lobby. Keep only plausible current matches in the realtime monitor.
+  const activeAge = started > 0 && started <= now + 300 && now - started <= 12 * 60 * 60;
+  const inProgress = Boolean(!abandoned && activeAge && (match.live || !finished));
   const status = inProgress ? (String(match.leaderboard || '').trim() ? 'game' : 'lobby') : 'offline';
   return {
     profileId: String(profileId),
@@ -1943,6 +1948,7 @@ function normalizeRealtimeLatestMatch(match, profileId) {
       server: match.server || '',
       started,
       finished,
+      abandoned,
       players: Array.isArray(match.players) ? match.players.map(player => ({
         profileId: player.id ?? null,
         name: player.name || '',
