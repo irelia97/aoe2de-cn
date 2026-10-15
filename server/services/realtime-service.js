@@ -12,7 +12,8 @@ export function createRealtimeService(deps) {
     worldsEdgeMatchCache,
     worldsEdgeMatchCachePath,
     forceChinaCountry,
-    WebSocket
+    WebSocket,
+    onMatchAdded = () => {}
   } = deps;
 
   function normalizeRealtimeLatestMatch(match, profileId) {
@@ -92,8 +93,110 @@ export function createRealtimeService(deps) {
   let realtimeSocketGeneration = 0;
   let realtimeSocketProfileIds = [];
   let realtimeSocketPublishTimer = null;
+  let realtimeValidationTimer = null;
+  const realtimeValidatedMatches = new Map();
 
   function socketMatchId(match) { return String(match?.matchId ?? match?.id ?? ''); }
+  function socketMatchPlayerIds(match) {
+    return new Set((Array.isArray(match?.players) ? match.players : []).map(player => String(player?.id ?? player?.profileId ?? player?.profile_id ?? '').trim()).filter(id => /^\d+$/.test(id)));
+  }
+  function removeRealtimeMatch(matchId) {
+    const id = String(matchId || '');
+    if (!id) return false;
+    let changed = false;
+    for (const group of realtimeSocketGroups.values()) {
+      if (group.matches.delete(id)) changed = true;
+      if (group.lobbies.delete(id)) changed = true;
+    }
+    if (changed) scheduleRealtimeSocketPublish();
+    return changed;
+  }
+  function upsertRealtimeMatch(group, rawMatch) {
+    const id = socketMatchId(rawMatch);
+    const match = normalizeSocketMatch(rawMatch);
+    if (!id || !match) return false;
+    const playerIds = socketMatchPlayerIds(rawMatch);
+    let changed = false;
+    if (playerIds.size) {
+      for (const otherGroup of realtimeSocketGroups.values()) {
+        for (const [otherId, otherMatch] of otherGroup.matches.entries()) {
+          if (otherId !== id && [...socketMatchPlayerIds(otherMatch)].some(playerId => playerIds.has(playerId))) {
+            otherGroup.matches.delete(otherId);
+            changed = true;
+          }
+        }
+      }
+    }
+    const previous = group.matches.get(id);
+    group.matches.set(id, match);
+    if (!previous || JSON.stringify(previous) !== JSON.stringify(match)) changed = true;
+    return changed;
+  }
+  function validateRealtimeMatchHourly(match) {
+    if (!WebSocket || !match) return;
+    const matchId = socketMatchId(match);
+    const profileIds = [...socketMatchPlayerIds(match)];
+    if (!matchId || !profileIds.length) return;
+    const url = 'wss://socket.aoe2companion.com/listen?handler=ongoing-matches&profile_ids=' + profileIds.join(',');
+    let socket;
+    let settled = false;
+    let timeout;
+    const finish = active => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try { socket?.close(); } catch {}
+      if (!active) removeRealtimeMatch(matchId);
+      else console.log('[realtime] hourly validation kept match ' + matchId);
+    };
+    timeout = setTimeout(() => finish(false), 7000);
+    timeout.unref?.();
+    try {
+      socket = new WebSocket(url);
+      socket.addEventListener('message', event => {
+        let messages;
+        try { messages = JSON.parse(String(event.data)); } catch { return; }
+        if (!Array.isArray(messages)) messages = [messages];
+        const current = messages.find(message => {
+          const type = String(message?.type || '');
+          const data = message?.data || {};
+          const id = socketMatchId(data);
+          const finished = data.finished != null && data.finished !== 0 && data.finished !== '';
+          return id === matchId && type !== 'matchFinished' && !finished;
+        });
+        if (current) {
+          const group = [...realtimeSocketGroups.values()].find(item => profileIds.some(id => item.ids.includes(id))) || [...realtimeSocketGroups.values()][0];
+          if (group && upsertRealtimeMatch(group, current.data)) scheduleRealtimeSocketPublish();
+          finish(true);
+        } else finish(false);
+      });
+      socket.addEventListener('error', () => finish(false));
+      socket.addEventListener('close', () => { if (!settled) finish(false); });
+    } catch { finish(false); }
+  }
+  function validateRealtimeMatchesHourly() {
+    const now = Math.floor(Date.now() / 1000);
+    const seen = new Set();
+    for (const group of realtimeSocketGroups.values()) {
+      for (const match of group.matches.values()) {
+        const id = socketMatchId(match);
+        const started = Number(match.started || 0);
+        const hour = started > 0 ? Math.floor((now - started) / 3600) : 0;
+        if (!id || hour < 1) continue;
+        seen.add(id + ':' + hour);
+        if (!realtimeValidatedMatches.has(id + ':' + hour)) {
+          realtimeValidatedMatches.set(id + ':' + hour, Date.now());
+          validateRealtimeMatchHourly(match);
+        }
+      }
+    }
+    for (const key of realtimeValidatedMatches.keys()) if (!seen.has(key)) realtimeValidatedMatches.delete(key);
+  }
+  function startRealtimeValidationLoop() {
+    if (realtimeValidationTimer) return;
+    realtimeValidationTimer = setInterval(validateRealtimeMatchesHourly, 60000);
+    realtimeValidationTimer.unref?.();
+  }
   function normalizeSocketMatch(match) {
     if (!match || typeof match !== 'object') return null;
     const started = typeof match.started === 'string' ? Math.floor(Date.parse(match.started) / 1000) : Number(match.started || 0);
@@ -148,8 +251,11 @@ export function createRealtimeService(deps) {
           const data = message?.data || {};
           const id = socketMatchId(data);
           if (!id) continue;
-          if (type === 'matchFinished') { group.matches.delete(id); changed = true; }
-          else if (type === 'matchAdded' || type === 'matchUpdated' || type === 'matchStarted') { const match = normalizeSocketMatch(data); if (match) { group.matches.set(id, match); changed = true; } }
+          if (type === 'matchFinished') { if (group.matches.delete(id)) changed = true; }
+          else if (type === 'matchAdded' || type === 'matchUpdated' || type === 'matchStarted') {
+            if (upsertRealtimeMatch(group, data)) changed = true;
+            if (type === 'matchAdded') Promise.resolve(onMatchAdded(data)).catch(error => console.warn('[danmaku] matchAdded hook failed:', error.message));
+          }
         }
         if (changed) scheduleRealtimeSocketPublish();
       });
@@ -223,6 +329,7 @@ export function createRealtimeService(deps) {
     realtimeSocketGroups.clear();
     realtimeSocketProfileIds = ids;
     for (let offset = 0, index = 0; offset < ids.length; offset += realtimeWebSocketBatchSize, index += 1) { const group = { index, ids: ids.slice(offset, offset + realtimeWebSocketBatchSize), matches: new Map(), lobbies: new Map(), connected: false, lobbyConnected: false, failures: 0, lobbyFailures: 0, socket: null, lobbySocket: null, reconnectTimer: null, lobbyReconnectTimer: null }; realtimeSocketGroups.set(index, group); connectRealtimeSocketGroup(group); connectRealtimeLobbyGroup(group); }
+    startRealtimeValidationLoop();
   }
   function realtimeWebSocketsHealthy(profileIds) {
     const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value)))];

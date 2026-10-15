@@ -1,5 +1,9 @@
 .cache/
 node_modules/
 .npm/
+.local/
+.venv-*/
+__pycache__/
+*.py[cod]
 *.bak-*
 HANDOFF.md

@@ -14,6 +14,7 @@ import { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects } from 'h
 import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
+import { createRealtimeDanmakuNotifier } from './server/services/realtime-danmaku-notifier.js';
 import { createMatchesService } from './server/services/matches-service.js';
 import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
 import { createProfileService } from './server/services/profile-service.js';
@@ -1929,6 +1930,23 @@ const { localProfileDetails, profileLeaderboardSummary, fetchPersonalLeaderboard
 const matchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches });
 const { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce } = matchesService;
 
+const realtimeDanmakuNotifier = createRealtimeDanmakuNotifier({
+  statePath: join(dataDir, 'danmaku', 'realtime-match-added.json'),
+  readFile,
+  writeFile,
+  execFileAsync,
+  pythonExecutable: process.platform === 'win32'
+    ? join(root, '.venv-danmaku', 'Scripts', 'python.exe')
+    : join(root, '.venv-danmaku', 'bin', 'python'),
+  scriptPath: join(root, 'tools', 'live_danmaku.py'),
+  playwrightBrowsersPath: join(root, '.cache', 'ms-playwright'),
+  watchers: [
+    { profileId: '197964', platform: 'douyu', room: '753676' },
+    { profileId: '226575', platform: 'douyu', room: '1029928' },
+    { profileId: '1449222', platform: 'bilibili', room: '22751576' }
+  ]
+});
+
 const realtimeService = createRealtimeService({
   realtimePayloadPath: join(dataDir, 'realtime-payload.json'),
   readFile,
@@ -1942,7 +1960,8 @@ const realtimeService = createRealtimeService({
   worldsEdgeMatchCache,
   worldsEdgeMatchCachePath,
   forceChinaCountry,
-  WebSocket
+  WebSocket,
+  onMatchAdded: realtimeDanmakuNotifier.handleMatchAdded
 });
 
 async function getWorldsEdgeMatches(profileId, page = 1) {

@@ -623,7 +623,17 @@ function aoe2AssetSlug(value) {
   return String(value || '').trim().toLocaleLowerCase().replace(/[’']/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 function aoe2MapImageUrl(mapName) {
-  const slug = aoe2AssetSlug(mapName);
+  let source = String(mapName || '').trim();
+  const enumSource = source.replace(/^(?:rm|dm|ew|cm)[_-]/i, '');
+  const normalizeMapKey = value => String(value || '')
+    .replace(/[’']/g, '')
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/gi, '')
+    .toLocaleLowerCase();
+  const enumKey = normalizeMapKey(enumSource);
+  const canonical = Object.keys(mapNamesZh || {}).find(name => normalizeMapKey(name) === enumKey);
+  if (canonical) source = canonical;
+  const slug = aoe2AssetSlug(source);
   return slug ? `/assets/game/map/${slug}.png` : '';
 }
 const mapNamesZh = {
@@ -779,7 +789,17 @@ function mapDisplayName(mapName) {
   const exact = mapNamesZh[value];
   if (exact) return exact;
   const matched = Object.keys(mapNamesZh).find(name => name.toLocaleLowerCase() === value.toLocaleLowerCase());
-  return matched ? mapNamesZh[matched] : value;
+  if (matched) return mapNamesZh[matched];
+  // WebSocket events commonly return enum values such as rm_arena or rm_golden-pit.
+  const normalizeMapKey = text => String(text || '')
+    .replace(/^(?:rm|dm|ew|cm)[_-]/i, '')
+    .replace(/[’']/g, '')
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/gi, '')
+    .toLocaleLowerCase();
+  const normalized = normalizeMapKey(value);
+  const enumMatched = Object.keys(mapNamesZh).find(name => normalizeMapKey(name) === normalized);
+  return enumMatched ? mapNamesZh[enumMatched] : value;
 }
 function mapNameColorClass(mapName) {
   const name = String(mapName || '');
@@ -1840,7 +1860,9 @@ function renderRealtimeCards(payload) {
     const mode=realtimeLeaderboardName(match.leaderboard) || '大厅';
     const activity=state.status==='lobby'?'大厅中':'游戏中';
     const watch=state.status==='game'?`<a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a>`:'';
-    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(mapDisplayName(match.map||'未知地图'))}</strong><time>${realtimeElapsed(match.started)}</time>${watch}</div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● ${activity}</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
+    const mapImage = aoe2MapImageUrl(match.map || '');
+    const mapImageMarkup = mapImage ? `<img class="realtime-map-thumbnail" src="${escapeHtml(`${mapImage}?v=rgba`)}" alt="" loading="lazy" onerror="this.hidden=true">` : '';
+    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(mapDisplayName(match.map||'未知地图'))}</strong>${mapImageMarkup}<time>${realtimeElapsed(match.started)}</time>${watch}</div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● ${activity}</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
   }).join('');
 }
 
