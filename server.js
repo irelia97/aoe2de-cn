@@ -15,6 +15,7 @@ import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
 import { createMatchesService } from './server/services/matches-service.js';
+import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
 const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
@@ -1438,16 +1439,6 @@ async function getGameAsset(kind, slug) {
   return gameAssetRefreshes.get(key);
 }
 
-function leaderboardRowsFromPayloads(id, pages) {
-  const groups = pages.flatMap(payload => payload.statGroups || []);
-  const stats = new Map(pages.flatMap(payload => payload.leaderboardStats || []).map(row => [row.statgroup_id, row]));
-  return groups.flatMap(group => (group.members || []).map(member => {
-    const stat = stats.get(group.id);
-    const steamId = member.name?.match(/^\/steam\/(\d+)$/)?.[1] || '';
-    return stat ? { rank: stat.rank, name: member.alias || member.name || '未知玩家', alias: member.alias || '', clan: member.clan || '', country: member.country || '', rating: stat.rating, highestRating: stat.highestrating ?? stat.rating, wins: stat.wins, losses: stat.losses, streak: stat.streak, lastMatchDate: stat.lastmatchdate ?? null, profileId: member.profile_id, steamId } : [];
-  })).sort((a, b) => a.rank - b.rank);
-}
-
 async function fetchLeaderboardPage(id, page) {
   const upstream = new URL(api);
   upstream.search = new URLSearchParams({ title: 'age2', leaderboard_id: String(id), sortBy: '1', start: String((page - 1) * 100 + 1), count: '100' });
@@ -1464,7 +1455,7 @@ async function fetchLeaderboard(id, pageCount = 3, startPage = 1) {
     if (pages.length) await new Promise(resolve => setTimeout(resolve, 250));
     pages.push(await fetchLeaderboardPage(id, page));
   }
-  const rows = leaderboardRowsFromPayloads(id, pages);
+  const rows = leaderboardRowsFromPayloads(pages);
   const total = Math.min(maxLeaderboardRows, Number(pages[0]?.rankTotal || 0) || rows.length);
   return {
     leaderboardId: id,
@@ -1532,19 +1523,6 @@ function settleCacheWaiters(id, error) {
   for (const waiter of waiters) error ? waiter.reject(error) : waiter.resolve();
 }
 
-function mergeLeaderboardData(base, pageData) {
-  const rows = new Map((base?.rows || []).map(row => [String(row.profileId), row]));
-  for (const row of pageData.rows || []) rows.set(String(row.profileId), row);
-  return {
-    ...(base || pageData),
-    total: Math.min(maxLeaderboardRows, pageData.total || base?.total || rows.size),
-    pageSize: 100,
-    pageCount: Math.min(Math.ceil(maxLeaderboardRows / 100), pageData.pageCount || base?.pageCount || Math.max(1, Math.ceil((pageData.total || rows.size) / 100))),
-    loadedPages: [...new Set([...(base?.loadedPages || []), ...(pageData.loadedPages || [])])].sort((a, b) => a - b),
-    rows: [...rows.values()].filter(row => Number(row.rank) <= maxLeaderboardRows).sort((a, b) => Number(a.rank) - Number(b.rank)).slice(0, maxLeaderboardRows)
-  };
-}
-
 function refreshLeaderboard(id) {
   if (leaderboardRefreshes.has(id)) return leaderboardRefreshes.get(id);
   const refresh = fetchLeaderboard(id, 3, 1).then(data => {
@@ -1580,7 +1558,7 @@ async function getLeaderboardPage(id, page) {
     if (!refresh) {
       refresh = fetchLeaderboard(id, 1, requestedPage).then(pageData => {
         const current = leaderboardCache.get(id) || cached;
-        const merged = mergeLeaderboardData(current.data, pageData);
+        const merged = mergeLeaderboardData(current.data, pageData, maxLeaderboardRows);
         leaderboardCache.set(id, { data: merged, expiresAt: current.expiresAt || nextLeaderboardRefreshAt(id) });
         return merged;
       }).finally(() => leaderboardRefreshes.delete(key));
