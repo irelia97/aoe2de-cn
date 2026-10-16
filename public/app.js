@@ -1964,13 +1964,97 @@ function startRealtimePolling() {
   realtimePollTimer = setInterval(checkRealtimeVersion, 5 * 1000);
 }
 
+let lastCountedPageView = '';
+function renderSiteStats(data) {
+  const users = document.querySelector('#todayUsers');
+  const views = document.querySelector('#todayViews');
+  if (users) users.textContent = Number(data?.users || 0).toLocaleString('zh-CN');
+  if (views) views.textContent = Number(data?.views || 0).toLocaleString('zh-CN');
+}
+async function loadSiteStats() {
+  try {
+    const response = await fetch('/api/site-stats', { cache: 'default' });
+    if (!response.ok) throw new Error('访问统计请求失败');
+    renderSiteStats(await response.json());
+  } catch {}
+}
+async function recordCurrentPageView() {
+  const route = `${location.pathname}${location.search}`;
+  if (lastCountedPageView === route) return;
+  lastCountedPageView = route;
+  try {
+    const response = await fetch('/api/page-view', { method: 'POST', cache: 'no-store' });
+    if (!response.ok) throw new Error('访问记录失败');
+    renderSiteStats(await response.json());
+  } catch {
+    loadSiteStats();
+  }
+}
+
+const feedbackForm = document.querySelector('#feedbackForm');
+const feedbackContent = document.querySelector('#feedbackContent');
+const feedbackCounter = document.querySelector('#feedbackCounter');
+const feedbackSubmit = document.querySelector('#feedbackSubmit');
+const feedbackStatusText = document.querySelector('#feedbackStatus');
+function setFeedbackStatus(message, kind = '') {
+  if (!feedbackStatusText) return;
+  feedbackStatusText.textContent = message;
+  feedbackStatusText.className = `feedback-status${kind ? ` is-${kind}` : ''}`;
+}
+function updateFeedbackCounter() {
+  if (!feedbackCounter || !feedbackContent) return;
+  feedbackCounter.textContent = `${[...feedbackContent.value].length} / 1000`;
+}
+async function loadFeedbackStatus() {
+  try {
+    const response = await fetch('/api/feedback', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '读取反馈状态失败');
+    if (feedbackSubmit) feedbackSubmit.disabled = data.remaining <= 0;
+    setFeedbackStatus(data.remaining > 0 ? `今天还可以提交 ${data.remaining} 次` : '今天的反馈提交次数已用完，请明天再试');
+  } catch (error) {
+    setFeedbackStatus(error.message || '暂时无法读取反馈状态', 'error');
+  }
+}
+feedbackContent?.addEventListener('input', updateFeedbackCounter);
+feedbackForm?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const content = feedbackContent?.value.trim() || '';
+  if (!content) return setFeedbackStatus('请输入建议或反馈', 'error');
+  if (feedbackSubmit) feedbackSubmit.disabled = true;
+  setFeedbackStatus('正在提交…');
+  try {
+    const response = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+      cache: 'no-store'
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const error = new Error(data.error || '提交失败');
+      error.status = response.status;
+      throw error;
+    }
+    if (feedbackContent) feedbackContent.value = '';
+    updateFeedbackCounter();
+    setFeedbackStatus(`✓ 提交成功！今天还可以提交 ${data.remaining} 次`, 'success');
+    if (feedbackSubmit) feedbackSubmit.disabled = data.remaining <= 0;
+  } catch (error) {
+    setFeedbackStatus(error.message || '提交失败，请稍后再试', 'error');
+    if (feedbackSubmit) feedbackSubmit.disabled = error.status === 429;
+  }
+});
+
 function renderCurrentRoute(selectedPlayer = null) {
+  recordCurrentPageView();
   const match = location.pathname.match(/^\/profile(?:\/(\d+))?\/?$/);
   const isProfilePage = Boolean(match);
   const isMediaVideosPage = /^\/media\/videos\/?$/.test(location.pathname);
   const isMediaPage = isMediaVideosPage || /^\/media\/?$/.test(location.pathname);
   const isUpdatesPage = /^\/updates\/?$/.test(location.pathname);
   const isRealtimePage = /^\/realtime\/?$/.test(location.pathname);
+  const isFeedbackPage = /^\/feedback\/?$/.test(location.pathname);
   const buildOrderMatch = location.pathname.match(/^\/build-orders(?:\/([a-z0-9-]+))?\/?$/i);
   const isBuildOrdersPage = Boolean(buildOrderMatch);
   const buildOrderSlug = buildOrderMatch?.[1] || '';
@@ -1981,17 +2065,19 @@ function renderCurrentRoute(selectedPlayer = null) {
   document.body.classList.toggle('page-updates', isUpdatesPage);
   document.body.classList.toggle('page-realtime', isRealtimePage);
   document.body.classList.toggle('page-build-orders', isBuildOrdersPage);
+  document.body.classList.toggle('page-feedback', isFeedbackPage);
   document.querySelector('#player-profile').hidden = !isProfilePage;
   document.querySelector('#media-page').hidden = !isMediaPage;
   document.querySelector('#updates-page').hidden = !isUpdatesPage;
   document.querySelector('#realtime-page').hidden = !isRealtimePage;
   document.querySelector('#build-orders-page').hidden = !isBuildOrdersPage;
+  document.querySelector('#feedback-page').hidden = !isFeedbackPage;
   document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => {
-    const activePage = isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isMediaPage ? 'media' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : 'leaderboard';
+    const activePage = isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isMediaPage ? 'media' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
     const active = link.dataset.page === activePage;
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : '天梯榜单';
+  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : isFeedbackPage ? '反馈区' : '天梯榜单';
   if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; realtimeRequest?.abort?.(); realtimeVersionRequest?.abort?.(); }
   if (isMediaPage) {
     profileDetailsRequestId++;
@@ -2032,6 +2118,16 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsSocket?.close();
     profileDetailsSocket = null;
     loadBuildOrders(buildOrderSlug);
+    return;
+  }
+  if (isFeedbackPage) {
+    profileDetailsRequestId++;
+    clearTimeout(profileDetailsTimeout);
+    clearTimeout(profileDetailsRetryTimer);
+    clearInterval(profileDetailsRequestTimer);
+    profileDetailsSocket?.close();
+    profileDetailsSocket = null;
+    loadFeedbackStatus();
     return;
   }
   if (!isProfilePage) {
@@ -2258,7 +2354,7 @@ profileSearchForm.addEventListener('submit', async event => {
 });
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
-  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : '/';
+  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : link.dataset.page === 'feedback' ? '/feedback' : '/';
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));
@@ -2276,6 +2372,7 @@ window.addEventListener('popstate', () => renderCurrentRoute());
 renderCurrentRoute();
 refreshProfileSearchStatus();
 setInterval(refreshProfileSearchStatus, 5000);
+setInterval(loadSiteStats, 60_000);
 
 
 

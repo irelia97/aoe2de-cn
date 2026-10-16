@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
@@ -27,6 +27,16 @@ if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const dataDir = join(root, '.cache');
+const feedbackLogPath = join(dataDir, 'feedback-submissions.jsonl');
+const siteTrafficPath = join(dataDir, 'site-traffic.json');
+const feedbackDailyLimit = 5;
+const feedbackMaxLength = 1000;
+const siteTrafficExcludedIps = new Set([
+  '127.0.0.1',
+  '::1',
+  '103.42.182.205',
+  ...String(process.env.SITE_STATS_EXCLUDED_IPS || '').split(',').map(value => value.trim()).filter(Boolean)
+]);
 const aoe2RecsProfileCacheDir = join(dataDir, 'aoe2recs-profiles');
 const gameAssetCacheDir = join(dataDir, 'game-assets');
 const profilePointerPath = join(dataDir, 'profile-index-current.json');
@@ -118,6 +128,10 @@ const mediaVideoCycleDelay = 3 * 60 * 60_000;
 const mediaVideoCircuitBaseDelay = 2 * 60 * 60_000;
 const mediaVideoCircuitMaxDelay = 6 * 60 * 60_000;
 const mediaLiveRefreshInterval = 2 * 60_000;
+const mediaLiveSourceTimeout = 30_000;
+const mediaLiveStatsTimeout = 20_000;
+const mediaLiveRoundTimeout = 90_000;
+const mediaLiveFailedSourceGrace = 10 * 60_000;
 const bilibiliCookiePath = join(dataDir, 'bilibili-cookie.txt');
 const bilibiliCookie = process.env.BILIBILI_COOKIE || process.env.BILI_COOKIE || (() => {
   try { return readFileSync(bilibiliCookiePath, 'utf8').trim(); } catch { return ''; }
@@ -228,6 +242,17 @@ async function loadRlReference() {
 
 function mediaText(value) {
   return String(value ?? '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+}
+
+function withMediaTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}超时（${Math.round(timeoutMs / 1000)} 秒）`)), timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function mediaXmlTag(block, tag) {
@@ -1160,7 +1185,7 @@ async function fetchLivePlayerLeaderboardStats(rlIds) {
   if (cached && Date.now() - cached.savedAt < livePlayerStatsCacheTtl) return cached.data;
   if (livePlayerStatsRefreshes.has(key)) return livePlayerStatsRefreshes.get(key);
 
-  const refresh = (async () => {
+  const refreshWork = (async () => {
     const endpoint = new URL('https://aoe-api.worldsedgelink.com/community/leaderboard/getPersonalStat');
     endpoint.search = new URLSearchParams({ title: 'age2', profile_ids: JSON.stringify(profileIds.map(Number)) });
     const response = await fetchUpstreamWithRateLimit(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
@@ -1180,12 +1205,27 @@ async function fetchLivePlayerLeaderboardStats(rlIds) {
     const data = { randomMap1v1: select(3), randomMapTeam: select(4) };
     livePlayerStatsCache.set(key, { savedAt: Date.now(), data });
     return data;
-  })().catch(error => {
+  })();
+  const refresh = withMediaTimeout(refreshWork, mediaLiveStatsTimeout, `直播玩家天梯请求 ${key}`).catch(error => {
     if (cached) return cached.data;
     throw error;
   }).finally(() => livePlayerStatsRefreshes.delete(key));
   livePlayerStatsRefreshes.set(key, refresh);
   return refresh;
+}
+
+async function fetchMediaLiveSource(source) {
+  if (source.platform === 'bilibili') {
+    const roomId = source.url.match(/live\.bilibili\.com\/(\d+)/i)?.[1];
+    return fetchBilibiliLive({ ...source, roomId, url: source.url });
+  }
+  if (source.platform === 'youtube_live' || source.platform === 'youtube') {
+    return fetchYoutubeLive({ ...source, liveUrl: source.url, url: source.url, platform: 'youtube', isCN: source.isCN });
+  }
+  if (source.platform === 'twitch') return fetchTwitchLive(source);
+  if (source.platform === 'douyu') return fetchDouyuLive(source);
+  if (source.platform === 'douyin') return fetchDouyinLive(source);
+  return fetchGenericLive(source);
 }
 
 async function fetchMediaLive() {
@@ -1197,21 +1237,11 @@ async function fetchMediaLive() {
     const batch = sources.slice(index, index + batchSize);
     const batchResults = await Promise.all(batch.map(async source => {
       try {
-        let item;
-        if (source.platform === 'bilibili') {
-          const roomId = source.url.match(/live\.bilibili\.com\/(\d+)/i)?.[1];
-          item = await fetchBilibiliLive({ ...source, roomId, url: source.url });
-        } else if (source.platform === 'youtube_live' || source.platform === 'youtube') {
-          item = await fetchYoutubeLive({ ...source, liveUrl: source.url, url: source.url, platform: 'youtube', isCN: source.isCN });
-        } else if (source.platform === 'twitch') {
-          item = await fetchTwitchLive(source);
-        } else if (source.platform === 'douyu') {
-          item = await fetchDouyuLive(source);
-        } else if (source.platform === 'douyin') {
-          item = await fetchDouyinLive(source);
-        } else {
-          item = await fetchGenericLive(source);
-        }
+        const item = await withMediaTimeout(
+          fetchMediaLiveSource(source),
+          mediaLiveSourceTimeout,
+          `直播源 ${source.name || source.platform || source.url}`
+        );
         return { ...item, name: source.name, rl: source.rl || [], isCN: source.isCN, sourceOrder: source.sourceOrder };
       } catch (error) {
         console.warn(`[media] live source failed: ${source.name || source.platform}`, error.message);
@@ -1339,13 +1369,20 @@ function refreshMediaVideos() {
 
 function refreshMediaLive() {
   if (mediaLiveRefreshPromise) return mediaLiveRefreshPromise;
-  mediaLiveRefreshPromise = loadPersistentMediaLive().then(() => fetchMediaLive()).then(async live => {
+  const refreshStartedAt = Date.now();
+  const refreshWork = loadPersistentMediaLive().then(() => fetchMediaLive()).then(async live => {
+    if (Date.now() - refreshStartedAt >= mediaLiveRoundTimeout) {
+      throw new Error('直播刷新结果已超过整轮时限，丢弃过期结果');
+    }
     const failedSourceKeys = live.failedSourceKeys || new Set();
     const merged = [...live];
     const mergedKeys = new Set(merged.map(item => `${item.platform || ''}|${item.url || ''}`));
+    const mergeNow = Date.now();
     for (const previous of Array.isArray(mediaCache.data.live) ? mediaCache.data.live : []) {
       const key = `${previous.platform || ''}|${previous.url || ''}`;
-      if (failedSourceKeys.has(key) && !mergedKeys.has(key)) {
+      const checkedAt = Date.parse(previous.checkedAt || '');
+      const withinFailureGrace = Number.isFinite(checkedAt) && mergeNow - checkedAt <= mediaLiveFailedSourceGrace;
+      if (failedSourceKeys.has(key) && !mergedKeys.has(key) && withinFailureGrace) {
         merged.push(previous);
         mergedKeys.add(key);
       }
@@ -1366,8 +1403,11 @@ function refreshMediaLive() {
     )).toISOString();
     mediaCache.liveSavedAt = now;
     await writeFile(mediaLiveCachePath, JSON.stringify({ savedAt: new Date(now).toISOString(), live: merged }, null, 2), 'utf8');
+    console.log(`[media] live refresh complete: ${merged.length} live streams; next refresh ${mediaCache.data.nextLiveRefreshAt}`);
     return mediaCache.data;
-  }).finally(() => { mediaLiveRefreshPromise = null; });
+  });
+  mediaLiveRefreshPromise = withMediaTimeout(refreshWork, mediaLiveRoundTimeout, '直播刷新整轮任务')
+    .finally(() => { mediaLiveRefreshPromise = null; });
   return mediaLiveRefreshPromise;
 }
 
@@ -1460,6 +1500,7 @@ function parseInsightsCard(html, title) {
 
 async function fetchInsightsSummaryPage(leaderboardId, country = '') {
   const url = new URL(`https://www.aoe2insights.com/leaderboard/${leaderboardId}/`);
+  url.searchParams.set('alltime', 'False');
   if (country) url.searchParams.set('country', country.toLowerCase());
   else url.searchParams.set('page', '1');
   const response = await fetch(url, { headers: { accept: 'text/html', 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(20_000) });
@@ -2289,6 +2330,202 @@ function searchProfiles(query, leaderboardId) {
   return results.slice(0, 30);
 }
 
+const chinaDayFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+const feedbackDailyCounts = new Map();
+let feedbackStatePromise = null;
+let feedbackWriteQueue = Promise.resolve();
+let siteTrafficStatePromise = null;
+let siteTrafficState = { version: 1, days: {} };
+let siteTrafficWriteQueue = Promise.resolve();
+
+function chinaDayKey(date = new Date()) {
+  const parts = Object.fromEntries(chinaDayFormatter.formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function normalizeClientIp(value) {
+  let ip = String(value || '').split(',')[0].trim();
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  if (/^\[[^\]]+\](?::\d+)?$/.test(ip)) ip = ip.slice(1, ip.indexOf(']'));
+  if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(ip)) ip = ip.slice(0, ip.lastIndexOf(':'));
+  return ip || 'unknown';
+}
+
+function isInternalIp(ip) {
+  if (ip === '::1' || ip === '127.0.0.1') return true;
+  if (/^10\./.test(ip) || /^192\.168\./.test(ip) || /^169\.254\./.test(ip)) return true;
+  const private172 = ip.match(/^172\.(\d+)\./);
+  if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return true;
+  return /^(?:fc|fd|fe80):/i.test(ip);
+}
+
+function requestClientIp(req) {
+  const peerIp = normalizeClientIp(req.socket?.remoteAddress);
+  const realIp = isInternalIp(peerIp) ? normalizeClientIp(req.headers['x-real-ip']) : '';
+  return realIp && realIp !== 'unknown' ? realIp : peerIp;
+}
+
+function excludeFromSiteTraffic(ip) {
+  return siteTrafficExcludedIps.has(ip) || isInternalIp(ip) || ip === 'unknown';
+}
+
+async function readJsonRequest(req, maxBytes = 4096) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        tooLarge = true;
+        return;
+      }
+      if (!tooLarge) chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (tooLarge) {
+        const error = new Error('提交内容过长');
+        error.statusCode = 413;
+        return reject(error);
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      } catch {
+        const error = new Error('提交格式不正确');
+        error.statusCode = 400;
+        reject(error);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function ensureFeedbackState() {
+  if (feedbackStatePromise) return feedbackStatePromise;
+  feedbackStatePromise = (async () => {
+    let text = '';
+    try {
+      text = await readFile(feedbackLogPath, 'utf8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    const today = chinaDayKey();
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        const recordDay = record.day || chinaDayKey(new Date(record.sentAt));
+        if (recordDay !== today || !record.ip) continue;
+        const key = `${today}|${record.ip}`;
+        feedbackDailyCounts.set(key, (feedbackDailyCounts.get(key) || 0) + 1);
+      } catch {}
+    }
+  })().catch(error => {
+    feedbackStatePromise = null;
+    throw error;
+  });
+  return feedbackStatePromise;
+}
+
+async function feedbackStatus(ip) {
+  await ensureFeedbackState();
+  const key = `${chinaDayKey()}|${ip}`;
+  const used = feedbackDailyCounts.get(key) || 0;
+  return { limit: feedbackDailyLimit, used, remaining: Math.max(0, feedbackDailyLimit - used) };
+}
+
+async function saveFeedback(ip, content) {
+  const day = chinaDayKey();
+  const key = `${day}|${ip}`;
+  const status = await feedbackStatus(ip);
+  if (status.remaining <= 0) {
+    const error = new Error('今天的反馈提交次数已用完，请明天再试');
+    error.statusCode = 429;
+    throw error;
+  }
+  const sentAt = new Date().toISOString();
+  const record = { day, ip, content, sentAt };
+  feedbackDailyCounts.set(key, status.used + 1);
+  const write = feedbackWriteQueue.catch(() => {}).then(async () => {
+    await mkdir(dataDir, { recursive: true });
+    await appendFile(feedbackLogPath, `${JSON.stringify(record)}\n`, 'utf8');
+  });
+  feedbackWriteQueue = write;
+  try {
+    await write;
+  } catch (error) {
+    feedbackDailyCounts.set(key, Math.max(0, (feedbackDailyCounts.get(key) || 1) - 1));
+    throw error;
+  }
+  return { sentAt, limit: feedbackDailyLimit, used: status.used + 1, remaining: Math.max(0, status.remaining - 1) };
+}
+
+async function ensureSiteTrafficState() {
+  if (siteTrafficStatePromise) return siteTrafficStatePromise;
+  siteTrafficStatePromise = (async () => {
+    try {
+      const saved = JSON.parse(await readFile(siteTrafficPath, 'utf8'));
+      if (saved && typeof saved.days === 'object') siteTrafficState = { version: 1, days: saved.days };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    return siteTrafficState;
+  })().catch(error => {
+    siteTrafficStatePromise = null;
+    throw error;
+  });
+  return siteTrafficStatePromise;
+}
+
+function currentSiteStats() {
+  const date = chinaDayKey();
+  const day = siteTrafficState.days[date] || {};
+  const visitors = Array.isArray(day.visitors) ? day.visitors : [];
+  return { date, users: visitors.length, views: Math.max(0, Number(day.views) || 0) };
+}
+
+async function persistSiteTraffic() {
+  const snapshot = JSON.stringify(siteTrafficState, null, 2);
+  const temporaryPath = `${siteTrafficPath}.tmp`;
+  const write = siteTrafficWriteQueue.catch(() => {}).then(async () => {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(temporaryPath, snapshot, 'utf8');
+    await rename(temporaryPath, siteTrafficPath);
+  });
+  siteTrafficWriteQueue = write;
+  return write;
+}
+
+async function recordPageView(req) {
+  await ensureSiteTrafficState();
+  const ip = requestClientIp(req);
+  if (excludeFromSiteTraffic(ip)) return { ...currentSiteStats(), counted: false };
+  const date = chinaDayKey();
+  const day = siteTrafficState.days[date] && typeof siteTrafficState.days[date] === 'object'
+    ? siteTrafficState.days[date]
+    : { views: 0, visitors: [], updatedAt: null };
+  const visitors = new Set(Array.isArray(day.visitors) ? day.visitors : []);
+  visitors.add(createHash('sha256').update(`aoe2cn-site-traffic-v1:${ip}`).digest('hex'));
+  siteTrafficState.days[date] = {
+    views: Math.max(0, Number(day.views) || 0) + 1,
+    visitors: [...visitors],
+    uniqueVisitors: visitors.size,
+    updatedAt: new Date().toISOString()
+  };
+  await persistSiteTraffic();
+  return { ...currentSiteStats(), counted: true };
+}
+
+function sendNoStoreJson(res, statusCode, data) {
+  res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  return res.end(JSON.stringify(data));
+}
+
 function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
   const versionText = String(version || 'snapshot').replace(/[^a-zA-Z0-9_.:-]/g, '_');
   const etag = `"${versionText}"`;
@@ -2307,6 +2544,46 @@ function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === '/api/site-stats') {
+    if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
+    try {
+      await ensureSiteTrafficState();
+      const stats = currentSiteStats();
+      return sendVersionedJson(req, res, stats, `site-stats-${stats.date}-${stats.users}-${stats.views}`, 60);
+    } catch (error) {
+      return sendNoStoreJson(res, 500, { error: error.message || '读取访问统计失败' });
+    }
+  }
+  if (url.pathname === '/api/page-view') {
+    if (req.method !== 'POST') return sendNoStoreJson(res, 405, { error: '仅支持 POST 请求' });
+    try {
+      return sendNoStoreJson(res, 200, await recordPageView(req));
+    } catch (error) {
+      return sendNoStoreJson(res, 500, { error: error.message || '记录访问失败' });
+    }
+  }
+  if (url.pathname === '/api/feedback') {
+    const ip = requestClientIp(req);
+    if (req.method === 'GET') {
+      try {
+        return sendNoStoreJson(res, 200, await feedbackStatus(ip));
+      } catch (error) {
+        return sendNoStoreJson(res, 500, { error: error.message || '读取反馈状态失败' });
+      }
+    }
+    if (req.method !== 'POST') return sendNoStoreJson(res, 405, { error: '仅支持 GET 或 POST 请求' });
+    try {
+      const payload = await readJsonRequest(req);
+      const content = String(payload?.content || '').replace(/\u0000/g, '').replace(/\r\n?/g, '\n').trim();
+      const length = [...content].length;
+      if (!length) return sendNoStoreJson(res, 400, { error: '请输入建议或反馈' });
+      if (length > feedbackMaxLength) return sendNoStoreJson(res, 400, { error: `反馈内容不能超过 ${feedbackMaxLength} 个字` });
+      return sendNoStoreJson(res, 201, { ok: true, ...(await saveFeedback(ip, content)) });
+    } catch (error) {
+      const statusCode = Number(error?.statusCode) || 500;
+      return sendNoStoreJson(res, statusCode, { error: statusCode >= 500 ? '反馈保存失败，请稍后再试' : error.message });
+    }
+  }
   if (url.pathname === '/api/realtime/status') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(realtimeService.getRealtimeStatus()));
@@ -2655,7 +2932,7 @@ http.createServer(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|realtime|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|realtime|feedback|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const path = normalize(join(root, 'public', relative));
   if (!path.startsWith(join(root, 'public'))) {
     res.writeHead(403); return res.end('Forbidden');

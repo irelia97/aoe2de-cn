@@ -734,6 +734,50 @@ body.page-realtime #leaderboard{overflow-x:clip}
   .page-realtime .realtime-grid{position:fixed;top:150px;right:20px;width:420px;max-width:calc(100vw - 40px);max-height:calc(100vh - 175px);overflow-y:auto;overflow-x:hidden;margin:0;z-index:5}
 }
 @media(max-width:760px){.page-realtime .realtime-grid{position:static;max-height:none;overflow:visible}}
+
+/* Daily traffic counters */
+.daily-usage{display:flex;align-items:center;gap:10px;white-space:nowrap;letter-spacing:0}
+.daily-usage span{display:inline-flex;align-items:baseline;gap:5px;color:#879086;font:9px var(--sans)}
+.daily-usage b{color:#c8d7b4;font:600 10px var(--mono)}
+html[data-resolved-theme="light"] .daily-usage span{color:#697166}
+html[data-resolved-theme="light"] .daily-usage b{color:#506537}
+@media(max-width:1100px){.top-right .live-label{display:none}.top-right{gap:8px}.daily-usage{gap:7px}.daily-usage span{font-size:8px}}
+@media(max-width:620px){.top-right{width:100%;justify-content:flex-end}.daily-usage{margin-right:auto}.daily-usage span{display:grid;gap:1px}.daily-usage b{font-size:9px}}
+
+/* Feedback */
+body.page-feedback #leaderboard> :not(#feedback-page):not(.topbar):not(footer){display:none!important}
+body.page-feedback #leaderboard{max-width:none;padding-right:56px}
+.page-feedback .topbar-search{display:none}
+.feedback-page{width:min(760px,100%);margin:0 auto;padding:38px 0 58px}
+.feedback-heading{padding:30px 34px;border:1px solid #3c443a;border-radius:6px;background:linear-gradient(145deg,#202620,#171b18);box-shadow:0 14px 34px rgba(0,0,0,.14)}
+.feedback-heading h2{margin:7px 0 8px;color:#e5eadf;font-size:30px}
+.feedback-heading p{margin:0;color:#8f998d;font-size:12px}
+.feedback-card{margin-top:20px;padding:28px 30px;border:1px solid #343c33;border-radius:6px;background:#171c18;box-shadow:0 12px 30px rgba(0,0,0,.12)}
+.feedback-card label{display:block;margin-bottom:10px;color:#cdd8c4;font-size:13px;font-weight:700}
+.feedback-card textarea{display:block;width:100%;min-height:170px;resize:vertical;padding:14px 15px;border:1px solid #3b4638;border-radius:5px;outline:0;background:#0f1410;color:#e7ebe4;font:13px/1.75 var(--sans);transition:border-color .15s,box-shadow .15s}
+.feedback-card textarea:focus{border-color:#78965a;box-shadow:0 0 0 3px rgba(120,150,90,.13)}
+.feedback-card textarea::placeholder{color:#667064}
+.feedback-form-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:12px}
+.feedback-form-footer span{color:#737d71;font:9px var(--mono)}
+.feedback-form-footer button{height:38px;padding:0 22px;border:1px solid #607b48;border-radius:4px;background:#2d3a28;color:#d4e8bf;font:700 11px var(--sans);cursor:pointer;transition:background .15s,border-color .15s}
+.feedback-form-footer button:hover:not(:disabled){border-color:#88a968;background:#3a4a33}
+.feedback-form-footer button:disabled{opacity:.52;cursor:not-allowed}
+.feedback-status{min-height:20px;margin:10px 0 0;color:#889486;font-size:11px}
+.feedback-status.is-success{margin-top:14px;padding:11px 13px;border:1px solid #6f9f4e;border-radius:5px;background:rgba(87,137,55,.2);color:#c9f5a8;font-size:13px;font-weight:800;letter-spacing:.02em;box-shadow:0 0 0 3px rgba(111,159,78,.08)}.feedback-status.is-error{color:#df8f7c}
+.feedback-sponsor{display:grid;justify-items:center;margin-top:24px;padding:28px;border:1px solid #343c33;border-radius:6px;background:#171c18;text-align:center}
+.feedback-sponsor img{display:block;width:min(320px,100%);height:auto;border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.24)}
+.feedback-sponsor p{margin:18px 0 0;color:#bdc8b5;font-size:13px;font-weight:700}
+html[data-resolved-theme="light"] .feedback-heading{border-color:#c9cec3;background:linear-gradient(145deg,#f4f3ed,#ebeae2);box-shadow:0 12px 30px rgba(54,63,49,.08)}
+html[data-resolved-theme="light"] .feedback-heading h2{color:#30372f}
+html[data-resolved-theme="light"] .feedback-heading p{color:#687067}
+html[data-resolved-theme="light"] .feedback-card,html[data-resolved-theme="light"] .feedback-sponsor{border-color:#cfcec5;background:#f4f2eb;box-shadow:0 10px 26px rgba(54,63,49,.07)}
+html[data-resolved-theme="light"] .feedback-card label{color:#3d493a}
+html[data-resolved-theme="light"] .feedback-card textarea{border-color:#c5c9bd;background:#fffef9;color:#30372f}
+html[data-resolved-theme="light"] .feedback-card textarea::placeholder{color:#92988f}
+html[data-resolved-theme="light"] .feedback-form-footer button{border-color:#8da378;background:#dfe8d5;color:#405331}
+html[data-resolved-theme="light"] .feedback-status.is-success{border-color:#86ad67;background:#e5f3da;color:#31551e;box-shadow:0 0 0 3px rgba(111,159,78,.1)}
+html[data-resolved-theme="light"] .feedback-sponsor p{color:#515c4e}
+@media(max-width:700px){body.page-feedback #leaderboard{padding-right:16px}.feedback-page{padding-top:24px}.feedback-heading,.feedback-card,.feedback-sponsor{padding:22px 18px}.feedback-heading h2{font-size:26px}.feedback-form-footer{align-items:flex-end}.feedback-sponsor img{width:min(290px,100%)}}
 .realtime-watch-link{display:inline-flex;align-items:center;justify-content:center;margin-left:6px;color:#18d7b0;text-decoration:none;font-size:17px;line-height:1;cursor:pointer}.realtime-watch-link:hover{color:#75ffe2;transform:scale(1.12)}.realtime-player-name{color:inherit;text-decoration:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.realtime-player-name:hover{color:#ffd36a;text-decoration:underline}
 .realtime-player-civ .realtime-civ-icon{width:14px;height:14px;object-fit:contain;display:inline-block;flex:0 0 14px;font-size:12px;line-height:14px}.realtime-player-civ img.realtime-civ-icon{vertical-align:middle}@media(max-width:760px){.realtime-player-civ .realtime-civ-icon{width:11px;height:11px;flex-basis:11px;font-size:10px;line-height:11px}}
 .realtime-watch-link{width:30px;height:28px;margin-left:7px;border:1px solid rgba(24,215,176,.72);border-radius:7px;background:rgba(24,215,176,.14);font-size:22px;text-shadow:0 0 8px rgba(24,215,176,.9);box-shadow:0 0 10px rgba(24,215,176,.22);animation:realtimeWatchPulse 1.8s ease-in-out infinite}.realtime-watch-link:hover{color:#b4ffef;background:rgba(24,215,176,.3);box-shadow:0 0 15px rgba(24,215,176,.55);transform:scale(1.08)}@keyframes realtimeWatchPulse{0%,100%{box-shadow:0 0 7px rgba(24,215,176,.2)}50%{box-shadow:0 0 14px rgba(24,215,176,.55)}}
