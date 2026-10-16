@@ -62,21 +62,19 @@
       <section class="events-page" id="events-page" hidden>
         <div class="events-hero">
           <div><div class="section-kicker">AOE II MATCHES</div><h2>赛事信息</h2><p>帝国时代 II 即将开始、进行中与最近结束的比赛</p></div>
-          <span id="eventsUpdated">正在同步…</span>
         </div>
         <div class="events-toolbar">
           <div class="events-tabs" role="tablist" aria-label="赛事状态">
             <button type="button" class="selected" data-events-tab="upcoming" role="tab" aria-selected="true">即将开始与进行中 <b id="eventsUpcomingCount">—</b></button>
             <button type="button" data-events-tab="completed" role="tab" aria-selected="false">最近结束 <b id="eventsCompletedCount">—</b></button>
           </div>
-          <span class="events-refresh-countdown" id="eventsRefreshCountdown" aria-live="polite">60s 后刷新</span>
         </div>
         <div class="events-filters" aria-label="赛事筛选">
           <label for="eventsCountryFilter"><span>选手国家 / 地区</span><select id="eventsCountryFilter"><option value="all">全部国家 / 地区</option></select></label>
           <label for="eventsTournamentFilter"><span>赛事</span><select id="eventsTournamentFilter"><option value="all">全部赛事</option></select></label>
           <div class="events-tier-filter"><span>赛事等级</span><div class="events-tier-buttons" id="eventsTierButtons" role="group" aria-label="赛事等级筛选"></div></div>
         </div>
-        <div class="events-content-layout"><div class="events-main-column"><div class="events-list" id="eventsList"><div class="events-empty"><span class="loader"></span>正在加载赛事信息…</div></div></div><aside class="events-tournaments-panel"><div class="events-section-heading"><h3>赛事列表</h3><span>赛事滚动</span></div><div class="events-tournaments-list" id="eventsTournamentsList"><div class="events-empty"><span class="loader"></span>正在加载赛事列表…</div></div></aside></div>
+        <div class="events-content-layout"><div class="events-main-column"><div class="events-list" id="eventsList"><div class="events-empty"><span class="loader"></span>正在加载赛事信息…</div></div></div><aside class="events-tournaments-panel"><div class="events-section-heading"><h3>赛事列表</h3></div><div class="events-tournaments-list" id="eventsTournamentsList"><div class="events-empty"><span class="loader"></span>正在加载赛事列表…</div></div></aside></div>
         <div class="events-attribution">数据来源：<a href="https://liquipedia.net/ageofempires/Liquipedia:Upcoming_and_ongoing_matches" target="_blank" rel="noopener noreferrer">Liquipedia</a>，依据 <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener noreferrer">CC BY-SA 3.0</a> 使用。赛事信息以 Liquipedia 实际录入为准。</div>
       </section>
       <section class="media-page" id="media-page" hidden>
@@ -116,6 +114,6 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=events-start-sort-v2" defer></script>
+  <script src="/app.js?v=events-display-clean-v1" defer></script>
 </body>
 </html>

@@ -2395,24 +2395,16 @@ async function loadEvents() {
   } finally {
     eventsLoading = false;
     eventsRefreshRemaining = 60;
-    updateEventsCountdown();
   }
-}
-
-function updateEventsCountdown() {
-  const countdown = document.querySelector('#eventsRefreshCountdown');
-  if (countdown) countdown.textContent = `${Math.max(0, eventsRefreshRemaining)}s 后刷新`;
 }
 
 function startEventsPolling() {
   clearInterval(eventsPollTimer);
   eventsRefreshRemaining = 60;
-  updateEventsCountdown();
   loadEvents();
   eventsPollTimer = setInterval(() => {
     eventsRefreshRemaining -= 1;
     if (eventsRefreshRemaining <= 0) loadEvents();
-    updateEventsCountdown();
   }, 1_000);
 }
 
