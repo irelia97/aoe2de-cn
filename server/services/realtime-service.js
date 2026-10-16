@@ -12,6 +12,7 @@ export function createRealtimeService(deps) {
     worldsEdgeMatchCache,
     worldsEdgeMatchCachePath,
     forceChinaCountry,
+    getLiveTournamentForPlayer = () => '',
     WebSocket,
     onMatchAdded = () => {}
   } = deps;
@@ -23,10 +24,10 @@ export function createRealtimeService(deps) {
     const abandoned = match.abandoned === true;
     const now = Math.floor(Date.now() / 1000);
     // An unfinished record can be left behind by a disconnected or abandoned
-    // match. Keep only plausible current matches in the realtime monitor.
+    // lobby. Keep only plausible current matches in the realtime monitor.
     const activeAge = started > 0 && started <= now + 300 && now - started <= 3 * 60 * 60;
     const inProgress = Boolean(!abandoned && activeAge && (match.live || !finished));
-    const status = inProgress ? 'game' : 'offline';
+    const status = inProgress ? (String(match.leaderboard || '').trim() ? 'game' : 'lobby') : 'offline';
     return {
       profileId: String(profileId),
       status,
@@ -34,6 +35,8 @@ export function createRealtimeService(deps) {
         id: match.id ?? null,
         map: match.rms || '',
         leaderboard: match.leaderboard || '',
+        tournament: match.tournament || match.event || match.eventName || '',
+        lobby: match.lobby || '',
         server: match.server || '',
         started,
         finished,
@@ -61,9 +64,72 @@ export function createRealtimeService(deps) {
   let realtimePayloadCache = null;
   let realtimeRefreshPromise = null;
 
+  async function resolveUnknownMaps(states) {
+    const missingCivilization = player => {
+      const value = String(player?.civilizationId || player?.civilization || '').trim().toLowerCase();
+      return !value || value === 'unknown' || value === '未知' || value === '未知文明';
+    };
+    const unknownMatches = new Map();
+    for (const state of Array.isArray(states) ? states : []) {
+      const map = String(state?.match?.map || '').trim().toLowerCase();
+      const matchId = String(state?.match?.id || '').trim();
+      const hasMissingCivilization = (state?.match?.players || []).some(missingCivilization);
+      if ((map === 'unknown' || !map || hasMissingCivilization) && matchId && !unknownMatches.has(matchId)) unknownMatches.set(matchId, state);
+    }
+    if (!unknownMatches.size) return states;
+    const resolved = new Map();
+    await Promise.all([...unknownMatches.entries()].map(async ([matchId, state]) => {
+      try {
+        const latest = await fetchLatestWorldsEdgeMatchOnce(state.profileId);
+        const latestId = String(latest?.id ?? latest?.matchId ?? '').trim();
+        const latestMap = String(latest?.rms || latest?.map || latest?.mapName || '').trim();
+        if (latestId && latestId !== matchId) return;
+        const civilizationByKey = new Map();
+        for (const player of Array.isArray(latest?.players) ? latest.players : []) {
+          const civilization = String(player?.civilization || player?.civ || '').trim();
+          const civilizationId = String(player?.civilization_id || player?.civilizationId || player?.civ || '').trim();
+          if (!civilization && !civilizationId) continue;
+          for (const key of [player?.id, player?.profileId, player?.name]) {
+            const normalized = String(key || '').trim().toLowerCase();
+            if (normalized) civilizationByKey.set(normalized, { civilization, civilizationId });
+          }
+        }
+        if ((latestMap && latestMap.toLowerCase() !== 'unknown') || civilizationByKey.size) resolved.set(matchId, { map: latestMap, civilizationByKey });
+      } catch {}
+    }));
+    if (!resolved.size) return states;
+    return states.map(state => {
+      const matchId = String(state?.match?.id || '').trim();
+      const result = resolved.get(matchId);
+      if (!result) return state;
+      const players = (state.match.players || []).map(player => {
+        if (!missingCivilization(player)) return player;
+        const keys = [player?.profileId, player?.id, player?.name].map(value => String(value || '').trim().toLowerCase()).filter(Boolean);
+        const civ = keys.map(key => result.civilizationByKey.get(key)).find(Boolean);
+        return civ ? { ...player, civilization: civ.civilization || player.civilization, civilizationId: civ.civilizationId || player.civilizationId } : player;
+      });
+      return { ...state, match: { ...state.match, ...(result.map && result.map.toLowerCase() !== 'unknown' ? { map: result.map } : {}), players } };
+    });
+  }
+
   async function buildEnrichedPayload(profileIds, states, source = 'aoe2companion-latest') {
+    states = await resolveUnknownMaps(states);
     const ratingMap = new Map();
     try { const board = await getLeaderboard(3); for (const row of board.rows || []) ratingMap.set(String(row.profileId), Number(row.rating)); } catch {}
+    // WebSocket match payloads carry the rating for the current match mode,
+    // which can be a team-game rating. Always overlay each player with their
+    // 1v1 random-map rating before the realtime page renders the card.
+    const matchPlayerIds = [...new Set((Array.isArray(states) ? states : [])
+      .flatMap(state => Array.isArray(state?.match?.players) ? state.match.players : [])
+      .map(player => String(player?.profileId ?? player?.id ?? '').trim())
+      .filter(id => /^\d+$/.test(id)))];
+    await Promise.all(matchPlayerIds.map(async profileId => {
+      try {
+        const rows = await fetchPersonalLeaderboardStats(profileId);
+        const row = Array.isArray(rows) ? rows.find(item => Number(item.id) === 3) : null;
+        if (row && Number.isFinite(Number(row.rating))) ratingMap.set(profileId, Number(row.rating));
+      } catch {}
+    }));
     const liveByProfile = new Map();
     try {
       const media = await getMediaCache();
@@ -78,7 +144,12 @@ export function createRealtimeService(deps) {
       const profile = localProfileDetails(state.profileId)?.player || {};
       const own = state.match?.players?.find(player => String(player.profileId) === String(state.profileId)) || {};
       const reference = realtimeReferences.get(String(state.profileId));
-      return { ...state, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: profile.name || own.name || `玩家 ${state.profileId}`, team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? own.rating ?? null } };
+      const matchTournamentUrl = typeof state.match?.tournament === 'object' ? state.match.tournament?.url : state.match?.tournamentUrl;
+      const liveTournament = state.match && (!state.match.tournament || !matchTournamentUrl)
+        ? (state.match.players || []).map(matchPlayer => getLiveTournamentForPlayer(matchPlayer.name)).find(Boolean) || null
+        : null;
+      const enrichedMatch = state.match ? { ...state.match, tournament: state.match.tournament || liveTournament?.name || '', tournamentUrl: state.match.tournamentUrl || matchTournamentUrl || liveTournament?.url || '', bestOf: state.match.bestOf || liveTournament?.bestOf || null, score: Array.isArray(state.match.score) && state.match.score.length >= 2 ? state.match.score : (liveTournament?.score || ['', '']), players: (state.match.players || []).map(matchPlayer => ({ ...matchPlayer, rating: ratingMap.get(String(matchPlayer.profileId ?? matchPlayer.id)) ?? matchPlayer.rating ?? null })) } : null;
+      return { ...state, match: enrichedMatch, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: profile.name || own.name || `玩家 ${state.profileId}`, team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? own.rating ?? null } };
     });
     return { source, checkedAt: new Date().toISOString(), states: enrichedStates };
   }
@@ -87,20 +158,15 @@ export function createRealtimeService(deps) {
     return buildEnrichedPayload(profileIds, await fetchRealtimeStates(profileIds));
   }
 
-  const realtimeWebSocketGroupCount = 3;
+  const realtimeWebSocketBatchSize = 50;
   const realtimeSocketGroups = new Map();
   let realtimeSocketGeneration = 0;
   let realtimeSocketProfileIds = [];
   let realtimeSocketPublishTimer = null;
   let realtimeValidationTimer = null;
   const realtimeValidatedMatches = new Map();
-  const realtimeValidationConcurrency = 2;
-  const realtimeValidationQueue = [];
-  let realtimeValidationActive = 0;
-  let realtimeLastPublishAt = null;
-  const realtimeValidationStats = { kept: 0, removed: 0, deferred: 0, lastRunAt: null, lastResult: null };
 
-  function socketMatchId(match) { return String(match?.matchId ?? match?.match_id ?? match?.id ?? ''); }
+  function socketMatchId(match) { return String(match?.matchId ?? match?.id ?? ''); }
   function socketMatchPlayerIds(match) {
     return new Set((Array.isArray(match?.players) ? match.players : []).map(player => String(player?.id ?? player?.profileId ?? player?.profile_id ?? '').trim()).filter(id => /^\d+$/.test(id)));
   }
@@ -110,6 +176,7 @@ export function createRealtimeService(deps) {
     let changed = false;
     for (const group of realtimeSocketGroups.values()) {
       if (group.matches.delete(id)) changed = true;
+      if (group.lobbies.delete(id)) changed = true;
     }
     if (changed) scheduleRealtimeSocketPublish();
     return changed;
@@ -135,74 +202,61 @@ export function createRealtimeService(deps) {
     if (!previous || JSON.stringify(previous) !== JSON.stringify(match)) changed = true;
     return changed;
   }
-  async function validateRealtimeMatchEveryThirtyMinutes(match) {
-    if (!match) return;
+  function validateRealtimeMatchHourly(match) {
+    if (!WebSocket || !match) return;
     const matchId = socketMatchId(match);
-    const monitoredIds = new Set(realtimeSocketProfileIds.map(String));
-    const profileIds = [...socketMatchPlayerIds(match)].sort((a, b) => Number(monitoredIds.has(b)) - Number(monitoredIds.has(a)));
+    const profileIds = [...socketMatchPlayerIds(match)];
     if (!matchId || !profileIds.length) return;
-    let lastError = null;
-    for (const profileId of profileIds) {
-      try {
-        const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
-        const latestState = normalizeRealtimeLatestMatch(latest, profileId);
-        const active = socketMatchId(latest) === matchId && latestState.status === 'game';
-        if (active) {
-          const group = [...realtimeSocketGroups.values()].find(item => item.ids.includes(profileId)) || [...realtimeSocketGroups.values()][0];
-          if (group && upsertRealtimeMatch(group, latest)) scheduleRealtimeSocketPublish();
-          realtimeValidationStats.kept += 1;
-          realtimeValidationStats.lastResult = { matchId, result: 'kept', profileId };
-          console.log('[realtime] 30-minute API validation kept match ' + matchId);
-        } else {
-          removeRealtimeMatch(matchId);
-          realtimeValidationStats.removed += 1;
-          realtimeValidationStats.lastResult = { matchId, result: 'removed', profileId };
-          console.log('[realtime] 30-minute API validation removed stale match ' + matchId);
-        }
-        realtimeValidationStats.lastRunAt = new Date().toISOString();
-        return;
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    realtimeValidationStats.deferred += 1;
-    realtimeValidationStats.lastRunAt = new Date().toISOString();
-    realtimeValidationStats.lastResult = { matchId, result: 'deferred', error: lastError?.message || 'all lookups failed' };
-    console.warn('[realtime] 30-minute API validation deferred for match ' + matchId + ': ' + (lastError?.message || 'all lookups failed'));
-  }
-  function drainRealtimeValidationQueue() {
-    while (realtimeValidationActive < realtimeValidationConcurrency && realtimeValidationQueue.length) {
-      const match = realtimeValidationQueue.shift();
-      realtimeValidationActive += 1;
-      Promise.resolve(validateRealtimeMatchEveryThirtyMinutes(match))
-        .catch(error => console.warn('[realtime] 30-minute API validation failed:', error.message))
-        .finally(() => {
-          realtimeValidationActive -= 1;
-          const timer = setTimeout(drainRealtimeValidationQueue, 750);
-          timer.unref?.();
+    const url = 'wss://socket.aoe2companion.com/listen?handler=ongoing-matches&profile_ids=' + profileIds.join(',');
+    let socket;
+    let settled = false;
+    let timeout;
+    const finish = active => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try { socket?.close(); } catch {}
+      if (!active) removeRealtimeMatch(matchId);
+      else console.log('[realtime] hourly validation kept match ' + matchId);
+    };
+    timeout = setTimeout(() => finish(false), 7000);
+    timeout.unref?.();
+    try {
+      socket = new WebSocket(url);
+      socket.addEventListener('message', event => {
+        let messages;
+        try { messages = JSON.parse(String(event.data)); } catch { return; }
+        if (!Array.isArray(messages)) messages = [messages];
+        const current = messages.find(message => {
+          const type = String(message?.type || '');
+          const data = message?.data || {};
+          const id = socketMatchId(data);
+          const finished = data.finished != null && data.finished !== 0 && data.finished !== '';
+          return id === matchId && type !== 'matchFinished' && !finished;
         });
-    }
+        if (current) {
+          const group = [...realtimeSocketGroups.values()].find(item => profileIds.some(id => item.ids.includes(id))) || [...realtimeSocketGroups.values()][0];
+          if (group && upsertRealtimeMatch(group, current.data)) scheduleRealtimeSocketPublish();
+          finish(true);
+        } else finish(false);
+      });
+      socket.addEventListener('error', () => finish(false));
+      socket.addEventListener('close', () => { if (!settled) finish(false); });
+    } catch { finish(false); }
   }
-  function enqueueRealtimeValidation(match) {
-    realtimeValidationQueue.push(match);
-    drainRealtimeValidationQueue();
-  }
-  function validateRealtimeMatchesEveryThirtyMinutes() {
+  function validateRealtimeMatchesHourly() {
     const now = Math.floor(Date.now() / 1000);
-    const validationBucket = Math.floor(now / (30 * 60));
     const seen = new Set();
     for (const group of realtimeSocketGroups.values()) {
       for (const match of group.matches.values()) {
         const id = socketMatchId(match);
         const started = Number(match.started || 0);
-        if (!id || started <= 0) continue;
-        // Reconcile every active match every 30 minutes because events that
-        // occur while a WebSocket is reconnecting are not replayed.
-        const key = id + ':' + validationBucket;
-        seen.add(key);
-        if (!realtimeValidatedMatches.has(key)) {
-          realtimeValidatedMatches.set(key, Date.now());
-          enqueueRealtimeValidation(match);
+        const hour = started > 0 ? Math.floor((now - started) / 3600) : 0;
+        if (!id || hour < 1) continue;
+        seen.add(id + ':' + hour);
+        if (!realtimeValidatedMatches.has(id + ':' + hour)) {
+          realtimeValidatedMatches.set(id + ':' + hour, Date.now());
+          validateRealtimeMatchHourly(match);
         }
       }
     }
@@ -210,22 +264,25 @@ export function createRealtimeService(deps) {
   }
   function startRealtimeValidationLoop() {
     if (realtimeValidationTimer) return;
-    realtimeValidationTimer = setInterval(validateRealtimeMatchesEveryThirtyMinutes, 60000);
+    realtimeValidationTimer = setInterval(validateRealtimeMatchesHourly, 60000);
     realtimeValidationTimer.unref?.();
   }
   function normalizeSocketMatch(match) {
     if (!match || typeof match !== 'object') return null;
     const started = typeof match.started === 'string' ? Math.floor(Date.parse(match.started) / 1000) : Number(match.started || 0);
     const finished = typeof match.finished === 'string' ? Math.floor(Date.parse(match.finished) / 1000) : Number(match.finished || 0);
-    const rawPlayers = Array.isArray(match.players) ? match.players : Array.isArray(match.teams) ? match.teams.flatMap(team => Array.isArray(team?.players) ? team.players : []) : [];
-    return { ...match, id: match.id ?? match.matchId ?? null, started: Number.isFinite(started) ? started : 0, finished: Number.isFinite(finished) ? finished : 0, rms: match.rms || match.map || match.mapName || '', leaderboard: match.leaderboard || match.leaderboardId || '', players: rawPlayers.map(player => ({ ...player, id: player.id ?? player.profileId ?? null, civilization: player.civilization || player.civ || '', civilization_id: player.civilization_id || player.civ || '', country: player.country || '' })) };
+    return { ...match, id: match.id ?? match.matchId ?? null, started: Number.isFinite(started) ? started : 0, finished: Number.isFinite(finished) ? finished : 0, rms: match.rms || match.map || match.mapName || '', leaderboard: match.leaderboardId || match.leaderboard || '', players: Array.isArray(match.players) ? match.players.map(player => ({ ...player, id: player.id ?? player.profileId ?? null, civilization: player.civilization || player.civ || '', civilization_id: player.civilization_id || player.civ || '', country: player.country || '' })) : [] };
   }
   function socketStates() {
     const matchByProfile = new Map();
     for (const group of realtimeSocketGroups.values()) {
+      for (const lobby of group.lobbies.values()) for (const player of Array.isArray(lobby.players) ? lobby.players : []) {
+        const id = String(player.id ?? player.profileId ?? '').trim();
+        if (/^\d+$/.test(id)) matchByProfile.set(id, lobby);
+      }
       for (const match of group.matches.values()) for (const player of Array.isArray(match.players) ? match.players : []) {
         const id = String(player.id ?? player.profileId ?? '').trim();
-        if (/^\d+$/.test(id)) matchByProfile.set(id, match);
+        if (/^\d+$/.test(id) && !matchByProfile.has(id)) matchByProfile.set(id, match);
       }
     }
     return realtimeSocketProfileIds.map(profileId => { const match = matchByProfile.get(String(profileId)); return match ? normalizeRealtimeLatestMatch(match, profileId) : { profileId: String(profileId), status: 'offline', match: null }; });
@@ -238,7 +295,6 @@ export function createRealtimeService(deps) {
       const key = realtimeSocketProfileIds.join(',');
       realtimePayloadCache = { key, payload };
       await writeFile(realtimePayloadPath, JSON.stringify({ key, payload }), 'utf8');
-      realtimeLastPublishAt = payload.checkedAt;
       console.log(`[realtime] websocket cache refreshed: ${payload.states.length} states`);
     } catch (error) { console.warn('[realtime] websocket cache publish failed:', error.message); }
   }
@@ -250,32 +306,25 @@ export function createRealtimeService(deps) {
   function connectRealtimeSocketGroup(group) {
     if (!WebSocket) return;
     const generation = realtimeSocketGeneration;
-    const url = `wss://socket.aoe2companion.com/listen?handler=match-updated&profile_ids=${group.ids.join(',')}`;
+    const url = `wss://socket.aoe2companion.com/listen?handler=ongoing-matches&profile_ids=${group.ids.join(',')}`;
     try {
       const socket = new WebSocket(url);
       group.socket = socket;
       group.connected = false;
-      socket.addEventListener('open', () => { group.connected = true; group.connectedAt = new Date().toISOString(); group.failures = 0; console.log(`[realtime] match-updated group ${group.index + 1} connected (${group.ids.length} profiles)`); });
+      socket.addEventListener('open', () => { group.connected = true; group.failures = 0; console.log(`[realtime] websocket group ${group.index + 1} connected (${group.ids.length} profiles)`); });
       socket.addEventListener('message', event => {
         let messages; try { messages = JSON.parse(String(event.data)); } catch { return; }
         if (!Array.isArray(messages)) messages = [messages];
-        group.lastMessageAt = new Date().toISOString();
-        group.messagesReceived += messages.length;
         let changed = false;
         for (const message of messages) {
           const type = String(message?.type || '');
-          const data = message?.data || message || {};
+          const data = message?.data || {};
           const id = socketMatchId(data);
           if (!id) continue;
-          const finished = data.finished != null && data.finished !== 0 && data.finished !== '';
-          const abandoned = data.abandoned === true;
-          if (finished || abandoned) {
-            if (removeRealtimeMatch(id)) changed = true;
-          }
-          else if (!type || type === 'matchAdded' || type === 'matchUpdated' || type === 'matchStarted') {
-            const isNewMatch = ![...realtimeSocketGroups.values()].some(item => item.matches.has(id));
+          if (type === 'matchFinished') { if (group.matches.delete(id)) changed = true; }
+          else if (type === 'matchAdded' || type === 'matchUpdated' || type === 'matchStarted') {
             if (upsertRealtimeMatch(group, data)) changed = true;
-            if (isNewMatch) Promise.resolve(onMatchAdded(data)).catch(error => console.warn('[danmaku] matchAdded hook failed:', error.message));
+            if (type === 'matchAdded') Promise.resolve(onMatchAdded(data)).catch(error => console.warn('[danmaku] matchAdded hook failed:', error.message));
           }
         }
         if (changed) scheduleRealtimeSocketPublish();
@@ -283,52 +332,78 @@ export function createRealtimeService(deps) {
       socket.addEventListener('error', () => { group.connected = false; });
       socket.addEventListener('close', () => {
         group.connected = false;
-        group.disconnectedAt = new Date().toISOString();
         if (generation !== realtimeSocketGeneration) return;
         group.failures = (group.failures || 0) + 1;
-        group.reconnectCount += 1;
         const delay = Math.min(60000, Math.max(5000, group.failures * 5000));
         clearTimeout(group.reconnectTimer);
         group.reconnectTimer = setTimeout(() => connectRealtimeSocketGroup(group), delay);
         group.reconnectTimer.unref?.();
-        console.warn(`[realtime] match-updated group ${group.index + 1} closed; reconnecting in ${Math.round(delay / 1000)}s`);
+        console.warn(`[realtime] websocket group ${group.index + 1} closed; reconnecting in ${Math.round(delay / 1000)}s`);
       });
-    } catch (error) { group.connected = false; console.warn(`[realtime] match-updated group ${group.index + 1} failed:`, error.message); }
+    } catch (error) { group.connected = false; console.warn(`[realtime] websocket group ${group.index + 1} failed:`, error.message); }
   }
+  function normalizeSocketLobby(data) {
+    if (!data || typeof data !== 'object') return null;
+    const rawPlayers = Array.isArray(data.players) ? data.players : Array.isArray(data.slots) ? data.slots : data.slots && typeof data.slots === 'object' ? Object.values(data.slots) : [];
+    const players = rawPlayers.map(slot => {
+      const player = slot?.player || slot?.user || slot;
+      return { ...player, id: player?.id ?? player?.profileId ?? player?.profile_id ?? player?.userId ?? player?.user_id ?? null, name: player?.name || player?.alias || player?.profileName || '', civilization: player?.civilization || player?.civ || '', civilization_id: player?.civilization_id || player?.civilizationId || player?.civ || '', country: player?.country || '', rating: player?.rating ?? null, team: player?.team ?? slot?.team ?? null, color: player?.color ?? slot?.color ?? null };
+    }).filter(player => player.id != null);
+    const startedValue = data.started || data.startedAt || data.created || data.createdAt || data.updated || data.updatedAt;
+    const parsedStarted = typeof startedValue === 'string' ? Math.floor(Date.parse(startedValue) / 1000) : Number(startedValue || 0);
+    return { ...data, id: data.id ?? data.lobbyId ?? data.matchId ?? null, started: Number.isFinite(parsedStarted) && parsedStarted > 0 ? parsedStarted : Math.floor(Date.now() / 1000), finished: 0, rms: data.rms || data.map || data.mapName || data.map_type || '', leaderboard: '', server: data.server || data.region || '', lobby: true, players };
+  }
+  function connectRealtimeLobbyGroup(group) {
+    if (!WebSocket) return;
+    const generation = realtimeSocketGeneration;
+    const url = `wss://socket.aoe2companion.com/listen?handler=lobbies&profile_ids=${group.ids.join(',')}`;
+    try {
+      const socket = new WebSocket(url);
+      group.lobbySocket = socket;
+      group.lobbyConnected = false;
+      socket.addEventListener('open', () => { group.lobbyConnected = true; group.lobbyFailures = 0; console.log(`[realtime] lobby websocket group ${group.index + 1} connected (${group.ids.length} profiles)`); });
+      socket.addEventListener('message', event => {
+        let messages; try { messages = JSON.parse(String(event.data)); } catch { return; }
+        if (!Array.isArray(messages)) messages = [messages];
+        let changed = false;
+        for (const message of messages) {
+          const type = String(message?.type || '').toLowerCase();
+          const data = message?.data || {};
+          const id = String(data?.lobbyId ?? data?.id ?? data?.matchId ?? '');
+          if (!id) continue;
+          if (type.includes('removed') || type.includes('deleted') || type.includes('finished')) { group.lobbies.delete(id); changed = true; }
+          else if (type.includes('added') || type.includes('updated') || type.includes('created') || type === '') { const lobby = normalizeSocketLobby(data); if (lobby) { group.lobbies.set(id, lobby); changed = true; } }
+        }
+        if (changed) scheduleRealtimeSocketPublish();
+      });
+      socket.addEventListener('error', () => { group.lobbyConnected = false; });
+      socket.addEventListener('close', () => {
+        group.lobbyConnected = false;
+        if (generation !== realtimeSocketGeneration) return;
+        group.lobbyFailures = (group.lobbyFailures || 0) + 1;
+        const delay = Math.min(60000, Math.max(5000, group.lobbyFailures * 5000));
+        clearTimeout(group.lobbyReconnectTimer);
+        group.lobbyReconnectTimer = setTimeout(() => connectRealtimeLobbyGroup(group), delay);
+        group.lobbyReconnectTimer.unref?.();
+        console.warn(`[realtime] lobby websocket group ${group.index + 1} closed; reconnecting in ${Math.round(delay / 1000)}s`);
+      });
+    } catch (error) { group.lobbyConnected = false; console.warn(`[realtime] lobby websocket group ${group.index + 1} failed:`, error.message); }
+  }
+
   async function startRealtimeWebSockets(profileIds) {
     const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
     const key = ids.join(',');
     if (key === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size) return;
     realtimeSocketGeneration += 1;
-    for (const group of realtimeSocketGroups.values()) { clearTimeout(group.reconnectTimer); try { group.socket?.close(); } catch {} }
+    for (const group of realtimeSocketGroups.values()) { clearTimeout(group.reconnectTimer); clearTimeout(group.lobbyReconnectTimer); try { group.socket?.close(); group.lobbySocket?.close(); } catch {} }
     realtimeSocketGroups.clear();
     realtimeSocketProfileIds = ids;
-    const batchSize = Math.max(1, Math.ceil(ids.length / realtimeWebSocketGroupCount));
-    for (let offset = 0, index = 0; offset < ids.length; offset += batchSize, index += 1) {
-      const group = {
-        index, ids: ids.slice(offset, offset + batchSize), matches: new Map(),
-        connected: false, connectedAt: null, disconnectedAt: null, lastMessageAt: null, messagesReceived: 0, reconnectCount: 0, failures: 0, socket: null, reconnectTimer: null
-      };
-      realtimeSocketGroups.set(index, group);
-    }
-    const cachedPayload = await getCachedPayload(ids);
-    for (const state of Array.isArray(cachedPayload?.states) ? cachedPayload.states : []) {
-      if (state?.status !== 'game' || !state.match) continue;
-      const group = [...realtimeSocketGroups.values()].find(item => item.ids.includes(String(state.profileId)));
-      if (!group) continue;
-      upsertRealtimeMatch(group, {
-        ...state.match,
-        matchId: state.match.id,
-        rms: state.match.map,
-        players: Array.isArray(state.match.players) ? state.match.players.map(player => ({ ...player, id: player.profileId, civilization_id: player.civilizationId })) : []
-      });
-    }
-    for (const group of realtimeSocketGroups.values()) connectRealtimeSocketGroup(group);
+    for (let offset = 0, index = 0; offset < ids.length; offset += realtimeWebSocketBatchSize, index += 1) { const group = { index, ids: ids.slice(offset, offset + realtimeWebSocketBatchSize), matches: new Map(), lobbies: new Map(), connected: false, lobbyConnected: false, failures: 0, lobbyFailures: 0, socket: null, lobbySocket: null, reconnectTimer: null, lobbyReconnectTimer: null }; realtimeSocketGroups.set(index, group); connectRealtimeSocketGroup(group); connectRealtimeLobbyGroup(group); }
     startRealtimeValidationLoop();
   }
   function realtimeWebSocketsHealthy(profileIds) {
     const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value)))];
-    return ids.join(',') === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size > 0 && [...realtimeSocketGroups.values()].every(group => group.connected);
+    return ids.join(',') === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size > 0 && [...realtimeSocketGroups.values()].every(group => group.connected && group.lobbyConnected);
   }
 
   async function refreshRealtimePayload(profileIds) {
@@ -339,7 +414,6 @@ export function createRealtimeService(deps) {
       const payload = await buildRealtimePayload(ids);
       realtimePayloadCache = { key, payload };
       await writeFile(realtimePayloadPath, JSON.stringify({ key, payload }), 'utf8');
-      realtimeLastPublishAt = payload.checkedAt;
       console.log(`[realtime] cache refreshed: ${payload.states.length} states`);
       return payload;
     })();
@@ -388,7 +462,7 @@ export function createRealtimeService(deps) {
       states.push(...batchStates);
       if (offset + batchSize < ids.length) await new Promise(resolve => setTimeout(resolve, batchIntervalMs));
     }
-    const activeIds = [...new Set(states.filter(state => state.status === 'game' && state.match).flatMap(state => Array.isArray(state.match.players) ? state.match.players.map(player => player.profileId) : []).map(value => String(value || '').trim()).filter(value => /^[0-9]+$/.test(value)))];
+    const activeIds = [...new Set(states.filter(state => (state.status === 'game' || state.status === 'lobby') && state.match).flatMap(state => Array.isArray(state.match.players) ? state.match.players.map(player => player.profileId) : []).map(value => String(value || '').trim()).filter(value => /^[0-9]+$/.test(value)))];
     const ratings = new Map();
     await Promise.all(activeIds.map(async profileId => {
       try {
@@ -416,28 +490,5 @@ export function createRealtimeService(deps) {
     return realtimePayloadCache?.key === key ? realtimePayloadCache.payload : null;
   }
 
-  function getRealtimeStatus() {
-    return {
-      healthy: realtimeSocketGroups.size > 0 && [...realtimeSocketGroups.values()].every(group => group.connected),
-      profileCount: realtimeSocketProfileIds.length,
-      groupCount: realtimeSocketGroups.size,
-      socketCount: realtimeSocketGroups.size,
-      checkedAt: realtimePayloadCache?.payload?.checkedAt || null,
-      lastPublishAt: realtimeLastPublishAt,
-      groups: [...realtimeSocketGroups.values()].map(group => ({
-        group: group.index + 1,
-        profileCount: group.ids.length,
-        connected: group.connected,
-        connectedAt: group.connectedAt,
-        disconnectedAt: group.disconnectedAt,
-        lastMessageAt: group.lastMessageAt,
-        messagesReceived: group.messagesReceived,
-        reconnectCount: group.reconnectCount,
-        matchCount: group.matches.size
-      })),
-      validation: { ...realtimeValidationStats, active: realtimeValidationActive, queued: realtimeValidationQueue.length }
-    };
-  }
-
-  return { normalizeRealtimeLatestMatch, refreshRealtimePayload, readCachedRealtimeLatestMatch, fetchRealtimeStates, getCachedPayload, getRealtimeStatus, startRealtimeWebSockets, realtimeWebSocketsHealthy };
+  return { normalizeRealtimeLatestMatch, refreshRealtimePayload, readCachedRealtimeLatestMatch, fetchRealtimeStates, getCachedPayload, startRealtimeWebSockets, realtimeWebSocketsHealthy };
 }
