@@ -2199,8 +2199,7 @@ function eventCountryKey(opponent) {
 
 function eventCountryEmoji(countryCode) {
   const rawCode = String(countryCode || '').toUpperCase();
-  const code = rawCode === 'HK' || rawCode === 'TW' ? 'CN' : rawCode;
-  return /^[A-Z]{2}$/.test(code) ? [...code].map(letter => String.fromCodePoint(127397 + letter.charCodeAt(0))).join('') : '🌐';
+  return /^[A-Z]{2}$/.test(rawCode) ? [...rawCode].map(letter => String.fromCodePoint(127397 + letter.charCodeAt(0))).join('') : '🌐';
 }
 
 function eventStatusLabel(match) {
@@ -2267,16 +2266,30 @@ function refreshEventFilterOptions() {
   const countrySelect = document.querySelector('#eventsCountryFilter');
   const tournamentSelect = document.querySelector('#eventsTournamentFilter');
   if (countrySelect) {
-    countrySelect.innerHTML = '<option value="all">全部国家 / 地区</option>' + [...countries.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name, 'zh-CN')).map(([value, item]) => `<option value="${escapeHtml(value)}" aria-label="${escapeHtml(item.name)}">${eventCountryEmoji(item.code)} ${escapeHtml(item.name)}</option>`).join('');
+    const countryPriority = { CN: 0, TW: 1, HK: 2 };
+    countrySelect.innerHTML = '<option value="all">全部国家 / 地区</option>' + [...countries.entries()].sort((a, b) => {
+      const rankA = countryPriority[a[0]] ?? 99;
+      const rankB = countryPriority[b[0]] ?? 99;
+      return rankA - rankB || a[1].name.localeCompare(b[1].name, 'zh-CN');
+    }).map(([value, item]) => `<option value="${escapeHtml(value)}" aria-label="${escapeHtml(item.name)}">${escapeHtml(item.name)}</option>`).join('');
     if ([...countrySelect.options].some(option => option.value === eventsCountryFilter)) countrySelect.value = eventsCountryFilter;
     else eventsCountryFilter = countrySelect.value = 'all';
   }
   if (tournamentSelect) {
-    const tierOrder = ['S-Tier', 'A-Tier', 'B-Tier', 'C-Tier', 'Showm.'];
-    const tierByTournament = new Map((eventsTournamentsPayload?.tournaments || []).map(item => [item.name, item.tier || 'Other']));
+    const tierOrder = { 'S-Tier': 0, 'A-Tier': 1, 'B-Tier': 2, 'C-Tier': 3, 'Showm.': 4, 'Mon.': 5, Other: 6 };
+    const tournamentMeta = Array.isArray(eventsTournamentsPayload?.tournaments) ? eventsTournamentsPayload.tournaments : [];
+    const normalizeTournamentName = value => String(value || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ').trim();
+    const tierForTournament = name => {
+      const normalized = normalizeTournamentName(name);
+      const item = tournamentMeta.find(entry => {
+        const candidate = normalizeTournamentName(entry.name);
+        return candidate === normalized || normalized.startsWith(`${candidate} `) || candidate.startsWith(`${normalized} `);
+      });
+      return item?.tier || 'Other';
+    };
     const orderedTournaments = [...tournaments].sort((a, b) => {
-      const ai = tierOrder.indexOf(tierByTournament.get(a)); const bi = tierOrder.indexOf(tierByTournament.get(b));
-      const rankA = ai < 0 ? 99 : ai; const rankB = bi < 0 ? 99 : bi;
+      const rankA = tierOrder[tierForTournament(a)] ?? tierOrder.Other;
+      const rankB = tierOrder[tierForTournament(b)] ?? tierOrder.Other;
       return rankA - rankB || a.localeCompare(b, 'zh-CN');
     });
     tournamentSelect.innerHTML = '<option value="all">全部赛事</option>' + orderedTournaments.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');

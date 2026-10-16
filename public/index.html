@@ -114,6 +114,12 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=events-display-clean-v1" defer></script>
+  <script src="/app.js?v=events-country-label-v5" defer></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const icon = document.querySelector('[data-page="updates"] .nav-icon');
+      if (icon) icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8.5L18 7v13.5H6z"/><path d="M14 3.5V7h4M9 11h6M9 14.5h6M9 18h4"/></svg>';
+    });
+  </script>
 </body>
 </html>
