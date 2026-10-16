@@ -2347,20 +2347,31 @@ function renderEventsTournaments() {
   const monthText = { Jan: '1月', Feb: '2月', Mar: '3月', Apr: '4月', May: '5月', Jun: '6月', Jul: '7月', Aug: '8月', Sep: '9月', Oct: '10月', Nov: '11月', Dec: '12月' };
   const translateDates = value => String(value || '日期待定').replace(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/g, month => monthText[month] || month).replace(/月\s+/g, '月').replace(/(?<!\d)(\d{1,2})(?=\s*(?:[-–]|$))/g, '$1日').replace(/日\s*[-–]\s*/g, '日–');
   const monthNumbers = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-  const startTime = (item, status) => {
+  const eventTime = (item, status, part = 'start') => {
     const raw = String(item?.dates || '');
-    const match = raw.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\b/);
-    if (!match) return Number.MAX_SAFE_INTEGER;
+    const match = raw.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:\s*[-–]\s*(?:(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+)?(\d{1,2}))?\b/);
+    if (!match) return null;
     const now = new Date();
-    let year = now.getFullYear();
-    const month = monthNumbers[match[1]];
-    if (status === 'Upcoming' && month < now.getMonth()) year += 1;
-    if (status !== 'Upcoming' && month > now.getMonth()) year -= 1;
-    return Date.UTC(year, month, Number(match[2]));
+    const startMonth = monthNumbers[match[1]];
+    const startDay = Number(match[2]);
+    let startYear = now.getFullYear();
+    if (status === 'Upcoming' && startMonth < now.getMonth()) startYear += 1;
+    if (status !== 'Upcoming' && startMonth > now.getMonth()) startYear -= 1;
+    if (part === 'start' || !match[4]) return Date.UTC(startYear, startMonth, startDay);
+    const endMonth = match[3] ? monthNumbers[match[3]] : startMonth;
+    const endYear = endMonth < startMonth ? startYear + 1 : startYear;
+    return Date.UTC(endYear, endMonth, Number(match[4]));
   };
   const groups = ['Ongoing', 'Upcoming', 'Completed'].map(status => ({
     status,
-    items: items.filter(item => item.status === status).sort((a, b) => startTime(a, status) - startTime(b, status) || String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN'))
+    items: items.filter(item => item.status === status).sort((a, b) => {
+      const direction = status === 'Completed' ? -1 : 1;
+      const at = eventTime(a, status, status === 'Completed' ? 'end' : 'start');
+      const bt = eventTime(b, status, status === 'Completed' ? 'end' : 'start');
+      if (at === null && bt !== null) return 1;
+      if (at !== null && bt === null) return -1;
+      return (at === null || bt === null ? 0 : direction * (at - bt)) || String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+    })
   })).filter(group => group.items.length);
   const card = item => `<article class="events-tournament-card"><div class="events-tournament-card-body"><b class="events-tournament-tier">${escapeHtml(tierText[item.tier] || '其它')}</b><h4>${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name)}</a>` : escapeHtml(item.name)}</h4><small>${escapeHtml(translateDates(item.dates))}</small></div></article>`;
   target.innerHTML = groups.length ? groups.map(group => `<section class="events-tournament-group"><h4 class="events-tournament-group-title"><span>${statusText[group.status] || group.status}</span><b>${group.items.length}</b></h4><div class="events-tournament-group-list">${group.items.map(card).join('')}</div></section>`).join('') : '<div class="events-empty">暂无赛事列表</div>';
