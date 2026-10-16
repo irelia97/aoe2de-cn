@@ -210,7 +210,16 @@ async def command_login(args: argparse.Namespace) -> None:
             qr = page.locator(settings["qr_selector"]).first
             try:
                 await qr.wait_for(state="visible", timeout=30_000)
-                await qr.screenshot(path=str(qr_path))
+                if args.platform == "douyu":
+                    canvas = page.locator(".js-qrcode-con canvas, .scan-qrcode canvas").first
+                    await canvas.wait_for(state="visible", timeout=30_000)
+                    await page.wait_for_timeout(1_500)
+                    # Douyu paints the QR code into a canvas. Element screenshots
+                    # of .scan-qrcode are blank in headless Chromium, while the
+                    # composited page screenshot contains the rendered canvas.
+                    await page.screenshot(path=str(qr_path), full_page=False)
+                else:
+                    await qr.screenshot(path=str(qr_path))
             except Exception:
                 await page.screenshot(path=str(qr_path), full_page=False)
             print(f"登录二维码已保存：{qr_path}", flush=True)
@@ -297,15 +306,18 @@ async def command_send(args: argparse.Namespace) -> None:
     state_path = state_path_for(args)
     screenshot_path = screenshot_path_for(args.platform)
     target_url = normalize_room_url(args.platform, args.room)
+    douyu_ws_event: asyncio.Event | None = None
     douyu_ack_event: asyncio.Event | None = None
     douyu_ack_result: dict[str, int | None] = {"res": None}
     websocket_observer = None
     if args.platform == "douyu":
+        douyu_ws_event = asyncio.Event()
         douyu_ack_event = asyncio.Event()
 
         def websocket_observer(websocket) -> None:
             if "wsproxy.douyu.com" not in websocket.url:
                 return
+            douyu_ws_event.set()
 
             def on_frame(payload) -> None:
                 raw = payload if isinstance(payload, bytes) else str(payload).encode()
@@ -333,8 +345,18 @@ async def command_send(args: argparse.Namespace) -> None:
             # usable.  Give it a moment so the send acknowledgement can be
             # observed reliably instead of racing the socket connection.
             if args.platform == "douyu":
-                await page.wait_for_timeout(3000)
+                try:
+                    await asyncio.wait_for(douyu_ws_event.wait(), timeout=15)
+                except TimeoutError as error:
+                    raise LiveDanmakuError("斗鱼聊天连接未能及时建立") from error
+                await page.wait_for_timeout(1500)
             await fill_chat_input(chat_input, message)
+            # Keep a before/after pair so we can verify that the text reached
+            # the actual chat editor and that the send action changed it.
+            await page.screenshot(
+                path=str(STATE_ROOT / f"{args.platform}_before_send.png"),
+                full_page=False,
+            )
             if args.dry_run:
                 print("试运行成功：已找到输入框并填入文字，没有发送。")
                 return
@@ -346,6 +368,10 @@ async def command_send(args: argparse.Namespace) -> None:
                 await chat_input.press("Enter")
 
             await page.wait_for_timeout(600)
+            await page.screenshot(
+                path=str(STATE_ROOT / f"{args.platform}_after_send.png"),
+                full_page=False,
+            )
             remaining = await chat_input_text(chat_input)
             if remaining == message:
                 await chat_input.press("Enter")

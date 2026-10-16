@@ -596,6 +596,12 @@ body.page-profile #leaderboard:before,body.page-media #leaderboard:before,body.p
 @media(min-width:901px) and (max-width:1300px){body.page-profile #leaderboard:before,body.page-media #leaderboard:before,body.page-updates #leaderboard:before,body.page-build-orders #leaderboard:before,body:not(.page-profile):not(.page-media):not(.page-updates):not(.page-build-orders) #leaderboard:before{left:180px}}
 @media(max-width:900px){body.page-profile #leaderboard:before,body.page-media #leaderboard:before,body.page-updates #leaderboard:before,body.page-build-orders #leaderboard:before,body:not(.page-profile):not(.page-media):not(.page-updates):not(.page-build-orders) #leaderboard:before{left:205px;display:block}}
 @media(max-width:620px){body.page-profile #leaderboard:before,body.page-media #leaderboard:before,body.page-updates #leaderboard:before,body.page-build-orders #leaderboard:before,body:not(.page-profile):not(.page-media):not(.page-updates):not(.page-build-orders) #leaderboard:before{top:56px;left:0}}
+
+/* Build-order artwork and original guide icons. */
+.build-order-resource-grid i{width:24px;height:24px;overflow:hidden;background:#242824}
+.build-order-resource-grid i img{display:block;width:100%;height:100%;object-fit:contain}
+.build-order-detail-panel{grid-template-columns:1fr}
+.build-order-detail-panel>div{min-width:0}
 /* Live match emphasis */
 .profile-match-card.is-live {
   position: relative;
@@ -1157,3 +1163,11 @@ body.page-realtime #leaderboard>.topbar{width:100%;height:63px;margin:0;padding-
 /* Compact the realtime spectator control. */
 .page-realtime .realtime-watch-link{width:24px;height:22px;margin-left:5px;border-radius:5px;font-size:17px;text-shadow:0 0 5px rgba(24,215,176,.8);box-shadow:0 0 7px rgba(24,215,176,.18)}
 .page-realtime .realtime-watch-link:hover{box-shadow:0 0 10px rgba(24,215,176,.45)}
+/* Compact stream-platform marks in the realtime status table. */
+.page-realtime .realtime-platform-icon{display:inline-grid;place-items:center;width:18px;height:18px;margin-right:6px;box-sizing:border-box;border:1px solid rgba(255,255,255,.18);border-radius:5px;background:rgba(255,255,255,.1);vertical-align:-4px;line-height:1;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.page-realtime .realtime-platform-icon img{display:block;width:13px;height:13px;object-fit:contain}
+.page-realtime .realtime-platform-icon-douyin{color:#f5f7f7;font:900 17px/1 var(--sans);text-shadow:-1px 0 #25f4ee,1px 0 #fe2c55}
+html[data-resolved-theme="light"] .page-realtime .realtime-platform-icon{border-color:rgba(24,39,31,.18);background:rgba(24,39,31,.07);box-shadow:0 1px 2px rgba(24,39,31,.08)}
+html[data-resolved-theme="light"] .page-realtime .realtime-platform-icon-douyin{color:#18271f;text-shadow:-1px 0 #0bbab4,1px 0 #e5234b}
+
+.build-guide-invite{display:block;margin-top:12px;color:#ef4242;font-size:17px;font-weight:800;line-height:1.5}.build-guide-pictures{display:flex;align-items:flex-end;justify-content:center;width:100%;height:100%;gap:6px;position:relative;z-index:1}.build-order-art .build-guide-pictures img{width:145px;height:145px;object-fit:contain}.build-order-art .build-guide-pictures.is-dual img{width:44%;max-width:145px;height:145px}.build-order-detail-art .build-guide-pictures{align-items:center}.build-order-detail-art .build-guide-pictures.is-dual img{width:48%;max-height:190px;object-fit:contain}

@@ -40,9 +40,9 @@ function readLeaderboardLocalCache(id) {
     return { data: cached.data, expiresAt: Number(cached.expiresAt) || 0, savedAt: Number(cached.savedAt) || 0 };
   } catch { return null; }
 }
-function saveLeaderboardLocalCache(id, data) {
+function saveLeaderboardLocalCache(id, data, expiresAt = Number(data.cacheExpiresAt) || Date.now() + 60_000) {
   try {
-    localStorage.setItem(`${leaderboardLocalCachePrefix}${id}`, JSON.stringify({ data, expiresAt: Number(data.cacheExpiresAt) || Date.now() + 60_000, savedAt: Date.now() }));
+    localStorage.setItem(`${leaderboardLocalCachePrefix}${id}`, JSON.stringify({ data, expiresAt, savedAt: Date.now() }));
   } catch { /* Storage may be disabled or full. */ }
 }
 const fmt = new Intl.NumberFormat('zh-CN');
@@ -310,6 +310,14 @@ function displayLeaderboard(data) {
   document.querySelector('#boardType').textContent = data.label;
   loadLeaderboardSummary();
 }
+function leaderboardResponseExpiresAt(data, response) {
+  // The HTTP Date and cache deadline use the server clock. Convert the interval
+  // to the browser clock so a fast local clock cannot leave the timer at zero.
+  const now = Date.now();
+  const serverNow = Date.parse(response.headers.get('date') || '');
+  const remaining = Number(data.cacheExpiresAt) - (Number.isFinite(serverNow) ? serverNow : now);
+  return now + (Number.isFinite(remaining) && remaining > 0 ? remaining : 5_000);
+}
 async function loadLeaderboard(force = false) {
   const ladderId = selectedLadder;
   let cached = leaderboardData.get(ladderId);
@@ -327,13 +335,15 @@ async function loadLeaderboard(force = false) {
     body.innerHTML = '<tr><td colspan="8" class="loading"><span class="loader"></span>正在加载天梯数据…</td></tr>';
   }
   if (leaderboardRequests.has(ladderId)) return leaderboardRequests.get(ladderId);
+  if (!force && (leaderboardRetryAt.get(ladderId) || 0) > Date.now()) return;
   const request = (async () => {
   let retries = 0;
   try {
     let data;
+    let response;
     while (true) {
       try {
-        const response = await fetch(`/api/leaderboard?id=${ladderId}`, { cache: 'default' });
+        response = await fetch(`/api/leaderboard?id=${ladderId}`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
         data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         break;
@@ -347,9 +357,9 @@ async function loadLeaderboard(force = false) {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
-    const expiresAt = Number(data.cacheExpiresAt) || Date.now() + 60_000;
+    const expiresAt = leaderboardResponseExpiresAt(data, response);
     leaderboardData.set(ladderId, { data, expiresAt });
-    saveLeaderboardLocalCache(ladderId, data);
+    saveLeaderboardLocalCache(ladderId, data, expiresAt);
     leaderboardRetryAt.delete(ladderId);
     if (ladderId === selectedLadder) displayLeaderboard(data);
   } catch (error) {
@@ -370,7 +380,7 @@ async function loadLeaderboardPage(page) {
   if (leaderboardPageRequests.has(key)) return leaderboardPageRequests.get(key);
   const request = (async () => {
     try {
-      const response = await fetch(`/api/leaderboard?id=${encodeURIComponent(ladderId)}&page=${encodeURIComponent(requestedPage)}`, { cache: 'no-store' });
+      const response = await fetch(`/api/leaderboard?id=${encodeURIComponent(ladderId)}&page=${encodeURIComponent(requestedPage)}`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       const entry = leaderboardData.get(ladderId);
@@ -378,7 +388,7 @@ async function loadLeaderboardPage(page) {
       const rows = new Map((entry.data.rows || []).map(row => [String(row.profileId), row]));
       for (const row of data.rows || []) rows.set(String(row.profileId), row);
       entry.data = { ...entry.data, ...data, rows: [...rows.values()].sort((a, b) => Number(a.rank) - Number(b.rank)), loadedPages: [...new Set([...(entry.data.loadedPages || []), ...(data.loadedPages || [requestedPage])])].sort((a, b) => a - b) };
-      entry.expiresAt = Number(data.cacheExpiresAt) || entry.expiresAt;
+      entry.expiresAt = leaderboardResponseExpiresAt(data, response);
       if (ladderId === selectedLadder) displayLeaderboard(entry.data);
     } catch (error) {
       if (ladderId === selectedLadder) {
@@ -414,9 +424,9 @@ ladderChoices.querySelectorAll('.ladder-choice').forEach(button => button.addEve
 function updateCountdown() {
   if (!/^\/$/.test(location.pathname)) return;
   const cached = leaderboardData.get(selectedLadder);
-  const updateAt = cached?.expiresAt ?? leaderboardRetryAt.get(selectedLadder);
+  const updateAt = leaderboardRetryAt.get(selectedLadder) ?? cached?.expiresAt;
   const seconds = updateAt ? Math.max(0, Math.ceil((updateAt - Date.now()) / 1000)) : '—';
-  document.querySelector('#countdown').textContent = seconds;
+  document.querySelector('#countdown').textContent = leaderboardRequests.has(selectedLadder) ? '更新中' : seconds;
   if (seconds === 0 && !leaderboardRequests.has(selectedLadder)) loadLeaderboard();
 }
 if (/^\/$/.test(location.pathname)) loadLeaderboard();
@@ -816,7 +826,7 @@ function aoe2CivilizationImageUrl(civilization) {
   return slug ? `/assets/game/civilization/${slug}.png` : '';
 }
 const civilizationNamesZh = {
-  Armenians: '亚美尼亚', Aztecs: '阿兹特克', Bengalis: '孟加拉', Berbers: '柏柏尔', Bohemians: '波希米亚', Britons: '不列颠', Bulgarians: '保加利亚', Burgundians: '勃艮第', Burmese: '缅甸', Byzantines: '拜占庭', Celts: '凯尔特', Chinese: '中国', Cumans: '库曼', Danes: '丹麦', Dravidians: '达罗毗荼', Ethiopians: '埃塞俄比亚', Franks: '法兰克', Georgians: '格鲁吉亚', Goths: '哥特', Gurjaras: '瞿折罗', Hindustanis: '印度斯坦', Huns: '匈奴', Incas: '印加', inca: '印加', Italians: '意大利', Japanese: '日本', Jurchens: '女真', Khitans: '契丹', Khmer: '高棉', Koreans: '朝鲜', Lithuanians: '立陶宛', Magyars: '马扎尔', Malay: '马来', Malays: '马来', Malians: '马里', Mapuche: '马普切', Maya: '玛雅', maya: '玛雅', Mayans: '玛雅', mayans: '玛雅', Mongols: '蒙古', Muisca: '穆伊斯卡', Persians: '波斯', Poles: '波兰', Portuguese: '葡萄牙', Romans: '罗马', Saracens: '撒拉逊', Saxons: '撒克逊', Shu: '蜀', Sicilians: '西西里', Slavs: '斯拉夫', Spanish: '西班牙', Tatars: '鞑靼', Teutons: '条顿', Turks: '土耳其', Tupi: '图皮', Varangians: '瓦兰吉', Vietnamese: '越南', Vikings: '维京', Wei: '魏', Wu: '吴'
+  Armenians: '亚美尼亚', Aztecs: '阿兹特克', Bengalis: '孟加拉', Berbers: '柏柏尔', Bohemians: '波希米亚', Britons: '不列颠', Bulgarians: '保加利亚', Burgundians: '勃艮第', Burmese: '缅甸', Byzantines: '拜占庭', Celts: '凯尔特', Chinese: '中国', Cumans: '库曼', Danes: '丹麦', Dravidians: '达罗毗荼', Ethiopians: '埃塞俄比亚', Franks: '法兰克', Georgians: '格鲁吉亚', Goths: '哥特', Gurjaras: '瞿折罗', Hindustanis: '印度斯坦', Huns: '匈奴', Incas: '印加', inca: '印加', Italians: '意大利', Japanese: '日本', Jurchens: '女真', Khitans: '契丹', Khmer: '高棉', Koreans: '高丽', Lithuanians: '立陶宛', Magyars: '马扎尔', Malay: '马来', Malays: '马来', Malians: '马里', Mapuche: '马普切', Maya: '玛雅', maya: '玛雅', Mayans: '玛雅', mayans: '玛雅', Mongols: '蒙古', Muisca: '穆伊斯卡', Persians: '波斯', Poles: '波兰', Portuguese: '葡萄牙', Romans: '罗马', Saracens: '撒拉逊', Saxons: '撒克逊', Shu: '蜀', Sicilians: '西西里', Slavs: '斯拉夫', Spanish: '西班牙', Tatars: '鞑靼', Teutons: '条顿', Turks: '土耳其', Tupi: '图皮', Varangians: '瓦兰吉', Vietnamese: '越南', Vikings: '维京', Wei: '魏', Wu: '吴'
 };
 function civilizationNameZh(civilization) {
   const value = String(civilization || '').trim();
@@ -1032,8 +1042,15 @@ function renderProfileMatches(profile, matchesOverride = null, visibleCount = 10
     body.innerHTML = '<div class="profile-matches-empty">暂无对局记录</div>';
     return;
   }
-  const isLiveMatch = match => match?.live === true || (match?.live !== false && Number(match?.started) > 0 && !Number(match?.finished) && match?.abandoned !== true);
-  const liveMatch = matches.find(isLiveMatch) || null;
+  const isLiveMatch = match => {
+    const started = Number(match?.started) || 0;
+    const age = Math.floor(Date.now() / 1000) - started;
+    const plausibleAge = started > 0 && started <= Math.floor(Date.now() / 1000) + 300 && age <= 3 * 60 * 60;
+    return plausibleAge && (match?.live === true || (match?.live !== false && !Number(match?.finished) && match?.abandoned !== true));
+  };
+  // LIVE can only belong to the newest match. Searching the full history lets
+  // an old unfinished cache record override a newer completed match.
+  const liveMatch = matches.length && isLiveMatch(matches[0]) ? matches[0] : null;
   const historyMatches = matches.filter(match => match !== liveMatch);
   const ratingDeltas = profileMatchRatingDeltas(matches);
   const visibleMatches = (liveMatch ? [liveMatch] : []).concat(historyMatches.slice(0, visibleCount));
@@ -1114,7 +1131,9 @@ function renderProfileLastMatchFromMatch(match) {
   const target = document.querySelector('#profileIdentityLastMatch');
   if (!target) return;
   const started = Number(match?.started) || 0;
-  const live = match?.live === true || (match?.live !== false && started > 0 && !Number(match?.finished) && match?.abandoned !== true);
+  const age = Math.floor(Date.now() / 1000) - started;
+  const plausibleAge = started > 0 && started <= Math.floor(Date.now() / 1000) + 300 && age <= 3 * 60 * 60;
+  const live = plausibleAge && (match?.live === true || (match?.live !== false && !Number(match?.finished) && match?.abandoned !== true));
   if (live) {
     target.innerHTML = '<span class="profile-live-dot" aria-hidden="true"></span><span class="profile-live-label">游戏中</span>';
     target.title = started > 0 ? `开始于 ${new Date(started * 1000).toLocaleString('zh-CN')}` : '正在进行的对局';
@@ -1614,9 +1633,13 @@ updatesToc?.addEventListener('mouseleave', () => {
 let buildOrdersRequest = null;
 let buildOrdersItems = [];
 let buildOrdersFilter = 'all';
+function buildGuideArtwork(item) {
+  const images = Array.isArray(item.images) && item.images.length ? item.images : item.image ? [item.image] : [];
+  return '<div class="build-guide-pictures' + (images.length > 1 ? ' is-dual' : '') + '">' + images.slice(0, 2).map(src => '<img src="' + escapeHtml(src) + '" alt="" loading="lazy">').join('') + '</div>';
+}
 function buildOrderCard(item) {
   const civs = Array.isArray(item.civilizations) ? item.civilizations : [];
-  return `<a class="build-order-card" href="/build-orders/${encodeURIComponent(item.slug)}" data-build-order-slug="${escapeHtml(item.slug)}" data-category="${escapeHtml(item.category || 'standard')}" data-video="${item.video ? 'true' : 'false'}"><div class="build-order-art">${item.image ? `<img src="${escapeHtml(item.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}<div class="build-order-badges"><span>${item.category === 'signature' ? '特色战术' : '通用开局'}</span>${item.video ? '<span class="video">视频指南</span>' : ''}</div></div><div class="build-order-card-body"><h4>${escapeHtml(item.title || '未命名开局')}</h4><div class="build-order-metrics"><span><small>步骤</small><b>${Number(item.steps || 0)} 步</b></span><span><small>目标时机</small><b>${escapeHtml(item.timing || '灵活')}</b></span></div><div class="build-order-civs"><small>推荐文明</small><p>${civs.length ? civs.map(name => `<span>${escapeHtml(name)}</span>`).join('') : '<span>全部文明</span>'}</p></div></div></a>`;
+  return `<a class="build-order-card" href="/build-orders/${encodeURIComponent(item.slug)}" data-build-order-slug="${escapeHtml(item.slug)}" data-category="${escapeHtml(item.category || 'standard')}" data-video="${item.video ? 'true' : 'false'}"><div class="build-order-art">${buildGuideArtwork(item)}<div class="build-order-badges"><span>${item.category === 'signature' ? '特色战术' : '通用开局'}</span>${item.video ? '<span class="video">视频指南</span>' : ''}</div></div><div class="build-order-card-body"><h4>${escapeHtml(item.title || '未命名开局')}</h4><div class="build-order-metrics"><span><small>步骤</small><b>${Number(item.steps || 0)} 步</b></span><span><small>升级时间</small><b>${escapeHtml(item.timing || '灵活')}</b></span></div><div class="build-order-civs"><small>推荐文明</small><p>${civs.length ? civs.map(name => `<span>${escapeHtml(name)}</span>`).join('') : '<span>全部文明</span>'}</p></div></div></a>`;
 }
 function renderBuildOrdersList() {
   const query = String(document.querySelector('#buildOrdersSearch')?.value || '').trim().toLocaleLowerCase();
@@ -1659,11 +1682,11 @@ function renderBuildOrderDetail(item) {
     if (step.phase) currentPhase = step.phase;
     const assignments = (Array.isArray(step.assignments) ? step.assignments : []).map(label => `<span>${escapeHtml(label)}</span>`).join('');
     const resources = step.resources || {};
-    const resourceGrid = step.hasResources ? `<div class="build-order-resource-grid"><span title="村民"><i>♟</i><b>${Number(resources.villagers || 0)}</b></span><span title="木材"><i class="wood">木</i><b>${Number(resources.wood || 0)}</b></span><span title="食物"><i class="food">食</i><b>${Number(resources.food || 0)}</b></span><span title="黄金"><i class="gold">金</i><b>${Number(resources.gold || 0)}</b></span><span title="石料"><i class="stone">石</i><b>${Number(resources.stone || 0)}</b></span></div>` : '';
+    const resourceGrid = step.hasResources ? `<div class="build-order-resource-grid"><span title="村民"><i>♟</i><b>${Number(resources.villagers || 0)}</b></span><span title="木材"><i><img src="/assets/build-orders/icons/resource-wood.webp" alt="木材"></i><b>${Number(resources.wood || 0)}</b></span><span title="食物"><i><img src="/assets/build-orders/icons/resource-food.webp" alt="食物"></i><b>${Number(resources.food || 0)}</b></span><span title="黄金"><i><img src="/assets/build-orders/icons/resource-gold.webp" alt="黄金"></i><b>${Number(resources.gold || 0)}</b></span><span title="石料"><i><img src="/assets/build-orders/icons/resource-stone.webp" alt="石料"></i><b>${Number(resources.stone || 0)}</b></span></div>` : '';
     return `${phase}<div class="build-order-step"><div class="build-order-step-icon">${step.icon ? `<img src="${escapeHtml(step.icon)}" alt="" title="${escapeHtml(step.iconTitle || '')}" referrerpolicy="no-referrer">` : ''}<span>${Number(step.index || 0)}</span></div><div class="build-order-step-copy"><p>${escapeHtml(step.action || '')}</p>${assignments ? `<div class="build-order-assignments">${assignments}</div>` : ''}</div>${resourceGrid}</div>`;
   }).join('');
   const video = item.video?.embedUrl ? `<section class="build-order-video"><iframe src="${escapeHtml(item.video.embedUrl)}" title="${escapeHtml(item.video.title || item.title || '视频指南')}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe><div><span>视频指南${item.author ? ` · ${escapeHtml(item.author)}` : ''}</span><strong>${escapeHtml(item.video.title || item.title || '')}</strong>${item.video.url ? `<a href="${escapeHtml(item.video.url)}" target="_blank" rel="noopener noreferrer">在 YouTube 打开 ↗</a>` : ''}</div></section>` : '';
-  body.innerHTML = `<div class="build-order-detail-hero"><div class="build-order-detail-art">${item.image ? `<img src="${escapeHtml(item.image)}" alt="" referrerpolicy="no-referrer">` : ''}</div><div><div class="build-order-badges"><span>${item.category === 'signature' ? '特色战术' : '通用开局'}</span>${item.video ? '<span class="video">视频指南</span>' : ''}</div><small>${escapeHtml(item.eyebrow || '')}</small><h2>${escapeHtml(item.title || '未命名开局')}</h2><p>${Number(item.steps || 0)} 个步骤 · 目标时机 ${escapeHtml(item.timing || '灵活')}</p>${item.author ? `<div class="build-order-author">${item.authorImage ? `<img src="${escapeHtml(item.authorImage)}" alt="" referrerpolicy="no-referrer">` : ''}<strong>${escapeHtml(item.author)}</strong>${item.creatorUrl ? `<a href="${escapeHtml(item.creatorUrl)}" target="_blank" rel="noopener noreferrer">作者指南 ↗</a>` : ''}</div>` : ''}</div></div>${video}${notes.length ? `<section class="build-order-notes"><h3>${escapeHtml(item.notesTitle || `Notes from ${item.author || 'the creator'}`)}</h3><div>${notes.map(note => `<article><strong>${escapeHtml(note.title || '')}</strong><p>${escapeHtml(note.text || '')}</p></article>`).join('')}</div></section>` : ''}<div class="build-order-detail-panel"><div><span>推荐文明</span><p>${civs.length ? civs.map(name => `<b>${escapeHtml(name)}</b>`).join('') : '<b>全部文明</b>'}</p></div><div class="build-order-source"><strong>${escapeHtml(item.sourceName || '内容来源')}</strong>${item.benchmark ? `<p>${escapeHtml(item.benchmark)}</p>` : ''}${item.sourceUrl ? `<a href="${escapeHtml(item.sourceUrl)}" target="_blank" rel="noopener noreferrer">查看原始指南 ↗</a>` : ''}</div></div><section class="build-order-timeline"><div class="build-order-timeline-heading"><span>执行步骤</span><h3>Build timeline</h3>${item.timelineIntro ? `<p>${escapeHtml(item.timelineIntro)}</p>` : ''}</div><div class="build-order-steps">${timeline}</div>${item.closing ? `<p class="build-order-closing">${escapeHtml(item.closing)}</p>` : ''}</section>`;
+  body.innerHTML = `<div class="build-order-detail-hero"><div class="build-order-detail-art">${buildGuideArtwork(item)}</div><div><div class="build-order-badges"><span>${item.category === 'signature' ? '特色战术' : '通用开局'}</span>${item.video ? '<span class="video">视频指南</span>' : ''}</div><small>${escapeHtml(item.eyebrow || '')}</small><h2>${escapeHtml(item.title || '未命名开局')}</h2><p>${Number(item.steps || 0)} 个步骤 · 升级时间 ${escapeHtml(item.timing || '灵活')}</p>${item.author ? `<div class="build-order-author">${item.authorImage ? `<img src="${escapeHtml(item.authorImage)}" alt="" referrerpolicy="no-referrer">` : ''}<strong>${escapeHtml(item.author)}</strong>${item.creatorUrl ? `<a href="${escapeHtml(item.creatorUrl)}" target="_blank" rel="noopener noreferrer">作者指南 ↗</a>` : ''}</div>` : ''}</div></div>${video}${notes.length ? `<section class="build-order-notes"><h3>${escapeHtml(item.notesTitle || '战术说明')}</h3><div>${notes.map(note => `<article><strong>${escapeHtml(note.title || '')}</strong><p>${escapeHtml(note.text || '')}</p></article>`).join('')}</div></section>` : ''}<div class="build-order-detail-panel"><div><span>推荐文明</span><p>${civs.length ? civs.map(name => `<b>${escapeHtml(name)}</b>`).join('') : '<b>全部文明</b>'}</p></div></div><section class="build-order-timeline"><div class="build-order-timeline-heading"><span>执行步骤</span><h3>开局流程</h3>${item.timelineIntro ? `<p>${escapeHtml(item.timelineIntro)}</p>` : ''}</div><div class="build-order-steps">${timeline}</div>${item.closing ? `<p class="build-order-closing">${escapeHtml(item.closing)}</p>` : ''}</section>`;
   window.scrollTo({ top: 0, behavior: 'auto' });
 }
 function renderBuildOrders(data, slug = '') {
@@ -1714,9 +1737,12 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 let realtimeRequest = null;
+let realtimeVersionRequest = null;
 let realtimePollTimer = null;
 let realtimeRequestId = 0;
 let realtimeLastPayload = null;
+let realtimeLastVersion = null;
+let realtimeLastEtag = null;
 function realtimeElapsed(started) {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(started || 0));
   if (!seconds) return '刚刚';
@@ -1733,7 +1759,7 @@ function realtimeServerName(value) {
 }
 function realtimeLeaderboardName(value) {
   const key = String(value || '').trim().toUpperCase().replace(/\s+/g, '_');
-  const names = { RM_1V1: '1v1 随机地图', RM_TG: '团队随机地图', RM_TEAM: '团队随机地图', DM_1V1: '1v1 死亡竞赛', DM_TG: '团队死亡竞赛', DM_TEAM: '团队死亡竞赛', EW_1V1: '1v1 帝国战争', EW_TG: '团队帝国战争', EW_TEAM: '团队帝国战争', UNRANKED: '大厅局' };
+  const names = { RM_1V1: '1v1 随机地图', RM_TG: '团队随机地图', RM_TEAM: '团队随机地图', DM_1V1: '1v1 死亡竞赛', DM_TG: '团队死亡竞赛', DM_TEAM: '团队死亡竞赛', EW_1V1: '1v1 帝国战争', EW_TG: '团队帝国战争', EW_TEAM: '团队帝国战争', UNRANKED: '非排位' };
   if (key.startsWith('QP_')) return `快速${realtimeLeaderboardName(key.slice(3))}`;
   return names[key] || String(value || '自定义房间');
 }
@@ -1747,12 +1773,15 @@ function realtimePlayerColor(value, index) {
   const color = Number(value);
   return palette[color > 0 ? color - 1 : index] || "#6d7884";
 }
-function realtimeStateIsActive(state) {
-  return (state?.status === 'game' || state?.status === 'lobby') && state.match;
+function realtimePlatformIconMarkup(platform) {
+  const key = String(platform || '').trim().toLowerCase();
+  if (key === 'douyin') return '<span class="realtime-platform-icon realtime-platform-icon-douyin" aria-hidden="true">♪</span>';
+  const icons = { twitch: 'twitch.svg', youtube: 'youtube.svg', youtube_live: 'youtube.svg', bilibili: 'bilibili.svg', douyu: 'douyu.png', kick: 'kick.svg' };
+  const file = icons[key];
+  return file ? `<span class="realtime-platform-icon realtime-platform-icon-${escapeHtml(key)}" aria-hidden="true"><img src="/assets/icons/${file}" alt=""></span>` : '';
 }
-function realtimeStateRecentlyFinished(state) {
-  const finished = Number(state?.match?.finished || 0);
-  return finished > 0 && Date.now() - finished * 1000 < 5 * 60 * 1000;
+function realtimeStateIsActive(state) {
+  return state?.status === 'game' && state.match;
 }
 function realtimeStatusActivity(state) {
   if (!realtimeStateIsActive(state)) return '';
@@ -1776,7 +1805,7 @@ function realtimeStatusActivity(state) {
 function renderRealtimeStatus(states) {
   const target = document.querySelector('#realtimeStatusRows');
   if (!target) return;
-  const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.live?.url || realtimeStateRecentlyFinished(state));
+  const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.live?.url);
   const identityMap = new Map();
   const priority = state => [
     realtimeStateIsActive(state) ? 3 : state?.live?.url ? 2 : 1,
@@ -1806,7 +1835,7 @@ function renderRealtimeStatus(states) {
     const rating = Number.isFinite(Number(player.rating)) ? Number(player.rating).toLocaleString('zh-CN') : '—';
     const name = escapeHtml(player.name || `玩家 ${state.profileId || ''}`);
     const team = escapeHtml(player.team || '');
-    const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${escapeHtml(state.live.title || '正在直播')}</a>` : '';
+    const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${realtimePlatformIconMarkup(state.live.platform)}${escapeHtml(state.live.title || '正在直播')}</a>` : '';
     return `<tr><td>${rating}</td><td><a class="realtime-status-player" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${live}</td></tr>`;
   }).join('');
 }
@@ -1847,7 +1876,7 @@ function renderRealtimeCards(payload) {
     return ratings.length?ratings.reduce((sum,rating)=>sum+rating,0)/ratings.length:-Infinity;
   };
   const games=[...new Map(states.filter(realtimeStateIsActive).map(state=>[String(state.match.id||state.profileId),state])).values()]
-    .sort((a,b)=>(a.status==='lobby'?0:1)-(b.status==='lobby'?0:1)||matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
+    .sort((a,b)=>matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
   if (updated) updated.textContent=payload?.checkedAt?`更新于 ${new Date(payload.checkedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`:'等待更新';
   if (!games.length) {
     container.innerHTML='<div class="realtime-empty"><div class="realtime-empty-icon">◌</div><h3>当前没有检测到进行中的对局</h3><p>检测池中的玩家均未返回正在进行的最新对局。</p></div>';
@@ -1859,13 +1888,16 @@ function renderRealtimeCards(payload) {
     const groups=realtimeGroupedPlayers(match);
     const rows=groups?groups.map(([team,members])=>`<div class="realtime-team-group"><span class="realtime-team-label">队伍 ${escapeHtml(team)}</span>${members.map(({player,index})=>realtimePlayerRow(player,index)).join('')}</div>`).join(''):players.map((player,index)=>realtimePlayerRow(player,index)).join('');
     const leaderboardKey=String(match.leaderboard||'').trim().toLowerCase();
-    const ranked=!leaderboardKey?'大厅':leaderboardKey==='unranked'||leaderboardKey.startsWith('qp_')?'非排位':'排位';
-    const mode=realtimeLeaderboardName(match.leaderboard) || '大厅';
-    const activity=state.status==='lobby'?'大厅中':'游戏中';
-    const watch=state.status==='game'?`<a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a>`:'';
-    const mapImage = aoe2MapImageUrl(match.map || '');
+    const ranked=!leaderboardKey||leaderboardKey==='unranked'||leaderboardKey.startsWith('qp_')?'非排位':'排位';
+    const mode=realtimeLeaderboardName(match.leaderboard) || '自定义对局';
+    const activity='游戏中';
+    const watch=`<a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a>`;
+    const rawMapName = String(match.map || '').trim();
+    const displayedMapName = mapDisplayName(rawMapName || '未知地图');
+    const knownMap = Boolean(rawMapName) && (displayedMapName !== rawMapName || Object.values(mapNamesZh).includes(rawMapName));
+    const mapImage = knownMap ? aoe2MapImageUrl(rawMapName) : '';
     const mapImageMarkup = mapImage ? `<img class="realtime-map-thumbnail" src="${escapeHtml(`${mapImage}?v=rgba`)}" alt="" loading="lazy" onerror="this.hidden=true">` : '';
-    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(mapDisplayName(match.map||'未知地图'))}</strong>${mapImageMarkup}<time>${realtimeElapsed(match.started)}</time>${watch}</div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● ${activity}</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
+    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(displayedMapName)}</strong>${mapImageMarkup}<time>${realtimeElapsed(match.started)}</time>${watch}</div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● ${activity}</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
   }).join('');
 }
 
@@ -1875,10 +1907,16 @@ async function loadRealtimeStates() {
   try {
     realtimeRequest?.abort?.();
     realtimeRequest = new AbortController();
-    const response = await fetch('/api/realtime', { cache: 'no-store', signal: realtimeRequest.signal });
+    const headers = realtimeLastEtag ? { 'If-None-Match': realtimeLastEtag } : {};
+    const response = await fetch('/api/realtime', { cache: 'no-cache', headers, signal: realtimeRequest.signal });
+    if (response.status === 304) return;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    if (requestId === realtimeRequestId) renderRealtimeCards(payload);
+    if (requestId === realtimeRequestId) {
+      realtimeLastEtag = response.headers.get('etag') || realtimeLastEtag;
+      realtimeLastVersion = payload?.checkedAt || null;
+      renderRealtimeCards(payload);
+    }
   } catch (error) {
     if (error?.name !== 'AbortError') {
       const container = document.querySelector('#realtimePlayers');
@@ -1889,6 +1927,20 @@ async function loadRealtimeStates() {
         container.innerHTML = '<div class="realtime-empty"><div class="realtime-empty-icon">!</div><h3>实时对局暂时无法更新</h3><p>稍后会自动重试。</p></div>';
       }
     }
+  }
+}
+async function checkRealtimeVersion() {
+  if (!/^\/realtime\/?$/.test(location.pathname)) return;
+  try {
+    realtimeVersionRequest?.abort?.();
+    realtimeVersionRequest = new AbortController();
+    const response = await fetch('/api/realtime/version', { cache: 'no-store', signal: realtimeVersionRequest.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (!realtimeLastPayload || data?.version !== realtimeLastVersion) await loadRealtimeStates();
+    else renderRealtimeCards(realtimeLastPayload);
+  } catch (error) {
+    if (error?.name !== 'AbortError' && !realtimeLastPayload) await loadRealtimeStates();
   }
 }
 function showRealtimeLoading() {
@@ -1908,8 +1960,8 @@ function startRealtimePolling() {
   }
   // The browser only reads the server cache. The server's single scheduled
   // refresh loop is the only path that calls the upstream match API.
-  loadRealtimeStates();
-  realtimePollTimer = setInterval(loadRealtimeStates, 15 * 1000);
+  checkRealtimeVersion();
+  realtimePollTimer = setInterval(checkRealtimeVersion, 5 * 1000);
 }
 
 function renderCurrentRoute(selectedPlayer = null) {
@@ -1940,7 +1992,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     link.classList.toggle('active', active);
   });
   document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : '天梯榜单';
-  if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; realtimeRequest?.abort?.(); }
+  if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; realtimeRequest?.abort?.(); realtimeVersionRequest?.abort?.(); }
   if (isMediaPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);

@@ -81,7 +81,7 @@ async function fetchUpstreamWithRateLimit(url, options = {}) {
 }
 const aoe2InsightsSummaryCache = new Map();
 const aoe2InsightsSummaryRefreshes = new Map();
-const aoe2InsightsSummaryTtl = 6 * 60 * 60_000;
+const aoe2InsightsSummaryTtl = 60 * 60_000;
 // Refresh cadence is defined per leaderboard. The two most frequently viewed
 // ladders update every three minutes at fixed wall-clock marks; the other ladders are
 // refreshed once every six hours and staggered by one hour to spread upstream
@@ -1905,6 +1905,10 @@ function normalizeCompanionMatches(payload) {
     });
     const started = companionEpoch(match.started);
     const finished = companionEpoch(match.finished);
+    // A missing finished timestamp can survive in upstream/cache data after
+    // a disconnected match. Never expose an implausibly old record as LIVE.
+    const now = Math.floor(Date.now() / 1000);
+    const plausibleLiveAge = started > 0 && started <= now + 300 && now - started <= 3 * 60 * 60;
     return {
       id: match.matchId,
       leaderboard,
@@ -1915,7 +1919,7 @@ function normalizeCompanionMatches(payload) {
       started,
       finished,
       abandoned: match.abandoned === true,
-      live: Boolean(started && !finished && !match.abandoned),
+      live: Boolean(plausibleLiveAge && !finished && !match.abandoned),
       duration: started && finished && finished >= started ? finished - started : 0,
       server: match.server || '',
       players,
@@ -2303,6 +2307,19 @@ function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === '/api/realtime/status') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify(realtimeService.getRealtimeStatus()));
+  }
+  if (url.pathname === '/api/realtime/version') {
+    let profileIds = [];
+    try { const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8')); profileIds = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276]; } catch { profileIds = [506898,8793414,212721,3025516,1966276]; }
+    const ids = [...new Set(profileIds.map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const cachedPayload = await realtimeService.getCachedPayload(ids);
+    const version = cachedPayload?.checkedAt || null;
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify({ version, checkedAt: version }));
+  }
   if (url.pathname === '/api/realtime') {
     let profileIds = [];
     try { const requested = url.searchParams.get('profile_ids'); if (requested) profileIds = JSON.parse(requested); else { const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8')); profileIds = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276]; } } catch { profileIds = [506898,8793414,212721,3025516,1966276]; }
@@ -2312,7 +2329,12 @@ http.createServer(async (req, res) => {
     // path that calls the upstream match API; browser reads never trigger refresh.
     const cachedPayload = await realtimeService.getCachedPayload(ids);
     if (cachedPayload) {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      const etag = `"realtime-${Buffer.from(String(cachedPayload.checkedAt || 'empty')).toString('base64url')}"`;
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
+        return res.end();
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-cache', etag });
       return res.end(JSON.stringify(cachedPayload));
     }
     const emptyPayload = { source: 'aoe2companion-latest', checkedAt: null, states: [] };
@@ -2510,8 +2532,10 @@ http.createServer(async (req, res) => {
     try {
       const page = Math.max(1, Number(url.searchParams.get('page') || 1));
       const data = await getLeaderboardPage(id, page);
-      const maxAgeSeconds = Math.max(1, Math.ceil((Number(data.cacheExpiresAt || 0) - Date.now()) / 1000));
-      return sendVersionedJson(req, res, data, `leaderboard-${id}-${data.updatedAt || data.cacheExpiresAt || 'snapshot'}`, maxAgeSeconds);
+      // Each response carries the next scheduler deadline even when rows have
+      // not changed. An ETag based only on updatedAt can reuse an expired body.
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(data));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: error.message || '获取天梯数据失败' }));
@@ -2653,12 +2677,20 @@ http.createServer(async (req, res) => {
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
   startBilibiliUpdatesLifecycle().catch(error => console.warn('[updates] lifecycle startup failed:', error.message));
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
+  let lastRealtimeApiFallbackAt = Date.now();
   const refreshRealtimeOnServer = async () => {
     try {
       const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8'));
       const ids = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276];
       await realtimeService.startRealtimeWebSockets(ids);
-      if (!realtimeService.realtimeWebSocketsHealthy(ids)) await realtimeService.refreshRealtimePayload(ids);
+      if (!realtimeService.realtimeWebSocketsHealthy(ids)) {
+        const cachedPayload = await realtimeService.getCachedPayload(ids);
+        const fallbackIntervalMs = 5 * 60 * 1000;
+        if (!cachedPayload || Date.now() - lastRealtimeApiFallbackAt >= fallbackIntervalMs) {
+          lastRealtimeApiFallbackAt = Date.now();
+          await realtimeService.refreshRealtimePayload(ids);
+        }
+      }
     } catch (error) { console.warn('[realtime] scheduled refresh failed:', error.message); }
   };
   setTimeout(refreshRealtimeOnServer, 1000).unref();

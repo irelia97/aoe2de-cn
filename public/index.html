@@ -4,22 +4,25 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#101310" />
-  <title>帝国天梯 · AoE II DE</title>
+  <title>帝国2大杂烩</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=tiantan-20261016" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png?v=tiantan-20261016" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/assets/favicon-192.png?v=tiantan-20261016" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png?v=tiantan-20261016" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=realtime-v34-map" />
+  <link rel="stylesheet" href="/styles.css?v=realtime-v46-themed-icons" />
 </head>
 <body>
   <script>if (/^\/realtime\/?$/.test(location.pathname)) document.body.classList.add("page-realtime");</script>
   <div class="shell">
     <aside class="sidebar">
-      <a class="brand" href="/" aria-label="帝国天梯首页">
+      <a class="brand" href="/" aria-label="帝国2大杂烩首页">
         <span class="brand-mark"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 35 12v16L20 37 5 28V12L20 3Z"/><path d="M20 3v34M5 12l30 16M35 12 5 28"/><path d="M13 24V14h4v10m2 0V9h4v15m2 0v-7h4v7"/></svg></span>
-        <span><strong>帝国天梯</strong><small>AOE II · DEFINITIVE EDITION</small></span>
+        <span><strong>帝国2大杂烩</strong></span>
       </a>
-      <div class="side-label">数据中心</div>
       <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4" r="2"/><circle cx="5" cy="7" r="1.7"/><circle cx="19" cy="7" r="1.7"/><path d="M9 9h6v11H9zM2 12h7v8H2zM15 12h7v8h-7z"/></svg></span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 5 3 2 3-4 3 4 3-2-1 5H7z"/><circle cx="12" cy="12" r="3"/><path d="M5 21c.5-3.2 2.8-5 7-5s6.5 1.8 7 5"/></svg></span>玩家资料<span class="nav-dot"></span></a><a class="nav-item" data-page="realtime" href="/realtime"><span class="nav-icon nav-ranked-swords" aria-hidden="true">⚔</span>实时对局<span class="nav-dot"></span></a><a class="nav-item" data-page="media" href="/media"><span class="nav-icon">▶</span>视频直播<span class="nav-dot"></span></a><a class="nav-item" data-page="updates" href="/updates"><span class="nav-icon">✦</span>更新汇总<span class="nav-dot"></span></a><a class="nav-item" data-page="build-orders" href="/build-orders"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5c3.4-.9 6.4-.3 9 1.7v13c-2.6-2-5.6-2.6-9-1.7zM21 5.5c-3.4-.9-6.4-.3-9 1.7v13c2.6-2 5.6-2.6 9-1.7z"/></svg></span>开局指南<span class="nav-dot"></span></a></nav>
       <div class="side-bottom"><div class="live-card"><span class="live-orb"></span><div><b>数据服务在线</b><small>连接 World's Edge</small></div><span class="live-check">✓</span></div><p>数据来自 Age of Empires II: DE<br/>公开天梯服务</p></div>
     </aside>
@@ -69,9 +72,9 @@
         <div class="updates-reader"><aside class="updates-toc" id="updatesToc" aria-label="文章目录" hidden></aside><article class="updates-article" id="updatesArticle"><div class="updates-empty">正在加载最新文章…</div></article><button class="updates-back-to-top" id="updatesBackToTop" type="button" aria-label="回到顶部" hidden><span aria-hidden="true">↑</span>回到顶部</button></div>
       </section>
       <section class="build-orders-page" id="build-orders-page" hidden>
-        <div class="build-orders-hero"><div><div class="section-kicker">FIELD MANUAL</div><h2>能直接照着打的开局指南</h2><p>从最初的六名村民到军事转型，按步骤执行每套开局。</p></div><span id="buildOrdersUpdated">—</span></div>
+        <div class="build-orders-hero"><div><div class="section-kicker">FIELD MANUAL</div><h2>适合入门的开局指南<strong class="build-guide-invite">(欢迎提供更进阶的开局+演示视频)</strong></h2><p>从最初的3名村民到军事转型，按步骤执行每套开局</p></div><span id="buildOrdersUpdated">—</span></div>
         <div class="build-orders-library" id="buildOrdersLibrary">
-          <div class="build-orders-filters"><label class="build-orders-search"><span class="sr-only">搜索开局或文明</span><input id="buildOrdersSearch" type="search" placeholder="搜索开局名称或文明…" autocomplete="off"></label><div class="build-orders-filter-buttons" id="buildOrdersFilters"><button type="button" class="selected" data-filter="all">全部</button><button type="button" data-filter="standard">通用开局</button><button type="button" data-filter="signature">特色战术</button><button type="button" data-filter="video">带视频</button></div><strong id="buildOrdersCount">0 篇</strong></div>
+          <div class="build-orders-filters"><div class="build-orders-filter-buttons" id="buildOrdersFilters"><button type="button" class="selected" data-filter="all">全部</button><button type="button" data-filter="standard">通用开局</button><button type="button" data-filter="signature">特色战术</button><button type="button" data-filter="video">带视频</button></div><strong id="buildOrdersCount">0 篇</strong></div>
           <section class="build-orders-group" id="buildOrdersStandardSection"><div class="build-orders-group-heading"><div><span>STANDARD BUILDS</span><h3>通用开局</h3><p>适用于多种文明与地图的基础战术。</p></div><b id="buildOrdersStandardCount">—</b></div><div class="build-orders-grid" id="buildOrdersStandard"><div class="build-orders-empty">等待导入新的内容来源…</div></div></section>
           <section class="build-orders-group" id="buildOrdersSignatureSection"><div class="build-orders-group-heading"><div><span>SPECIALIZED &amp; SIGNATURE</span><h3>特色战术</h3><p>针对特定文明、作者或特殊时机设计的开局。</p></div><b id="buildOrdersSignatureCount">—</b></div><div class="build-orders-grid" id="buildOrdersSignature"></div></section>
         </div>
@@ -80,7 +83,7 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=realtime-v38-map-names" defer></script>
+  <script src="/app.js?v=realtime-v46-themed-icons" defer></script>
 </body>
 </html>
 
