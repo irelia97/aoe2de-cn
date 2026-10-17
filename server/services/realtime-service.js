@@ -12,6 +12,7 @@ export function createRealtimeService(deps) {
     worldsEdgeMatchCache,
     worldsEdgeMatchCachePath,
     forceChinaCountry,
+    getLiveTournamentForPlayer = () => null,
     WebSocket,
     onMatchAdded = () => {}
   } = deps;
@@ -90,11 +91,45 @@ export function createRealtimeService(deps) {
       }));
     }
     const realtimeReferences = await loadRlReference();
+    function tournamentScoreForPlayer(tournament, playerNames) {
+      const score = Array.isArray(tournament?.score) && tournament.score.length >= 2 ? tournament.score : null;
+      const opponents = Array.isArray(tournament?.opponents) ? tournament.opponents : [];
+      if (!score || opponents.length < 2) return score;
+      const names = playerNames.map(value => String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')).filter(Boolean);
+      const side = opponents.findIndex(opponent => {
+        const candidates = [opponent?.name, ...(Array.isArray(opponent?.members) ? opponent.members : [])]
+          .map(value => String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ''))
+          .filter(Boolean);
+        return names.some(name => candidates.some(candidate => candidate === name || candidate.startsWith(name) || name.startsWith(candidate)));
+      });
+      return side === 0 ? [score[0], score[1]] : side === 1 ? [score[1], score[0]] : score;
+    }
     const enrichedStates = states.map(state => {
       const profile = localProfileDetails(state.profileId)?.player || {};
       const own = state.match?.players?.find(player => String(player.profileId) === String(state.profileId)) || {};
       const reference = realtimeReferences.get(String(state.profileId));
-      return { ...state, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: profile.name || own.name || `玩家 ${state.profileId}`, team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
+      const playerName = profile.name || own.name || `玩家 ${state.profileId}`;
+      const profileAlias = String(playerName).split(/[.|｜]/).pop().trim();
+      const tournament = state.match && !state.match.tournament
+        ? (getLiveTournamentForPlayer(playerName)
+          || getLiveTournamentForPlayer(profileAlias)
+          || getLiveTournamentForPlayer(own.name))
+        : null;
+      const match = state.match && tournament
+        ? {
+          ...state.match,
+          tournament,
+          score: (() => {
+            const score = tournamentScoreForPlayer(tournament, [playerName, profileAlias, own.name]);
+            return Array.isArray(score)
+              && score.length >= 2
+              && score.some(value => String(value ?? '').trim() !== '')
+              ? score
+              : state.match.score;
+          })()
+        }
+        : state.match;
+      return { ...state, match, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: playerName, team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
     });
     return { source, checkedAt: new Date().toISOString(), states: enrichedStates };
   }
@@ -327,7 +362,17 @@ export function createRealtimeService(deps) {
       };
       realtimeSocketGroups.set(index, group);
     }
-    const cachedPayload = await getCachedPayload(ids);
+    let cachedPayload = await getCachedPayload(ids);
+    // When the monitored-player pool changes, the persisted payload key no
+    // longer matches even though it may still contain valid ongoing matches.
+    // Restore that payload as a warm start so the realtime page does not go
+    // blank while the scheduled API reconciliation catches up.
+    if (!cachedPayload) {
+      try {
+        const persisted = JSON.parse(await readFile(realtimePayloadPath, 'utf8'));
+        if (persisted?.payload?.states) cachedPayload = persisted.payload;
+      } catch {}
+    }
     for (const state of Array.isArray(cachedPayload?.states) ? cachedPayload.states : []) {
       if (state?.status !== 'game' || !state.match) continue;
       const group = [...realtimeSocketGroups.values()].find(item => item.ids.includes(String(state.profileId)));
@@ -340,6 +385,10 @@ export function createRealtimeService(deps) {
       });
     }
     for (const group of realtimeSocketGroups.values()) connectRealtimeSocketGroup(group);
+    // Republish restored matches immediately so newly loaded enrichments,
+    // such as Liquipedia tournament metadata, are reflected without waiting
+    // for the next WebSocket event.
+    if ([...realtimeSocketGroups.values()].some(group => group.matches.size)) scheduleRealtimeSocketPublish();
     startRealtimeValidationLoop();
   }
   function realtimeWebSocketsHealthy(profileIds) {

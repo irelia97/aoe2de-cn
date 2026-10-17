@@ -36,7 +36,8 @@ export const mediaSources = {
     { platform: 'bilibili', roomId: '22276118', name: '秋已夕', url: 'https://live.bilibili.com/22276118' },
     { platform: 'bilibili', roomId: '3859473', name: 'B站直播间 3859473', url: 'https://live.bilibili.com/3859473' },
     { platform: 'bilibili', roomId: '23195173', name: 'spadetwo', url: 'https://live.bilibili.com/23195173' },
-    { platform: 'bilibili', roomId: '311754', name: '勇者三叶', url: 'https://live.bilibili.com/blanc/311754' }
+    { platform: 'bilibili', roomId: '311754', name: '勇者三叶', url: 'https://live.bilibili.com/blanc/311754' },
+    { platform: 'twitch', name: 'JorDan', url: 'https://www.twitch.tv/jordan_aoe', isCN: false }
   ]
 };
 

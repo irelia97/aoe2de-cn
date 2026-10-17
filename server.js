@@ -14,6 +14,8 @@ import { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects } from 'h
 import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
+import { createReplayAnalysisService } from './server/services/replay-analysis-service.js';
+import { recentFeedback } from './server/services/feedback-feed.js';
 import { createRealtimeDanmakuNotifier } from './server/services/realtime-danmaku-notifier.js';
 import { createMatchesService } from './server/services/matches-service.js';
 import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
@@ -27,6 +29,7 @@ if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const dataDir = join(root, '.cache');
+const replayAnalysisService = createReplayAnalysisService({ cacheDir: join(dataDir, 'replay-analysis'), assetsDir: join(root, 'public', 'assets', 'aoe2rec') });
 const feedbackLogPath = join(dataDir, 'feedback-submissions.jsonl');
 const siteTrafficPath = join(dataDir, 'site-traffic.json');
 const siteDailyArchivePath = join(dataDir, 'site-daily-archive.jsonl');
@@ -55,7 +58,7 @@ const forceProfileRefresh = process.env.PROFILE_REFRESH_NOW === '1';
 const port = Number(process.env.PORT || 3000);
 const api = 'https://aoe-api.worldsedgelink.com/community/leaderboard/getLeaderBoard2';
 const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争', 15: '赛事积分' };
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
 const avatarCache = new Map();
 const leaderboardCache = new Map();
 const leaderboardRefreshes = new Map();
@@ -2471,7 +2474,15 @@ function rebuildLiquipediaLivePlayerCache(data) {
     if (match?.status !== 'ongoing') continue;
     const tournament = String(match.tournament?.name || '').trim();
     if (!tournament) continue;
-    const event = { name: tournament, url: String(match.tournament?.url || ''), bestOf: Number(match.bestOf) || null, score: Array.isArray(match.score) ? match.score : ['', ''] };
+    const event = {
+      name: tournament,
+      url: String(match.tournament?.url || ''),
+      bestOf: Number(match.bestOf) || null,
+      score: Array.isArray(match.score) ? match.score : ['', ''],
+      opponents: Array.isArray(match.opponents)
+        ? match.opponents.map(opponent => ({ name: opponent?.name || '', members: Array.isArray(opponent?.members) ? opponent.members : [] }))
+        : []
+    };
     for (const opponent of Array.isArray(match.opponents) ? match.opponents : []) {
       const names = [...(Array.isArray(opponent?.members) ? opponent.members : []), opponent?.name];
       for (const name of names) {
@@ -2484,7 +2495,21 @@ function rebuildLiquipediaLivePlayerCache(data) {
 
 function getLiveTournamentForPlayer(playerName) {
   const key = normalizeEventPlayerName(playerName);
-  return key ? liquipediaLivePlayerTournaments.get(key) || null : null;
+  if (!key) return null;
+  const exact = liquipediaLivePlayerTournaments.get(key);
+  if (exact) return exact;
+
+  // Liquipedia and the live match API may use a shortened or decorated
+  // player name (for example JorDan vs JorDan_AoE). Only accept a fuzzy
+  // match when the meaningful part is long enough and it identifies one
+  // unique ongoing tournament.
+  if (key.length < 5) return null;
+  const candidates = [];
+  for (const [candidateKey, event] of liquipediaLivePlayerTournaments.entries()) {
+    if (candidateKey.startsWith(key) || key.startsWith(candidateKey)) candidates.push(event);
+  }
+  const unique = [...new Map(candidates.map(event => [event.url || event.name, event])).values()];
+  return unique.length === 1 ? unique[0] : null;
 }
 let siteTrafficWriteQueue = Promise.resolve();
 
@@ -2985,6 +3010,14 @@ http.createServer(async (req, res) => {
       return sendNoStoreJson(res, 502, { error: error.message || '赛事列表获取失败' });
     }
   }
+  if (url.pathname === '/api/feedback/recent') {
+    if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
+    try {
+      return sendNoStoreJson(res, 200, { items: await recentFeedback(feedbackLogPath) });
+    } catch {
+      return sendNoStoreJson(res, 500, { error: '暂时无法读取反馈列表' });
+    }
+  }
   if (url.pathname === '/api/feedback') {
     const ip = requestClientIp(req);
     if (req.method === 'GET') {
@@ -3151,6 +3184,42 @@ http.createServer(async (req, res) => {
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '获取近期对局失败' }));
+    }
+  }
+  if (url.pathname === '/api/replay-match-info') {
+    const matchId = url.searchParams.get('matchId') || '';
+    if (!/^[1-9]\d{0,15}$/.test(matchId)) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ error: '无效的比赛 ID' }));
+    }
+    try {
+      const data = await replayAnalysisService.getMatchInfo(matchId);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, max-age=1800' });
+      return res.end(JSON.stringify(data));
+    } catch {
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ error: '暂时无法读取对局信息' }));
+    }
+  }
+  if (url.pathname === '/api/replay-analysis') {
+    const matchId = url.searchParams.get('matchId') || '';
+    const profileId = url.searchParams.get('profileId') || '';
+    if (req.method !== 'GET') {
+      res.writeHead(405, { allow: 'GET' });
+      return res.end();
+    }
+    if (!/^[1-9]\d{0,15}$/.test(matchId) || !/^[1-9]\d{0,15}$/.test(profileId)) {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ error: '无效的比赛或玩家 ID' }));
+    }
+    try {
+      const result = await replayAnalysisService.get(matchId, profileId);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-encoding': 'gzip', 'content-length': String(result.data.length), 'cache-control': 'no-store', 'x-replay-cache': result.cached ? 'HIT' : 'MISS' });
+      return res.end(result.data);
+    } catch (error) {
+      console.error('录像分析失败:', matchId, profileId, error.message);
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify({ error: error.message || '录像分析失败，请稍后重试' }));
     }
   }
   if (url.pathname === '/api/match-replay') {
@@ -3355,7 +3424,7 @@ http.createServer(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|realtime|events|feedback|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events|feedback|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const path = normalize(join(root, 'public', relative));
   if (!path.startsWith(join(root, 'public'))) {
     res.writeHead(403); return res.end('Forbidden');

@@ -839,6 +839,9 @@ function aoe2CivilizationImageUrl(civilization) {
 const civilizationNamesZh = {
   Armenians: '亚美尼亚', Aztecs: '阿兹特克', Bengalis: '孟加拉', Berbers: '柏柏尔', Bohemians: '波希米亚', Britons: '不列颠', Bulgarians: '保加利亚', Burgundians: '勃艮第', Burmese: '缅甸', Byzantines: '拜占庭', Celts: '凯尔特', Chinese: '中国', Cumans: '库曼', Danes: '丹麦', Dravidians: '达罗毗荼', Ethiopians: '埃塞俄比亚', Franks: '法兰克', Georgians: '格鲁吉亚', Goths: '哥特', Gurjaras: '瞿折罗', Hindustanis: '印度斯坦', Huns: '匈奴', Incas: '印加', inca: '印加', Italians: '意大利', Japanese: '日本', Jurchens: '女真', Khitans: '契丹', Khmer: '高棉', Koreans: '高丽', Lithuanians: '立陶宛', Magyars: '马扎尔', Malay: '马来', Malays: '马来', Malians: '马里', Mapuche: '马普切', Maya: '玛雅', maya: '玛雅', Mayans: '玛雅', mayans: '玛雅', Mongols: '蒙古', Muisca: '穆伊斯卡', Persians: '波斯', Poles: '波兰', Portuguese: '葡萄牙', Romans: '罗马', Saracens: '撒拉逊', Saxons: '撒克逊', Shu: '蜀', Sicilians: '西西里', Slavs: '斯拉夫', Spanish: '西班牙', Tatars: '鞑靼', Teutons: '条顿', Turks: '土耳其', Tupi: '图皮', Varangians: '瓦兰吉', Vietnamese: '越南', Vikings: '维京', Wei: '魏', Wu: '吴'
 };
+const replayCivilizationNamesById = {
+  0: '随机', 1: '不列颠', 2: '法兰克', 3: '哥特', 4: '条顿', 5: '日本', 6: '中国', 7: '拜占庭', 8: '波斯', 9: '撒拉逊', 10: '土耳其', 11: '维京', 12: '蒙古', 13: '凯尔特', 14: '西班牙', 15: '阿兹特克', 16: '玛雅', 17: '匈奴', 18: '高丽', 19: '意大利', 20: '印度斯坦', 21: '印加', 22: '马扎尔', 23: '斯拉夫', 24: '葡萄牙', 25: '埃塞俄比亚', 26: '马里', 27: '柏柏尔', 28: '高棉', 29: '马来', 30: '缅甸', 31: '越南', 32: '保加利亚', 33: '鞑靼', 34: '库曼', 35: '立陶宛', 36: '勃艮第', 37: '西西里', 38: '波兰', 39: '波希米亚', 40: '达罗毗荼', 41: '孟加拉', 42: '瞿折罗', 43: '罗马', 44: '亚美尼亚', 45: '格鲁吉亚', 46: '阿契美尼德', 47: '雅典', 48: '斯巴达', 49: '蜀', 50: '吴', 51: '魏', 52: '女真', 53: '契丹', 54: '马其顿', 55: '色雷斯', 56: '普鲁', 57: '穆伊斯卡', 58: '马普切', 59: '图皮', 60: '撒克逊', 61: '瓦兰吉', 62: '丹麦'
+};
 function civilizationNameZh(civilization) {
   const value = String(civilization || '').trim();
   const stripped = value.replace(/\s+\(.*\)$/, '');
@@ -1125,8 +1128,10 @@ function renderProfileMatches(profile, matchesOverride = null, visibleCount = 10
     const mapIcon = `<span class="profile-match-map-fallback">?</span>${mapImage ? `<img src="${mapImage}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}`;
     const liveBadge = live ? `<a class="profile-match-live-badge" href="aoe2de://1/${encodeURIComponent(String(match.id))}" title="点击在 AoE2 DE 中观战">LIVE-&gt;点击游戏内观战</a>` : `<span class="profile-match-result">${escapeHtml(result)}</span>`;
     const replayButton = live ? '' : `<select class="profile-match-replay-download" aria-label="选择录像视角" data-match-id="${escapeHtml(match.id ?? '')}"><option value="">下载录像</option>${players.map(player => `<option value="${escapeHtml(player.id ?? '')}">${escapeHtml(player.name || `玩家 ${player.id}`)}</option>`).join('')}</select>`;
+    const analysisProfileId = self?.id || players.find(player => player.id)?.id;
+    const analysisButton = !live && match.id && analysisProfileId ? `<a class="profile-match-replay-analysis" href="/replay-analysis?matchId=${encodeURIComponent(String(match.id))}&profileId=${encodeURIComponent(String(analysisProfileId))}">录像分析</a>` : '';
     const teamLayoutClass = `${teams.length > 2 ? ' many-teams' : ''}${teams.length >= 2 && teams.some(team => Array.isArray(team.members) && team.members.length > 1) ? ' team-game' : ''}`;
-    return `<article class="profile-match-card ${live ? 'is-live' : resultClass}"><div class="profile-match-heading"><span class="profile-match-leaderboard" title="${escapeHtml(profileMatchTypeLabel(match))}">${escapeHtml(profileMatchTypeLabel(match))}</span>${liveBadge}</div><div class="profile-match-content"><div class="profile-match-info"><div class="profile-match-map-column"><div class="profile-match-map-icon">${mapIcon}</div>${replayButton}</div><div class="profile-match-map-copy"><strong class="${mapNameColorClass(rawMapName)}" title="${escapeHtml(mapName)}">${escapeHtml(mapName)}</strong><span>◷ ${escapeHtml(durationText)}</span><span>${escapeHtml(matchAgo)}</span><small>#${escapeHtml(match.id ?? '—')}</small></div></div><div class="profile-match-teams${teamLayoutClass}">${matchupMarkup}</div></div></article>`;
+    return `<article class="profile-match-card ${live ? 'is-live' : resultClass}"><div class="profile-match-heading"><span class="profile-match-leaderboard" title="${escapeHtml(profileMatchTypeLabel(match))}">${escapeHtml(profileMatchTypeLabel(match))}</span>${liveBadge}</div><div class="profile-match-content"><div class="profile-match-info"><div class="profile-match-map-column"><div class="profile-match-map-icon">${mapIcon}</div>${replayButton}${analysisButton}</div><div class="profile-match-map-copy"><strong class="${mapNameColorClass(rawMapName)}" title="${escapeHtml(mapName)}">${escapeHtml(mapName)}</strong><span>◷ ${escapeHtml(durationText)}</span><span>${escapeHtml(matchAgo)}</span><small>#${escapeHtml(match.id ?? '—')}</small></div></div><div class="profile-match-teams${teamLayoutClass}">${matchupMarkup}</div></div></article>`;
   }).join('');
   body.querySelectorAll('.profile-match-replay-download').forEach(picker => {
     picker.addEventListener('change', () => {
@@ -1538,6 +1543,493 @@ function loadMedia(showAllVideos = false) {
   if (mediaRequest) return mediaRequest;
   mediaRequest = fetch('/api/media', { cache: 'default' }).then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败'))).then(data => { renderMedia(data, showAllVideos); return data; }).catch(() => { renderMedia({ videos: [], live: [] }, showAllVideos); }).finally(() => { mediaRequest = null; });
   return mediaRequest;
+}
+let replayParserModule = null;
+let replayAnalysisLoaded = false;
+function replayValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+function replayWalk(value, visit, seen = new Set(), depth = 0) {
+  if (value == null || depth > 10 || (typeof value !== 'object' && typeof value !== 'function') || seen.has(value)) return;
+  seen.add(value);
+  visit(value);
+  if (Array.isArray(value)) { value.forEach(item => replayWalk(item, visit, seen, depth + 1)); return; }
+  for (const key of Object.keys(value)) {
+    try { replayWalk(value[key], visit, seen, depth + 1); } catch {}
+  }
+}
+function replayNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+function replayFindChat(root, playerNames = new Map()) {
+  const messages = [];
+  const addMessage = (raw, fallbackPlayer = null, fallbackTime = null) => {
+    if (!raw) return;
+    let parsed = raw;
+    if (typeof parsed === 'string') {
+      try { parsed = JSON.parse(parsed); } catch { parsed = { message: parsed }; }
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+    const text = replayValue(parsed.message ?? parsed.text ?? parsed.contents ?? parsed.content).trim().replace(/<player_id,(\d+),\d+>/g, (_, id) => playerNames.get(String(id)) || `玩家 ${id}`);
+    if (!text) return;
+    const playerId = parsed.player ?? parsed.sender ?? fallbackPlayer;
+    const player = playerNames.get(String(playerId)) || replayValue(playerId);
+    const time = replayNumber(parsed.time ?? parsed.tick ?? parsed.timestamp ?? fallbackTime);
+    messages.push({ text, time, player, playerId: playerId == null ? null : String(playerId) });
+  };
+  const chapters = Array.isArray(root?.chapters) ? root.chapters : [];
+  if (chapters.length) {
+    for (const chapter of chapters) {
+      let worldTime = 0;
+      let started = false;
+      for (const operation of Array.isArray(chapter?.operations) ? chapter.operations : []) {
+        if (operation?.Sync) worldTime += Number(operation.Sync.time_increment) || 0;
+        if (operation?.Action) started = true;
+        if (started && operation?.Chat) addMessage(operation.Chat.text ?? operation.Chat.message, operation.Chat.player, worldTime);
+      }
+    }
+  } else {
+    replayWalk(root, value => {
+      if (!value || Array.isArray(value)) return;
+      if (value.Chat) {
+        addMessage(value.Chat.text ?? value.Chat.message, value.Chat.player);
+        return;
+      }
+      const keys = Object.keys(value).map(key => key.toLowerCase());
+      const textKey = keys.find(key => ['message', 'text', 'contents', 'content'].includes(key));
+      if (!textKey || typeof value[textKey] !== 'string' || !value[textKey].trim()) return;
+      const hasChatContext = keys.some(key => /chat|sender|player|message/.test(key));
+      if (!hasChatContext) return;
+      const timeKey = keys.find(key => /time|tick|timestamp/.test(key));
+      const playerKey = keys.find(key => /player|sender|profile/.test(key));
+      messages.push({ text: value[textKey].trim(), time: replayNumber(timeKey ? value[timeKey] : null), player: playerKey ? replayValue(value[playerKey]) : '' });
+    });
+  }
+  const unique = [];
+  for (const message of messages) {
+    const duplicate = [...unique].reverse().find(previous => previous.player === message.player && previous.text === message.text && previous.time != null && message.time != null && Math.abs(previous.time - message.time) <= 1000);
+    if (!duplicate) unique.push(message);
+  }
+  return unique.slice(0, 300);
+}
+function replayFindPoints(root) {
+  const points = [];
+  replayWalk(root, value => {
+    if (!value || Array.isArray(value)) return;
+    const keys = Object.keys(value).map(key => key.toLowerCase());
+    const xKey = keys.find(key => key === 'x' || key.endsWith('_x') || key === 'posx');
+    const yKey = keys.find(key => key === 'y' || key.endsWith('_y') || key === 'posy');
+    const x = xKey ? replayNumber(value[xKey]) : null;
+    const y = yKey ? replayNumber(value[yKey]) : null;
+    if (x == null || y == null || x < 0 || y < 0 || x > 100000 || y > 100000) return;
+    points.push({ x, y });
+  });
+  return points.slice(0, 20_000);
+}
+function replayFormatTime(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+}
+function replayCivLabel(player) {
+  const civId = Number(player?.civ_id);
+  if (!Number.isFinite(civId)) return '未知文明';
+  return replayCivilizationNamesById[civId] || '未知文明';
+}
+const replayCivilizationSlugsById = {
+  1: 'britons', 2: 'franks', 3: 'goths', 4: 'teutons', 5: 'japanese', 6: 'chinese', 7: 'byzantines', 8: 'persians', 9: 'saracens', 10: 'turks', 11: 'vikings', 12: 'mongols', 13: 'celts', 14: 'spanish', 15: 'aztecs', 16: 'mayans', 17: 'huns', 18: 'koreans', 19: 'italians', 20: 'hindustanis', 21: 'incas', 22: 'magyars', 23: 'slavs', 24: 'portuguese', 25: 'ethiopians', 26: 'malians', 27: 'berbers', 28: 'khmer', 29: 'malays', 30: 'burmese', 31: 'vietnamese', 32: 'bulgarians', 33: 'tatars', 34: 'cumans', 35: 'lithuanians', 36: 'burgundians', 37: 'sicilians', 38: 'poles', 39: 'bohemians', 40: 'dravidians', 41: 'bengalis', 42: 'gurjaras', 43: 'romans', 44: 'armenians', 45: 'georgians', 49: 'shu', 50: 'wu', 51: 'wei', 52: 'jurchens', 53: 'khitans', 54: 'macedonians', 55: 'thracians', 56: 'puru', 57: 'muisca', 58: 'mapuche', 59: 'tupi', 60: 'saxons', 61: 'varangians', 62: 'danes'
+};
+function replayCivIcon(player) {
+  const slug = replayCivilizationSlugsById[Number(player?.civ_id)];
+  return slug ? `https://backend.cdn.aoe2companion.com/public/aoe2/de/civilizations/${slug}.png` : '';
+}
+function replayPlayerIdFromAction(actionData) {
+  for (const value of Object.values(actionData || {})) {
+    if (value && typeof value === 'object' && Number.isFinite(Number(value.player_id))) return Number(value.player_id);
+  }
+  return null;
+}
+function replayPlayerStats(full, durationMs) {
+  const excludedQueueUnitIds = new Set([83, 13, 17, 128]); // 村民、渔船、贸易船、贸易马车
+  const stats = new Map();
+  const effectiveTypes = new Set(['Transform', 'DeQueue', 'Build', 'Move', 'Gatherpoint', 'Interact', 'Order', 'Stance', 'DeAttackMove', 'Patrol', 'Research', 'Delete', 'Wall', 'Sell', 'Formation', 'AttackGround', 'BackToWork', 'Buy']);
+  const ensure = playerId => {
+    const key = String(playerId);
+    if (!stats.has(key)) stats.set(key, { actions: 0, queue: new Map(), villagers: 0, recent: new Map() });
+    return stats.get(key);
+  };
+  for (const chapter of Array.isArray(full?.chapters) ? full.chapters : []) {
+    for (const operation of Array.isArray(chapter?.operations) ? chapter.operations : []) {
+      const action = operation?.Action;
+      if (!action?.action_data) continue;
+      const types = Object.keys(action.action_data).filter(type => effectiveTypes.has(type));
+      if (!types.length) continue;
+      const playerId = replayPlayerIdFromAction(action.action_data);
+      if (playerId == null) continue;
+      const entry = ensure(playerId);
+      const worldTime = Number(action.world_time) || 0;
+      for (const type of types) {
+        const value = action.action_data[type];
+        const fingerprint = `${type}|${JSON.stringify(value)}`;
+        const lastTime = entry.recent.get(fingerprint);
+        const unitId = type === 'DeQueue' ? Number(value?.unit_id) : null;
+        const duplicateAction = lastTime != null && worldTime - lastTime <= 300;
+        if (type === 'DeQueue' && unitId === 83) {
+          const amount = Math.max(1, Number(value?.amount) || 1);
+          entry.villagers += amount;
+          if (!duplicateAction) entry.actions += 1;
+          entry.recent.set(fingerprint, worldTime);
+        } else {
+          if (duplicateAction) continue;
+          entry.recent.set(fingerprint, worldTime);
+          entry.actions += 1;
+        }
+        if (type === 'DeQueue') {
+          const amount = Math.max(1, Number(value?.amount) || 1);
+          if (!excludedQueueUnitIds.has(unitId) && Number.isFinite(unitId)) entry.queue.set(unitId, (entry.queue.get(unitId) || 0) + amount);
+        }
+      }
+    }
+  }
+  const minutes = Math.max(Number(durationMs) / 60000, 1 / 60);
+  return new Map([...stats.entries()].map(([playerId, entry]) => {
+    const topQueues = [...entry.queue.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2);
+    return [playerId, { eapm: entry.actions / minutes, villagerCount: entry.villagers, queuedUnits: topQueues.map(([id, count]) => ({ id, count })) }];
+  }));
+}
+const replayUnitInfoById = {
+  83: { name: '村民', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E6%9D%91%E6%B0%91%E7%94%B7.webp' },
+  4: { name: '步弓手', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E6%AD%A5%E5%BC%93%E6%89%8B.webp' },
+  13: { name: '渔船', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E6%B8%94%E8%88%B9.webp' },
+  74: { name: '民兵', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E6%B0%91%E5%85%B5.webp' },
+  93: { name: '长矛兵', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E9%95%BF%E7%9F%9B%E5%85%B5.webp' },
+  1001: { name: '风琴炮', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E9%A3%8E%E7%90%B4%E7%82%AE.webp' },
+  125: { name: '僧侣', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E5%83%A7%E4%BE%A3.webp' },
+  128: { name: '贸易马车', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E8%B4%B8%E6%98%93%E9%A9%AC%E8%BD%A6.webp' },
+  279: { name: '弩炮', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E5%BC%A9%E7%82%AE.webp' },
+  280: { name: '轻型投石车', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E8%BD%BB%E5%9E%8B%E6%8A%95%E7%9F%B3%E8%BD%A6.webp' },
+  331: { name: '打包中的投石机', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E5%B7%A8%E5%9E%8B%E6%8A%95%E7%9F%B3%E6%9C%BA.webp' },
+  440: { name: '爆破兵', icon: '' },
+  755: { name: '答剌罕骑兵', icon: '' },
+  1129: { name: '藤弓兵', icon: '' },
+  1949: { name: '虎豹骑', icon: '' },
+  2562: { name: '格查战士', icon: '' },
+  2708: { name: '首领', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E9%A6%96%E9%A2%86.webp' }
+};
+const replayTechInfoById = {};
+async function replayLoadUnitMap() {
+  if (replayLoadUnitMap.loaded) return;
+  replayLoadUnitMap.loaded = true;
+  try {
+    const response = await fetch('/replay-unit-map.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`unit map ${response.status}`);
+    Object.assign(replayUnitInfoById, await response.json());
+  } catch (error) {
+    console.warn('完整单位映射加载失败，使用内置映射', error);
+  }
+}
+async function replayLoadTechMap() {
+  if (replayLoadTechMap.loaded) return;
+  replayLoadTechMap.loaded = true;
+  try {
+    const response = await fetch('/replay-tech-map.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`tech map ${response.status}`);
+    Object.assign(replayTechInfoById, await response.json());
+  } catch (error) {
+    console.warn('完整科技映射加载失败', error);
+  }
+}
+function replayQueuedUnitInfo(stats) {
+  return (stats?.queuedUnits || []).map(({ id, count }) => ({
+    id, count, ...(replayUnitInfoById[id] || { name: '未知单位', icon: '' })
+  }));
+}
+function replayPlayerColor(colorId) {
+  // Replay color IDs are zero-based: blue, red, green, yellow, cyan, purple, gray, orange.
+  const colors = ['#405bff', '#ff0000', '#00ff00', '#ffff00', '#00ffff', '#ff00ff', '#a0a0a0', '#ff8000'];
+  const id = Number(colorId);
+  return Number.isInteger(id) && id >= 0 && id < colors.length ? colors[id] : '#84928a';
+}
+function replayTimelineTime(milliseconds) {
+  const seconds = Math.max(0, Number(milliseconds) || 0) / 1000;
+  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+}
+function replayTimelineData(full, players, durationMs) {
+  const playerIds = new Set(players.map(player => Number(player.player_number)).filter(Number.isFinite));
+  const events = new Map([...playerIds].map(playerId => [playerId, []]));
+  const excludedUnitIds = new Set([83, 13, 17, 128]);
+  const lastResearchCommands = new Map();
+  let lastTime = Number(durationMs) || 0;
+  let firstTime = Infinity;
+  for (const chapter of Array.isArray(full?.chapters) ? full.chapters : []) {
+    for (const operation of Array.isArray(chapter?.operations) ? chapter.operations : []) {
+      const action = operation?.Action;
+      if (!action?.action_data) continue;
+      const time = Number(action.world_time) || 0;
+      lastTime = Math.max(lastTime, time);
+      const dequeue = action.action_data.DeQueue;
+      if (dequeue && Number.isFinite(Number(dequeue.player_id)) && Number.isFinite(Number(dequeue.unit_id)) && !excludedUnitIds.has(Number(dequeue.unit_id))) {
+        const playerId = Number(dequeue.player_id);
+        if (events.has(playerId)) { firstTime = Math.min(firstTime, time); events.get(playerId).push({ time, type: 'unit', id: Number(dequeue.unit_id), count: Math.max(1, Number(dequeue.amount) || 1) }); }
+      }
+      const research = action.action_data.Research;
+      if (research && Number.isFinite(Number(research.player_id))) {
+        const playerId = Number(research.player_id);
+        if (events.has(playerId)) {
+          const technologyId = Number(research.technology_type);
+          const buildingIds = [...(research.building_ids || [research.building_id])].sort((a, b) => Number(a) - Number(b));
+          const key = JSON.stringify([playerId, technologyId, buildingIds]);
+          const previousTime = lastResearchCommands.get(key);
+          lastResearchCommands.set(key, time);
+          // Repeated clicks can emit identical research commands a few ticks apart.
+          if (previousTime != null && time >= previousTime && time - previousTime <= 1000) continue;
+          firstTime = Math.min(firstTime, time);
+          events.get(playerId).push({ time, type: 'research', id: technologyId, count: 1 });
+        }
+      }
+    }
+  }
+  const bucketSize = 2 * 60 * 1000;
+  const start = Number.isFinite(firstTime) ? Math.floor(firstTime / bucketSize) * bucketSize : 0;
+  const groupedEvents = new Map();
+  for (const [playerId, items] of events.entries()) {
+    const grouped = new Map();
+    for (const item of items) {
+      const bucket = Math.floor(item.time / bucketSize);
+      const key = `${item.type}:${item.id}:${bucket}`;
+      const current = grouped.get(key);
+      if (current) {
+        current.count += item.count;
+        current.time = Math.min(current.time, item.time);
+      } else {
+        const bucketStart = bucket * bucketSize;
+        grouped.set(key, {
+          ...item,
+          time: item.time,
+          bucketStart,
+          bucketEnd: bucketStart + bucketSize,
+        });
+      }
+    }
+    groupedEvents.set(playerId, [...grouped.values()].sort((a, b) => a.time - b.time));
+  }
+  return { events: groupedEvents, start, bucketSize, duration: Math.max(Math.ceil(lastTime / bucketSize) * bucketSize, start + bucketSize) };
+}
+function replayTimelineMarkup(full, players, durationMs) {
+  const target = document.querySelector('#replayTimeline');
+  if (!target) return;
+  const { events, start, duration, bucketSize } = replayTimelineData(full, players, durationMs);
+  const span = Math.max(duration - start, 60000);
+  const totalEvents = [...events.values()].reduce((sum, items) => sum + items.length, 0);
+  const groups = [...new Map(players.map(player => [player.teamIndex, players.filter(candidate => candidate.teamIndex === player.teamIndex)])).entries()];
+  const bucketCount = Math.round(span / bucketSize);
+  target.style.setProperty("--timeline-min-width", `${Math.max(776, 206 + bucketCount * 80)}px`);
+  target.style.setProperty("--timeline-bucket-width", `${100 / bucketCount}%`);
+  const ticks = Array.from({ length: bucketCount + 1 }, (_, index) => start + index * bucketSize);
+  const tickMarkup = ticks.map(time => `<span style="left:${((time - start) / span * 100).toFixed(3)}%">${replayTimelineTime(time)}</span>`).join('');
+  const rows = groups.flatMap(([teamIndex, teamPlayers]) => [`<div class="replay-timeline-team"><span>队伍 ${Number(teamIndex) + 1}</span><b class="${teamPlayers.some(player => player.winner) ? 'replay-result-win' : 'replay-result-loss'}">${teamPlayers.some(player => player.winner) ? '胜者' : '失败'}</b></div>`, ...teamPlayers.map(player => {
+    const playerId = Number(player.player_number);
+    const items = (events.get(playerId) || []).sort((a, b) => a.time - b.time);
+    const laneEnds = [];
+    const laneGap = Math.max(12000, span * 0.018);
+    items.forEach(item => {
+      let lane = laneEnds.findIndex(end => item.time - end >= laneGap);
+      if (lane < 0) lane = laneEnds.length;
+      laneEnds[lane] = item.time;
+      item.lane = Math.min(lane, 2);
+    });
+    const name = escapeHtml(player.name || `玩家 ${playerId}`);
+    const markers = items.map(item => {
+      const info = item.type === 'unit' ? (replayUnitInfoById[item.id] || { name: `单位 ${item.id}`, icon: '' }) : (replayTechInfoById[item.id] || { name: `科技 ${item.id}`, icon: '' });
+      const icon = info.icon ? `<img src="${escapeHtml(info.icon)}" alt="${escapeHtml(info.name)}" loading="lazy" onerror="this.hidden=true">` : '<span class="replay-timeline-placeholder">科技</span>';
+      const count = item.count > 1 ? `×${item.count}` : '';
+      const timeLabel = `${replayTimelineTime(item.bucketStart)}–${replayTimelineTime(item.bucketEnd)}`;
+      return `<span class="replay-timeline-event replay-timeline-event-${item.type}" style="left:clamp(20px, ${Math.max(0, Math.min(100, (item.time - start) / span * 100)).toFixed(3)}%, calc(100% - 24px));--event-lane:${item.lane}" title="${escapeHtml(`${timeLabel} · ${info.name}${count ? ` ${count}` : ''}`)}">${icon}<b>${count}</b></span>`;
+    }).join('');
+    return `<div class="replay-timeline-row"><div class="replay-timeline-player"><span class="replay-timeline-color" style="--player-color:${replayPlayerColor(player.color_id)}"></span><strong>${name}</strong></div><div class="replay-timeline-track">${markers}</div></div>`;
+  })]);
+  target.innerHTML = totalEvents ? `<div class="replay-timeline-axis"><div></div><div class="replay-timeline-axis-track">${tickMarkup}</div></div>${rows.join('')}` : '<div class="replay-empty">录像中没有可读取的生产或研究事件。</div>';
+  const count = document.querySelector('#replayTimelineCount');
+  if (count) count.textContent = `${totalEvents} 个事件`;
+}
+function replayBoolLabel(value) {
+  return value === true ? '是' : value === false ? '否' : '—';
+}
+function replayGameSettingMarkup(settings, summary) {
+  const mapSizeNames = { 120: '极小型（2名玩家）[120]', 144: '小型（3名玩家）[144]', 168: '中型（4名玩家）[168]', 200: '普通型（6名玩家）[200]', 220: '大型（8名玩家）[220]', 240: '巨大型[240]', 480: '超常[480]' };
+  const gameTypeNames = { '-1': '未知', 0: '随机地图', 1: '弑君', 2: '死亡竞赛', 3: '场景', 6: '山丘之王', 7: '奇观竞速', 8: '守护奇观', 9: '极速随机地图', 10: '遗迹争夺', 11: '突然死亡', 12: '大逃杀', 13: '帝国战争' };
+  const mapName = replayMapName(settings);
+  const gameType = settings.game_type == null ? '—' : (gameTypeNames[String(settings.game_type)] || '自定义游戏');
+  const mapSize = Number(settings.map_size);
+  const speed = Number(settings.speed);
+  const replaySpeed = Number(summary?.header?.game_speed);
+  const speedValue = Number.isFinite(speed) && speed > 0 ? `×${speed.toFixed(2)}` : Number.isFinite(replaySpeed) && replaySpeed > 0 ? `×${replaySpeed.toFixed(2)}` : '—';
+  const rows = [
+    ['游戏类型', gameType],
+    ['地图', mapName],
+    ['地图尺寸', mapSizeNames[mapSize] || (Number.isFinite(mapSize) && mapSize > 6 ? `${mapSize}×${mapSize}` : '—')],
+    ['人口上限', Number(settings.population_limit) > 0 ? String(settings.population_limit) : '—'],
+    ['游戏速度', speedValue],
+    ['迷雾', replayBoolLabel(settings.fog_of_war)],
+    ['共享探索', replayBoolLabel(settings.shared_exploration)],
+    ['排名对局', replayBoolLabel(settings.ranked)],
+    ['匹配对局', replayBoolLabel(settings.matchmaking)],
+    ['作弊', replayBoolLabel(settings.cheats)]
+  ];
+  return rows.map(([label, value]) => `<div class="replay-setting-item"><small>${escapeHtml(label)}</small><strong>${escapeHtml(String(value))}</strong></div>`).join('');
+}
+function replayMapName(settings) {
+  // AoE2:DE map constants. Prefer the recorded script name below when present,
+  // but use this complete built-in map table when a replay only stores an ID.
+  const mapNamesById = {
+    9:'阿拉伯',10:'群岛',11:'波罗的海',12:'黑森林',13:'海岸',14:'大陆',15:'陨石湖',16:'堡垒',17:'黄金国',18:'高地',19:'岛屿',20:'地中海',21:'迁徙',22:'河流',23:'团队岛屿',25:'斯堪的纳维亚',26:'蒙古',27:'尤卡坦',28:'盐沼',29:'竞技场',30:'山丘之王',31:'绿洲',32:'幽灵湖',33:'游牧',34:'运河',35:'反复无常',36:'丁戈',37:'墓地',38:'大都会',39:'护城河',40:'天堂岛',41:'朝圣者',42:'草原',43:'四季',44:'舍伍德森林',46:'海难',47:'团队冰川',49:'现实世界：西班牙',50:'现实世界：英格兰',51:'现实世界：中东',52:'现实世界：德州',53:'现实世界：意大利',54:'现实世界：加勒比',55:'现实世界：法国',56:'现实世界：日德兰',57:'现实世界：日本',58:'现实世界：拜占庭',59:'自定义地图',67:'卫城',68:'布达佩斯',69:'塞诺特',70:'湖城',71:'黄金坑',72:'藏身处',73:'山堡',74:'伦巴第',75:'草原',76:'山谷',77:'大随机地图',78:'汉堡',79:'征服者：随机地图',80:'征服者：季风',81:'征服者：金字塔下降',82:'征服者：螺旋',83:'乞力马扎罗',84:'山口',85:'尼罗河三角洲',86:'塞伦盖蒂',87:'索科特拉',88:'现实世界：亚马逊',89:'现实世界：中国',90:'现实世界：非洲之角',91:'现实世界：印度',92:'现实世界：马达加斯加',93:'现实世界：西非',94:'现实世界：波希米亚',95:'现实世界：地球',96:'峡谷',97:'特殊群岛',98:'敌方岛屿',99:'遥远之地',100:'前线',101:'内圈',102:'祖国',103:'开阔平原',104:'水环',105:'蛇坑',106:'天眼',107:'现实世界：澳大利亚',108:'现实世界：印度支那',109:'现实世界：印度尼西亚',110:'现实世界：马六甲',111:'现实世界：菲律宾',112:'沼泽群岛',113:'红树林丛林',114:'太平洋群岛',115:'沙洲',116:'水上游牧',117:'丛林群岛',118:'圣线',119:'边境石',120:'阴阳',121:'丛林小径',122:'阿尔卑斯湖',123:'沼泽地',124:'山脊',125:'峡谷',126:'狼丘',127:'旋转河流',128:'双森林',129:'南行',130:'蛇形森林',131:'蔓延溪流',132:'现实世界：南极洲',133:'现实世界：阿拉尔海',134:'现实世界：黑海',135:'现实世界：高加索',136:'现实世界：西伯利亚',137:'自定义地图池',139:'黄金沼泽',140:'四湖',141:'陆地游牧',142:'冰上之战',143:'黄金国',144:'阿克苏姆之战',145:'罗马之战',146:'满者伯夷帝国',147:'亚马逊隧道',148:'海岸森林',149:'非洲林中空地',150:'阿塔卡马',151:'夺取山峰',152:'陨石坑',153:'十字路口',154:'米奇',155:'团队护城河',156:'火山岛',157:'斜坡',158:'喷发',159:'冰湖',160:'格陵兰',161:'低地',162:'市场',163:'草甸',164:'山脉',165:'北方群岛',166:'环形堡垒',167:'符文石',168:'余波',169:'封闭',170:'沙丘',171:'卡瓦桑',172:'陆地狂潮',173:'神圣泉',174:'浅滩',175:'沼泽',176:'浅滩群岛',177:'悬崖',178:'地峡',179:'沙丘泉',180:'黄金溪流',181:'山地沙丘',182:'河流分界',183:'沙漂',184:'灌木地',185:'通道',186:'空心林地',187:'喀斯特',188:'林间空地',189:'强化空地',190:'竞技场阿拉伯',191:'竞技场强化空地',192:'竞技场林间空地',193:'竞技场游牧',194:'竞技场符文石',195:'竞技场竞技场',196:'竞技场黑森林',197:'现实世界：满洲',198:'边境争端',199:'霰弹',200:'搁浅',201:'萨迪斯',202:'水上竞技场',203:'森林突破',204:'混沌坑',205:'泥沼',206:'暗林',207:'皇冠林',208:'多萝西娅采石场',209:'冰川',210:'亨格霍尔德',211:'尼斯湖',212:'壁垒',213:'石墙',214:'泰晤士',215:'狐形',216:'阿拉伯沙漠'
+  };
+  const resolvedMapId = Number(settings?.resolved_map_id ?? settings?.selected_map_id);
+  if (resolvedMapId !== 59 && mapNamesById[resolvedMapId]) return mapNamesById[resolvedMapId];
+  const lobbyName = String(settings?.lobby_name || '').trim();
+  const mapStrings = Array.isArray(settings?.rms_strings) ? settings.rms_strings.map(value => String(value || '').trim()).map(value => {
+    const subscribedMap = value.match(/(?:^|:)RANDOM_MAPS:([^:]+?\.rms)(?=:|$)/i) || value.match(/(?:^|:)([^:]+?\.rms)(?=:|$)/i);
+    return subscribedMap ? subscribedMap[1].replace(/\.rms$/i, '') : value;
+  }).filter(value => value && !/^none|null|undefined$/i.test(value) && !/^(?:NONE|SUBSCRIBEDMODS)(?::|$)/i.test(value)) : [];
+  const mapName = mapStrings.find(value => value !== lobbyName);
+  if (!mapName) return mapNamesById[resolvedMapId] || '未知地图';
+  return /^[A-Z0-9 _-]+$/.test(mapName) ? mapName.toLowerCase().replace(/(^|[ -])[a-z]/g, value => value.toUpperCase()).replace(/\bDe\b/g, 'DE') : mapName;
+}
+function replayDrawMap(points) {
+  const canvas = document.querySelector('#replayMapCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const width = canvas.clientWidth || 900;
+  const height = Math.max(260, Math.round(width * 0.46));
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+  ctx.scale(ratio, ratio);
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface-strong').trim() || '#172019';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
+  for (let i = 1; i < 8; i += 1) { ctx.beginPath(); ctx.moveTo(width * i / 8, 0); ctx.lineTo(width * i / 8, height); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, height * i / 8); ctx.lineTo(width, height * i / 8); ctx.stroke(); }
+  if (!points.length) { ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.font = '14px sans-serif'; ctx.fillText('当前录像未提供可直接绘制的坐标操作', 24, 34); return; }
+  const maxX = Math.max(...points.map(point => point.x), 1); const maxY = Math.max(...points.map(point => point.y), 1);
+  ctx.fillStyle = 'rgba(89,202,141,.55)';
+  for (const point of points) { ctx.beginPath(); ctx.arc(18 + point.x / maxX * (width - 36), 18 + point.y / maxY * (height - 36), 1.5, 0, Math.PI * 2); ctx.fill(); }
+}
+function replayStartTime(timestamp) {
+  const value = Number(timestamp);
+  if (!Number.isFinite(value) || value <= 0) return '未记录';
+  return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(value * 1000));
+}
+async function replayLoadMatchInfo(matchId, requestId, recordedStart) {
+  try {
+    const response = await fetch(`/api/replay-match-info?matchId=${encodeURIComponent(matchId)}`, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return;
+    const info = await response.json();
+    if (requestId !== replayAnalysisRequest || String(info.matchId) !== String(matchId)) return;
+    if (recordedStart > 0 && info.started > 0 && Math.abs(recordedStart - info.started) > 300) return;
+    const time = document.querySelector('[data-replay-summary-field="startedAt"] strong');
+    const server = document.querySelector('[data-replay-summary-field="server"] strong');
+    if (time && info.started) time.textContent = replayStartTime(info.started);
+    if (server && info.server) { server.textContent = realtimeServerName(info.server); server.title = info.server; }
+  } catch { /* Optional match metadata must not interrupt local replay analysis. */ }
+}
+function replaySummaryMarkup(summary, full, file, matchInfo = null) {
+  const settings = summary?.header?.game_settings || {};
+  const header = summary?.header || {};
+  const replayBuild = replayValue(header.build) || '—';
+  const players = (summary?.teams || []).flatMap((team, teamIndex) => (team.players || []).map(player => ({
+    name: replayValue(player.name),
+    profile_id: player.profile_id,
+    player_number: player.player_number,
+    color_id: player.color_id,
+    civ_id: player.civ_id,
+    custom_civ_ids: Array.isArray(player.custom_civ_ids) ? player.custom_civ_ids : [],
+    resigned: Boolean(player.resigned),
+    teamIndex,
+    winner: Boolean(team.winner)
+  })));
+  const playerNames = new Map(players.map(player => [String(player.player_number), player.name]));
+  const chat = replayFindChat(full, playerNames);
+  const playerStats = replayPlayerStats(full, summary?.duration);
+  const operations = Array.isArray(full?.operations) ? full.operations.length : 0;
+  document.querySelector('#replaySummary').innerHTML = [['版本号', replayBuild], ['时长', replayFormatTime((Number(summary?.duration) || 0) / 1000)], ['地图', replayMapName(settings)], ['房间名', settings.lobby_name || '—'], ['玩家', players.length], ['开始时间（北京时间）', replayStartTime(matchInfo?.started || header.timestamp), 'startedAt'], ['服务器位置', matchInfo?.server ? realtimeServerName(matchInfo.server) : '未记录', 'server'], ['地图种子', header.replay?.random_seed != null && Number.isFinite(Number(header.replay.random_seed)) ? String(header.replay.random_seed) : '未记录', 'mapSeed']].map(([label, value, field]) => `<div class="replay-summary-item${field === 'startedAt' ? ' replay-summary-time' : ''}"${field ? ` data-replay-summary-field="${field}"` : ''}><small>${escapeHtml(label)}</small><strong title="${escapeHtml(String(value ?? '—'))}">${escapeHtml(String(value ?? '—'))}</strong></div>`).join('');
+  const replayGameSettings = document.querySelector('#replayGameSettings');
+  if (replayGameSettings) replayGameSettings.innerHTML = replayGameSettingMarkup(settings, summary);
+  const teamGroups = [...new Map(players.map(player => [player.teamIndex, players.filter(candidate => candidate.teamIndex === player.teamIndex)])).entries()];
+    document.querySelector('#replayPlayers').innerHTML = teamGroups.length ? teamGroups.map(([teamIndex, teamPlayers]) => `<section class="replay-team"><div class="replay-team-heading"><strong>队伍 ${Number(teamIndex) + 1}</strong><b class="${teamPlayers.some(player => player.winner) ? 'replay-result-win' : 'replay-result-loss'}">${teamPlayers.some(player => player.winner) ? '胜者' : '失败'}</b></div><div class="replay-player-columns"><span aria-hidden="true"></span><span>玩家 / 文明</span><span>eAPM</span><span>最多队列单位</span></div>${teamPlayers.map(player => { const stat = playerStats.get(String(player.player_number)); const queued = replayQueuedUnitInfo(stat); const playerName = escapeHtml(player.name || `玩家 ${player.player_number ?? ''}`); const profileLink = player.profile_id ? `<a class="replay-player-name-link" href="/profile/${encodeURIComponent(String(player.profile_id))}">${playerName}</a>` : `<strong>${playerName}</strong>`; const civIcon = replayCivIcon(player); return `<div class="replay-player-row"><span class="replay-player-color" style="--player-color:${replayPlayerColor(player.color_id)}"></span><div><strong>${profileLink}</strong><small class="replay-player-civ">${civIcon ? `<img src="${escapeHtml(civIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(replayCivLabel(player))}</span></small></div><span class="replay-player-eapm">${stat ? stat.eapm.toFixed(1) : '—'}</span><span class="replay-player-queue">${queued.length ? queued.map(unit => `<span class="replay-player-queue-item" title="${escapeHtml(`${unit.name} × ${unit.count}`)}">${unit.icon ? `<img src="${escapeHtml(unit.icon)}" alt="${escapeHtml(unit.name)}" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(`${unit.name} × ${unit.count}`)}</span></span>`).join('') : '—'}</span></div>`; }).join('')}</section>`).join('') : '<div class="replay-empty">未读取到玩家资料。</div>';
+  document.querySelector('#replayPlayerCount').textContent = `${players.length} 人`;
+  document.querySelector('#replayChatCount').textContent = `${chat.length} 条`;
+  replayTimelineMarkup(full, players, summary?.duration);
+  document.querySelector('#replayOperationCount')?.remove();
+   document.querySelector('#replayChat').innerHTML = chat.length ? chat.map(message => { const sender = players.find(player => String(player.player_number) === message.playerId) || players.find(player => player.name === message.player); const colorId = Number(sender?.color_id); const chatColor = sender && Number.isInteger(colorId) && colorId >= 0 && colorId < 8 ? `var(--replay-chat-color-${colorId})` : 'var(--text)'; return `<div class="replay-chat-row" style="--chat-player-color:${chatColor}"><time>${message.time == null ? '—' : replayFormatTime(message.time / 1000)}</time><strong>${escapeHtml(message.player || '玩家')}</strong><span>${escapeHtml(message.text)}</span></div>`; }).join('') : '<div class="replay-empty">未发现可读取的聊天记录。</div>';
+  document.querySelector('#replayResult').hidden = false;
+}
+let replayAnalysisRequest = 0;
+async function loadServerReplay(matchId, profileId) {
+  const requestId = ++replayAnalysisRequest;
+  const status = document.querySelector('#replayStatus');
+  const result = document.querySelector('#replayResult');
+  const retry = document.querySelector('#replayRemoteRetry');
+  result.hidden = true;
+  retry.hidden = true;
+  status.textContent = '正在获取录像分析，请稍候……';
+  try {
+    const response = await fetch(`/api/replay-analysis?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { signal: AbortSignal.timeout(180000) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '获取录像分析失败');
+    await Promise.all([replayLoadUnitMap(), replayLoadTechMap()]);
+    if (requestId !== replayAnalysisRequest) return;
+    replaySummaryMarkup(data.summary, data.full, data.file, data.matchInfo);
+    if (!data.matchInfo?.server) replayLoadMatchInfo(matchId, requestId, Number(data.summary?.header?.timestamp) || 0);
+    status.textContent = response.headers.get('x-replay-cache') === 'HIT' ? '已读取缓存分析。分析结果缓存 30 分钟。' : '录像分析完成。分析结果缓存 30 分钟。';
+  } catch (error) {
+    if (requestId !== replayAnalysisRequest) return;
+    result.hidden = true;
+    status.textContent = `分析失败：${error?.message || '请稍后重试'}`;
+    retry.hidden = false;
+  }
+}
+async function parseReplayFile(file) {
+  const requestId = ++replayAnalysisRequest;
+  document.querySelector('#replayRemoteRetry').hidden = true;
+  const status = document.querySelector('#replayStatus');
+  const result = document.querySelector('#replayResult');
+  result.hidden = true;
+  status.textContent = '正在本地解析录像，请稍候……';
+  try {
+    await Promise.all([replayLoadUnitMap(), replayLoadTechMap()]);
+    replayParserModule ||= await import('/assets/aoe2rec/aoe2rec-browser.js');
+    const buffer = await file.arrayBuffer();
+    const summary = replayParserModule.parse_rec_summary(buffer);
+    let full = null;
+    try { full = replayParserModule.parse_rec(buffer); } catch (error) { console.warn('录像完整操作解析失败', error); }
+    if (requestId !== replayAnalysisRequest) { summary?.free?.(); return; }
+    replaySummaryMarkup(summary, full || {}, file);
+    const matchId = file.name?.match(/(?:Replay_|aoe2-match-)(\d+)/i)?.[1];
+    if (matchId) replayLoadMatchInfo(matchId, requestId, Number(summary?.header?.timestamp) || 0);
+    status.textContent = full ? '解析完成。文件未上传服务器。' : '基础资料解析完成，完整操作流暂时无法读取。';
+    summary?.free?.();
+  } catch (error) {
+    if (requestId !== replayAnalysisRequest) return;
+    result.hidden = true;
+    status.textContent = `解析失败：${error?.message || '录像格式不受支持或版本过新'}`;
+  }
+}
+function setupReplayAnalysis() {
+  if (replayAnalysisLoaded) return;
+  replayAnalysisLoaded = true;
+  const input = document.querySelector('#replayFile');
+  input?.addEventListener('change', () => { const file = input.files?.[0]; if (file) parseReplayFile(file); });
+  const params = new URLSearchParams(location.search);
+  const matchId = params.get('matchId');
+  const profileId = params.get('profileId');
+  if (matchId && profileId) {
+    document.querySelector('.replay-analysis-heading p').textContent = `比赛 #${matchId} · 分析结果保留 30 分钟，也可以选择本地录像。`;
+    document.querySelector('#replayRemoteRetry').onclick = () => loadServerReplay(matchId, profileId);
+    loadServerReplay(matchId, profileId);
+  }
+
 }
 let updatesRequest = null;
 let currentUpdatesArticleId = '';
@@ -1952,6 +2444,22 @@ function realtimeStatusActivity(state) {
   const eventMeta = tournamentName ? `<span class="realtime-status-match-meta">（${escapeHtml(format || '赛事')}，${escapeHtml(score)}）</span>` : '';
   return `<span class="realtime-status-activity"><a class="realtime-status-live-link" href="aoe2de://1/${encodeURIComponent(String(match.id || null))}" title="在游戏内观战">◉ ${escapeHtml(label)}</a>${eventMeta}</span>`;
 }
+function alignRealtimeStatusActivity() {
+  document.querySelectorAll('.realtime-status-activity').forEach(activity => {
+    const link = activity.querySelector('.realtime-status-live-link');
+    const meta = activity.querySelector('.realtime-status-match-meta');
+    if (!link || !meta || !activity.offsetWidth) return;
+    activity.classList.remove('is-wrapped');
+    activity.style.removeProperty('width');
+    if (meta.offsetTop > link.offsetTop + 2) {
+      const width = link.offsetWidth;
+      activity.style.width = `${width}px`;
+      activity.classList.add('is-wrapped');
+    }
+  });
+}
+window.addEventListener('resize', alignRealtimeStatusActivity);
+document.fonts?.ready.then(alignRealtimeStatusActivity);
 function renderRealtimeStatus(states) {
   const target = document.querySelector('#realtimeStatusRows');
   if (!target) return;
@@ -1999,6 +2507,7 @@ function renderRealtimeStatus(states) {
     const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${realtimePlatformIconMarkup(state.live.platform)}${escapeHtml(state.live.title || '正在直播')}</a>` : '';
     return `<tr><td>${rating}</td><td><a class="realtime-status-player" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${tournament || '—'}</td><td>${live}</td></tr>`;
   }).join('');
+  alignRealtimeStatusActivity();
 }
 function realtimeGroupedPlayers(match) {
   const players = Array.isArray(match?.players) ? match.players : [];
@@ -2166,6 +2675,23 @@ function updateFeedbackCounter() {
   if (!feedbackCounter || !feedbackContent) return;
   feedbackCounter.textContent = `${[...feedbackContent.value].length} / 1000`;
 }
+async function loadRecentFeedback() {
+  const target = document.querySelector('#feedbackRecent');
+  if (!target) return;
+  try {
+    const response = await fetch('/api/feedback/recent', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '读取反馈失败');
+    const items = Array.isArray(data.items) ? data.items.slice(0, 15) : [];
+    target.innerHTML = items.length ? items.map(item => {
+      const date = new Date(item.sentAt);
+      const time = Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date) : '时间未记录';
+      return `<article class="feedback-entry"><div class="feedback-entry-ip">IP · ${escapeHtml(item.ip || '未知')}</div><p>${escapeHtml(item.content || '')}</p><time datetime="${escapeHtml(item.sentAt || '')}">${escapeHtml(time)} · 北京时间</time></article>`;
+    }).join('') : '<p class="feedback-feed-empty">暂时还没有反馈。</p>';
+  } catch {
+    target.innerHTML = '<p class="feedback-feed-empty">暂时无法读取反馈，请稍后刷新。</p>';
+  }
+}
 async function loadFeedbackStatus() {
   try {
     const response = await fetch('/api/feedback', { cache: 'no-store' });
@@ -2200,6 +2726,7 @@ feedbackForm?.addEventListener('submit', async event => {
     if (feedbackContent) feedbackContent.value = '';
     updateFeedbackCounter();
     setFeedbackStatus(`✓ 提交成功！今天还可以提交 ${data.remaining} 次`, 'success');
+    loadRecentFeedback();
     if (feedbackSubmit) feedbackSubmit.disabled = data.remaining <= 0;
   } catch (error) {
     setFeedbackStatus(error.message || '提交失败，请稍后再试', 'error');
@@ -2509,6 +3036,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   const isProfilePage = Boolean(match);
   const isMediaVideosPage = /^\/media\/videos\/?$/.test(location.pathname);
   const isMediaPage = isMediaVideosPage || /^\/media\/?$/.test(location.pathname);
+  const isReplayAnalysisPage = /^\/replay-analysis\/?$/.test(location.pathname);
   const isUpdatesPage = /^\/updates\/?$/.test(location.pathname);
   const isRealtimePage = /^\/realtime\/?$/.test(location.pathname);
   const isEventsPage = /^\/events\/?$/.test(location.pathname);
@@ -2520,6 +3048,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   syncUpdatesBackToTop();
   document.body.classList.toggle('page-profile', isProfilePage);
   document.body.classList.toggle('page-media', isMediaPage);
+  document.body.classList.toggle('page-replay-analysis', isReplayAnalysisPage);
   document.body.classList.toggle('page-updates', isUpdatesPage);
   document.body.classList.toggle('page-realtime', isRealtimePage);
   document.body.classList.toggle('page-events', isEventsPage);
@@ -2534,13 +3063,13 @@ function renderCurrentRoute(selectedPlayer = null) {
     ...Array.from({ length: 6 }, (_, index) => `/assets/module-random/${index + 1}.webp`),
     ...Array.from({ length: 5 }, (_, index) => `/assets/module-${index + 1}.webp`)
   ];
-  const moduleName = isProfilePage ? 'profile' : isMediaPage ? 'media' : isUpdatesPage ? 'updates' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
+  const moduleName = isProfilePage ? 'profile' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(moduleArtworkKey) || '{}'); } catch {}
   const order = Array.isArray(saved.order) && saved.order.length === moduleArtworkFiles.length
     ? saved.order
     : moduleArtworkFiles.map((_, index) => index).sort(() => Math.random() - 0.5);
-  const moduleSlots = ['leaderboard', 'profile', 'realtime', 'events', 'media', 'updates', 'build-orders', 'feedback'];
+  const moduleSlots = ['leaderboard', 'profile', 'realtime', 'events', 'media', 'replay-analysis', 'updates', 'build-orders', 'feedback'];
   const slot = Math.max(0, moduleSlots.indexOf(moduleName));
   const selected = order[slot % moduleArtworkFiles.length];
   document.documentElement.style.setProperty('--module-art-image', `url("${moduleArtworkFiles[selected]}")`);
@@ -2554,7 +3083,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     document.head.appendChild(moduleArtworkStyle);
   }
   const moduleSelector = moduleName === 'leaderboard'
-    ? 'body:not(.page-profile):not(.page-media):not(.page-updates):not(.page-realtime):not(.page-events):not(.page-build-orders):not(.page-feedback)'
+    ? 'body:not(.page-profile):not(.page-media):not(.page-replay-analysis):not(.page-updates):not(.page-realtime):not(.page-events):not(.page-build-orders):not(.page-feedback)'
     : `body.page-${moduleName}`;
   moduleArtworkStyle.textContent = `${moduleSelector} #leaderboard:before{background-image:linear-gradient(90deg,var(--bg) 0%,rgba(16,19,16,.54) 30%,rgba(16,19,16,.08)),url("${moduleArtworkFiles[selected]}")!important}`;
   try { localStorage.setItem(moduleArtworkKey, JSON.stringify({ order })); } catch {}
@@ -2562,17 +3091,19 @@ function renderCurrentRoute(selectedPlayer = null) {
   image.src = moduleArtworkFiles[selected];
   document.querySelector('#player-profile').hidden = !isProfilePage;
   document.querySelector('#media-page').hidden = !isMediaPage;
+  const replayAnalysisSection = document.querySelector('#replay-analysis-page');
+  if (replayAnalysisSection) replayAnalysisSection.hidden = !isReplayAnalysisPage;
   document.querySelector('#updates-page').hidden = !isUpdatesPage;
   document.querySelector('#realtime-page').hidden = !isRealtimePage;
   document.querySelector('#events-page').hidden = !isEventsPage;
   document.querySelector('#build-orders-page').hidden = !isBuildOrdersPage;
   document.querySelector('#feedback-page').hidden = !isFeedbackPage;
   document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => {
-    const activePage = isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isMediaPage ? 'media' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
+    const activePage = isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
     const active = link.dataset.page === activePage;
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isEventsPage ? '赛事信息' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : isFeedbackPage ? '反馈区' : '天梯榜单';
+  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isEventsPage ? '赛事信息' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isReplayAnalysisPage ? '录像解析' : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : isFeedbackPage ? '反馈区' : '天梯榜单';
   if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; realtimeRequest?.abort?.(); realtimeVersionRequest?.abort?.(); }
   if (!isEventsPage) { clearInterval(eventsPollTimer); eventsPollTimer = null; }
   if (isMediaPage) {
@@ -2583,6 +3114,16 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsSocket?.close();
     profileDetailsSocket = null;
     loadMedia(isMediaVideosPage);
+    return;
+  }
+  if (isReplayAnalysisPage) {
+    profileDetailsRequestId++;
+    clearTimeout(profileDetailsTimeout);
+    clearTimeout(profileDetailsRetryTimer);
+    clearInterval(profileDetailsRequestTimer);
+    profileDetailsSocket?.close();
+    profileDetailsSocket = null;
+    setupReplayAnalysis();
     return;
   }
   if (isRealtimePage) {
@@ -2635,6 +3176,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsSocket?.close();
     profileDetailsSocket = null;
     loadFeedbackStatus();
+    loadRecentFeedback();
     return;
   }
   if (!isProfilePage) {
@@ -2859,9 +3401,11 @@ profileSearchForm.addEventListener('submit', async event => {
   if (profileSearchSuggestions.hidden) await loadProfileSuggestions();
   else profileSearchSuggestions.querySelector('[data-suggestion-index]')?.click();
 });
+const replayNavLink = document.querySelector('.sidebar nav')?.insertBefore(Object.assign(document.createElement('a'), { className: 'nav-item', href: '/replay-analysis', textContent: '◈录像解析' }), document.querySelector('.sidebar nav [data-page="feedback"]'));
+if (replayNavLink) { replayNavLink.dataset.page = 'replay-analysis'; replayNavLink.innerHTML = '<span class="nav-icon">◈</span>录像解析<span class="nav-dot"></span>'; }
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
-  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'events' ? '/events' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : link.dataset.page === 'feedback' ? '/feedback' : '/';
+  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'events' ? '/events' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'replay-analysis' ? '/replay-analysis' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : link.dataset.page === 'feedback' ? '/feedback' : '/';
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));

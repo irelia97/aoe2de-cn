@@ -1,5 +1,5 @@
 {
-  "playerCount": 71,
+  "playerCount": 72,
   "players": [
     {
       "name": "Yo",
@@ -1174,6 +1174,18 @@
         ]
       },
       "isCN": true
+    },
+    {
+      "name": "JorDan",
+      "rl": [
+        "2858362"
+      ],
+      "live_links": {
+        "twitch": [
+          "https://www.twitch.tv/jordan_aoe"
+        ]
+      },
+      "isCN": false
     }
   ]
 }

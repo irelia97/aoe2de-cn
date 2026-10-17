@@ -11,10 +11,20 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=events-score-light-v1" />
+  <link rel="stylesheet" href="/styles.css?v=replay-analysis-v63" />
 </head>
 <body>
-  <script>if (/^\/realtime\/?$/.test(location.pathname)) document.body.classList.add("page-realtime");</script>
+  <script>
+    const isReplayAnalysisRoute = /^\/replay-analysis\/?$/.test(location.pathname);
+    if (/^\/realtime\/?$/.test(location.pathname)) document.body.classList.add("page-realtime");
+    if (isReplayAnalysisRoute) document.body.classList.add("page-replay-analysis");
+    if (isReplayAnalysisRoute) document.addEventListener('DOMContentLoaded', () => {
+      const replayPage = document.querySelector('#replay-analysis-page');
+      const main = document.querySelector('#leaderboard');
+      if (replayPage) replayPage.hidden = false;
+      main?.querySelectorAll(':scope > :not(.topbar):not(#replay-analysis-page):not(footer)').forEach(element => { element.hidden = true; });
+    }, { once: true });
+  </script>
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="/" aria-label="帝国2大杂烩首页">
@@ -22,7 +32,7 @@
         <span class="brand-copy"><strong><em>帝国2</em><b>大杂烩</b></strong><small>AOE II · COMMUNITY HUB</small></span>
       </a>
       <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4" r="2"/><circle cx="5" cy="7" r="1.7"/><circle cx="19" cy="7" r="1.7"/><path d="M9 9h6v11H9zM2 12h7v8H2zM15 12h7v8h-7z"/></svg></span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 5 3 2 3-4 3 4 3-2-1 5H7z"/><circle cx="12" cy="12" r="3"/><path d="M5 21c.5-3.2 2.8-5 7-5s6.5 1.8 7 5"/></svg></span>玩家资料<span class="nav-dot"></span></a><a class="nav-item" data-page="realtime" href="/realtime"><span class="nav-icon nav-ranked-swords" aria-hidden="true">⚔</span>实时对局<span class="nav-dot"></span></a><a class="nav-item" data-page="events" href="/events"><span class="nav-icon" aria-hidden="true">♜</span>赛事信息<span class="nav-dot"></span></a><a class="nav-item" data-page="media" href="/media"><span class="nav-icon">▶</span>视频直播<span class="nav-dot"></span></a><a class="nav-item" data-page="updates" href="/updates"><span class="nav-icon">✦</span>更新汇总<span class="nav-dot"></span></a><a class="nav-item" data-page="build-orders" href="/build-orders"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5c3.4-.9 6.4-.3 9 1.7v13c-2.6-2-5.6-2.6-9-1.7zM21 5.5c-3.4-.9-6.4-.3-9 1.7v13c2.6-2 5.6-2.6 9-1.7z"/></svg></span>开局指南<span class="nav-dot"></span></a><a class="nav-item" data-page="feedback" href="/feedback"><span class="nav-icon" aria-hidden="true">✎</span>反馈区<span class="nav-dot"></span></a></nav>
-      <div class="side-bottom"><div class="live-card"><span class="live-orb"></span><div><b>数据服务在线</b><small>连接 World's Edge</small></div><span class="live-check">✓</span></div><p>数据来自 Age of Empires II: DE<br/>公开天梯服务</p></div>
+      <div class="side-bottom"><p>数据来自 Age of Empires II: DE<br/>公开天梯服务</p></div>
     </aside>
 
     <main id="leaderboard">
@@ -82,6 +92,16 @@
         <section class="media-section"><div class="media-section-heading"><div class="media-section-title"><h3>视频区</h3><a class="media-more-link media-more-button" id="mediaVideosMore" href="/media/videos">查看更多视频</a><a class="media-more-link media-more-button" id="mediaVideosBack" href="/media" hidden>返回视频直播</a></div><span id="mediaVideosHint">最新 10 个</span></div><div class="media-grid" id="mediaVideos"><div class="media-empty">暂无已配置的视频源</div></div></section>
         <section class="media-section" id="mediaLiveSection"><div class="media-section-heading"><h3>直播区</h3><span>按人气/观众数量排序</span></div><div class="media-live-group"><h4>中文区</h4><div class="media-grid media-live-grid" id="mediaLiveCN"><div class="media-empty">暂无开播直播间</div></div></div><div class="media-live-group"><h4>外文区</h4><div class="media-grid media-live-grid" id="mediaLiveForeign"><div class="media-empty">暂无开播直播间</div></div></div></section>
       </section>
+      <section class="replay-analysis-page" id="replay-analysis-page" hidden>
+        <div class="replay-analysis-heading"><div><div class="section-kicker">RECORDED GAME LAB</div><h2>录像解析</h2><p>上传 AoE2:DE 的 .aoe2record，在浏览器本地提取对局资料、聊天和操作轨迹。</p></div><span class="replay-analysis-badge">临时模块</span></div>
+        <div class="replay-analysis-upload" id="replayUploadPanel"><label class="replay-dropzone" for="replayFile"><input id="replayFile" type="file" accept=".aoe2record,.mgz,application/octet-stream" /><span class="replay-drop-icon">↥</span><strong>选择录像文件</strong><small>支持 .aoe2record · 文件只在浏览器本地处理，不会上传服务器</small></label><p class="replay-analysis-status" id="replayStatus" aria-live="polite">等待选择录像。</p><button type="button" id="replayRemoteRetry" class="replay-remote-retry" hidden>重新分析</button></div>
+        <div class="replay-analysis-result" id="replayResult" hidden>
+          <div class="replay-summary-grid" id="replaySummary"></div>
+          <section class="replay-panel replay-settings-card"><div class="replay-panel-heading"><h3>游戏设置</h3><span>从录像头部读取</span></div><div class="replay-settings-grid" id="replayGameSettings"></div></section>
+          <div class="replay-analysis-columns"><section class="replay-panel"><div class="replay-panel-heading"><h3>玩家与队伍</h3><span id="replayPlayerCount"></span></div><div id="replayPlayers" class="replay-players"></div></section><section class="replay-panel replay-chat-card"><div class="replay-panel-heading"><h3>游戏内对话</h3><span id="replayChatCount"></span></div><div id="replayChat" class="replay-chat"><div class="replay-empty">未发现可读取的聊天记录。</div></div></section></div>
+          <section class="replay-panel replay-timeline-card"><div class="replay-panel-heading"><div><h3>单位与科技时间线</h3><p class="replay-timeline-note">根据录像中的生产和研究事件生成，不需要运行游戏本体。</p></div><span id="replayTimelineCount"></span></div><div id="replayTimeline" class="replay-timeline"><div class="replay-empty">等待读取录像事件。</div></div></section>
+        </div>
+      </section>
       <section class="updates-page" id="updates-page" hidden>
         <div class="updates-heading"><div><div class="section-kicker">LATEST UPDATES</div><h2>更新汇总</h2><p>来自 B 站 灵梦の蝴蝶结 相关文章</p></div><span class="updates-updated" id="updatesUpdated">—</span></div>
         <div class="updates-toolbar"><label for="updatesArticleSelect">选择文章</label><select id="updatesArticleSelect"><option>正在加载文章列表…</option></select><span id="updatesStatus" aria-live="polite"></span></div>
@@ -98,6 +118,7 @@
       </section>
       <section class="feedback-page" id="feedback-page" hidden>
         <div class="feedback-heading"><div><div class="section-kicker">FEEDBACK</div><h2>反馈区</h2><p>欢迎留下您的建议或反馈，每个 IP 每天最多提交 5 次。</p></div></div>
+        <div class="feedback-layout"><div class="feedback-compose">
         <div class="feedback-card">
           <form id="feedbackForm">
             <label for="feedbackContent">建议 / 反馈</label>
@@ -107,14 +128,15 @@
           </form>
         </div>
         <div class="feedback-sponsor">
-          <img src="/assets/feedback-alipay.jpg?v=20261016" alt="支付宝赞助二维码" loading="lazy" />
+          <img src="/assets/feedback-alipay.jpg?v=20261017" alt="支付宝赞助二维码" loading="lazy" />
           <p>喜欢的话就赞助杯奶茶吧~欢迎反馈您的意见或建议</p>
         </div>
+        </div><aside class="feedback-feed" aria-label="最新反馈"><div class="feedback-feed-heading"><h3>最新反馈</h3><span>最新 15 条</span></div><div id="feedbackRecent" class="feedback-recent" aria-live="polite"><p class="feedback-feed-empty">正在读取反馈……</p></div></aside></div>
       </section>
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=media-hover-preview-v1" defer></script>
+  <script src="/app.js?v=replay-analysis-v63" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');
