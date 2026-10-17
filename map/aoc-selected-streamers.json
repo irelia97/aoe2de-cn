@@ -1,5 +1,5 @@
 {
-  "playerCount": 59,
+  "playerCount": 71,
   "players": [
     {
       "name": "Yo",
@@ -269,7 +269,7 @@
       "isCN": true
     },
     {
-      "name": "大白子",
+      "name": "好耶是周末",
       "rl": [
         "25042733"
       ],
@@ -1130,7 +1130,50 @@
         ]
       },
       "isCN": false
+    },
+    {
+      "name": "冥想控",
+      "rl": [
+        "280902"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/3859473"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "秋已夕",
+      "rl": [],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/22276118"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "spadetwo",
+      "rl": [
+        "1185628"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/23195173"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "勇者三叶",
+      "rl": [],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/blanc/311754"
+        ]
+      },
+      "isCN": true
     }
   ]
 }
-

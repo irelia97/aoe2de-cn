@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,6 +13,13 @@ import { chromium } from 'playwright';
 import { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects } from 'hyparquet';
 import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
+import { createRealtimeService } from './server/services/realtime-service.js';
+import { createRealtimeDanmakuNotifier } from './server/services/realtime-danmaku-notifier.js';
+import { createMatchesService } from './server/services/matches-service.js';
+import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
+import { createProfileService } from './server/services/profile-service.js';
+import { createGameAssetService } from './server/services/game-assets.js';
+import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
@@ -20,6 +27,22 @@ if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const dataDir = join(root, '.cache');
+const feedbackLogPath = join(dataDir, 'feedback-submissions.jsonl');
+const siteTrafficPath = join(dataDir, 'site-traffic.json');
+const siteDailyArchivePath = join(dataDir, 'site-daily-archive.jsonl');
+const liquipediaMatchesCachePath = join(dataDir, 'liquipedia-matches.json');
+const liquipediaTournamentsCachePath = join(dataDir, 'liquipedia-tournaments.json');
+const liquipediaMatchesRefreshInterval = 60_000;
+const liquipediaApiUrl = 'https://liquipedia.net/ageofempires/api.php';
+const liquipediaUserAgent = 'AOE2CN/1.0 (https://aoe2cn.cc/; contact: https://aoe2cn.cc/feedback)';
+const feedbackDailyLimit = 5;
+const feedbackMaxLength = 1000;
+const siteTrafficExcludedIps = new Set([
+  '127.0.0.1',
+  '::1',
+  '103.42.182.205',
+  ...String(process.env.SITE_STATS_EXCLUDED_IPS || '').split(',').map(value => value.trim()).filter(Boolean)
+]);
 const aoe2RecsProfileCacheDir = join(dataDir, 'aoe2recs-profiles');
 const gameAssetCacheDir = join(dataDir, 'game-assets');
 const profilePointerPath = join(dataDir, 'profile-index-current.json');
@@ -31,29 +54,65 @@ const profileRefreshRetryInterval = 60 * 60_000;
 const forceProfileRefresh = process.env.PROFILE_REFRESH_NOW === '1';
 const port = Number(process.env.PORT || 3000);
 const api = 'https://aoe-api.worldsedgelink.com/community/leaderboard/getLeaderBoard2';
-const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争' };
+const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争', 15: '赛事积分' };
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
 const avatarCache = new Map();
 const leaderboardCache = new Map();
 const leaderboardRefreshes = new Map();
+let tournamentEloPlayersCache = null;
+let tournamentEloPlayersFetchedAt = 0;
 const personalStatsCache = new Map();
 const personalStatsCacheTtl = 10 * 60_000;
 const livePlayerStatsCache = new Map();
 const livePlayerStatsRefreshes = new Map();
+const livePlayerStatsCacheTtl = 60 * 60_000;
+const upstreamRateLimitUntil = new Map();
+
+function rateLimitError(host, retryAfterMs = 60_000) {
+  const error = new Error(`${host} 返回 HTTP 429，已进入退避冷却`);
+  error.rateLimited = true;
+  error.retryAfterMs = retryAfterMs;
+  return error;
+}
+
+function retryAfterMilliseconds(response) {
+  const header = response.headers.get('retry-after');
+  if (!header) return 60_000;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(60_000, seconds * 1000);
+  const timestamp = Date.parse(header);
+  return Number.isFinite(timestamp) ? Math.max(60_000, timestamp - Date.now()) : 60_000;
+}
+
+async function fetchUpstreamWithRateLimit(url, options = {}) {
+  const host = new URL(url).hostname;
+  const now = Date.now();
+  const blockedUntil = upstreamRateLimitUntil.get(host) || 0;
+  if (blockedUntil > now) throw rateLimitError(host, blockedUntil - now);
+  const response = await fetch(url, options);
+  if (response.status === 429) {
+    const retryAfterMs = retryAfterMilliseconds(response);
+    upstreamRateLimitUntil.set(host, Date.now() + retryAfterMs);
+    throw rateLimitError(host, retryAfterMs);
+  }
+  return response;
+}
 const aoe2InsightsSummaryCache = new Map();
 const aoe2InsightsSummaryRefreshes = new Map();
-const aoe2InsightsSummaryTtl = 6 * 60 * 60_000;
+const aoe2InsightsSummaryTtl = 60 * 60_000;
 // Refresh cadence is defined per leaderboard. The two most frequently viewed
 // ladders update every three minutes at fixed wall-clock marks; the other ladders are
 // refreshed once every six hours and staggered by one hour to spread upstream
 // requests across the six-hour cycle.
+const maxLeaderboardRows = 2000;
 const leaderboardSchedules = {
   3: { period: 180_000, offset: 0 },
   4: { period: 180_000, offset: 30_000 },
   1: { period: 6 * 60 * 60_000, offset: 1 * 60 * 60_000 },
   2: { period: 6 * 60 * 60_000, offset: 2 * 60 * 60_000 },
   13: { period: 6 * 60 * 60_000, offset: 3 * 60 * 60_000 },
-  14: { period: 6 * 60 * 60_000, offset: 4 * 60 * 60_000 }
+  14: { period: 6 * 60 * 60_000, offset: 4 * 60 * 60_000 },
+  15: { period: 60 * 60_000, offset: 5 * 60 * 60_000 }
 };
 const ladderOrder = Object.keys(leaderboardSchedules).map(Number);
 const cacheWaiters = new Map();
@@ -73,11 +132,19 @@ const profileRefreshState = { refreshing: false, stage: '等待启动', download
 const mediaVideoActiveRefreshMin = 30 * 60_000;
 const mediaVideoActiveRefreshMax = 60 * 60_000;
 const mediaVideoRequestGapMin = 5 * 60_000;
-const mediaVideoRequestGapMax = 5 * 60_000;
-const mediaVideoCycleDelay = 3 * 60 * 60_000;
-const mediaVideoCircuitBaseDelay = 2 * 60 * 60_000;
-const mediaVideoCircuitMaxDelay = 6 * 60 * 60_000;
+const mediaVideoRequestGapMax = 10 * 60_000;
+const mediaVideoCycleDelayMin = 2.5 * 60 * 60_000;
+const mediaVideoCycleDelayMax = 3.5 * 60 * 60_000;
+function randomMediaCycleDelay() {
+  return randomMediaDelay(mediaVideoCycleDelayMin, mediaVideoCycleDelayMax);
+}
+const mediaVideoCircuitBaseDelay = 12 * 60 * 60_000;
+const mediaVideoCircuitMaxDelay = 24 * 60 * 60_000;
 const mediaLiveRefreshInterval = 2 * 60_000;
+const mediaLiveSourceTimeout = 30_000;
+const mediaLiveStatsTimeout = 20_000;
+const mediaLiveRoundTimeout = 90_000;
+const mediaLiveFailedSourceGrace = 10 * 60_000;
 const bilibiliCookiePath = join(dataDir, 'bilibili-cookie.txt');
 const bilibiliCookie = process.env.BILIBILI_COOKIE || process.env.BILI_COOKIE || (() => {
   try { return readFileSync(bilibiliCookiePath, 'utf8').trim(); } catch { return ''; }
@@ -89,6 +156,7 @@ let bilibiliWbiKeyPromise = null;
 let bilibiliBrowserPromise = null;
 const bilibiliUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36';
 const mediaVideoCachePath = join(dataDir, 'media-videos.json');
+const mediaLiveCachePath = join(dataDir, 'media-live.json');
 const mediaVideoStatePath = join(dataDir, 'media-video-state.json');
 const mediaVideoPausePath = join(dataDir, 'media-video-paused');
 const mediaThumbnailCacheDir = join(dataDir, 'media-thumbnails');
@@ -139,8 +207,10 @@ let mediaVideoBlockedUntil = 0;
 let mediaVideoRateLimitStrikes = 0;
 const mediaVideoSourceStates = new Map();
 const mediaVideoCycleSeen = new Set();
+let mediaVideoCycleStartIndex = 0;
 let mediaLiveRefreshPromise = null;
 let mediaPersistentVideosLoaded = false;
+let mediaPersistentLiveLoaded = false;
 let selectedStreamers = null;
 let rlReferenceById = null;
 
@@ -172,9 +242,10 @@ async function loadRlReference() {
   try {
     const data = JSON.parse(await readFile(rlReferencePath, 'utf8'));
     for (const player of Array.isArray(data.players) ? data.players : []) {
-      for (const id of Array.isArray(player.rl) ? player.rl : []) {
-        const key = String(id).trim();
-        if (key) rlReferenceById.set(key, { name: player.name || '', liveLinks: player.live_links || {}, socialLinks: player.social_links || {} });
+      const ids = (Array.isArray(player.rl) ? player.rl : []).map(id => String(id).trim()).filter(Boolean);
+      const canonicalProfileId = ids.find(id => /^\d+$/.test(id)) || ids[0] || '';
+      for (const key of ids) {
+        rlReferenceById.set(key, { name: player.name || '', canonicalProfileId, liveLinks: player.live_links || {}, socialLinks: player.social_links || {} });
       }
     }
   } catch (error) {
@@ -185,6 +256,17 @@ async function loadRlReference() {
 
 function mediaText(value) {
   return String(value ?? '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+}
+
+function withMediaTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}超时（${Math.round(timeoutMs / 1000)} 秒）`)), timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function mediaXmlTag(block, tag) {
@@ -690,21 +772,9 @@ function bilibiliTagMatchesEmpire2(tags) {
 }
 
 async function fetchBilibiliVideos(source) {
-  let lastError;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      return await fetchBilibiliVideosViaApi(source);
-    } catch (error) {
-      lastError = error;
-      const retryable = Number(error?.status) === 412
-        || [-412, -352, -403, -509].includes(Number(error?.bilibiliCode));
-      if (!retryable || attempt >= 2) break;
-      const delay = attempt === 0 ? 5_000 : 10_000;
-      console.warn(`[media] B站视频接口触发风控，${delay / 1000}s 后重试: ${source.name || source.id}`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
+  // A 412/-352/-403 response is an anti-abuse signal, not a transient
+  // network error. Retrying within seconds only reinforces the signal.
+  return fetchBilibiliVideosViaApi(source);
 }
 
 function bilibiliChromePath() {
@@ -838,6 +908,24 @@ async function loadPersistentMediaVideos() {
   return mediaCache.data.videos;
 }
 
+async function loadPersistentMediaLive() {
+  if (mediaPersistentLiveLoaded) return mediaCache.data.live;
+  mediaPersistentLiveLoaded = true;
+  try {
+    const saved = JSON.parse(await readFile(mediaLiveCachePath, 'utf8'));
+    if (Array.isArray(saved.live)) mediaCache.data.live = saved.live;
+    const savedAt = Date.parse(saved.savedAt);
+    if (Number.isFinite(savedAt)) {
+      mediaCache.liveSavedAt = savedAt;
+      mediaCache.data.liveUpdatedAt = new Date(savedAt).toISOString();
+      mediaCache.data.updatedAt = mediaCache.data.liveUpdatedAt;
+    }
+  } catch {
+    // The disk cache is created after the first successful live refresh.
+  }
+  return mediaCache.data.live;
+}
+
 function randomMediaDelay(min, max) {
   return Math.round(min + Math.random() * Math.max(0, max - min));
 }
@@ -859,6 +947,7 @@ async function loadPersistentMediaVideoState() {
     mediaVideoNextRequestAt = mediaTimestamp(saved.nextRequestAt);
     mediaVideoBlockedUntil = mediaTimestamp(saved.blockedUntil);
     mediaVideoRateLimitStrikes = Math.max(0, Number(saved.rateLimitStrikes) || 0);
+    mediaVideoCycleStartIndex = Math.max(0, Number(saved.cycleStartIndex) || 0);
     for (const key of Array.isArray(saved.cycleSeen) ? saved.cycleSeen : []) mediaVideoCycleSeen.add(String(key));
     for (const [key, value] of Object.entries(saved.sources || {})) {
       mediaVideoSourceStates.set(key, {
@@ -901,6 +990,7 @@ async function savePersistentMediaVideoState() {
     nextRequestAt: mediaVideoNextRequestAt ? new Date(mediaVideoNextRequestAt).toISOString() : null,
     blockedUntil: mediaVideoBlockedUntil ? new Date(mediaVideoBlockedUntil).toISOString() : null,
     rateLimitStrikes: mediaVideoRateLimitStrikes,
+    cycleStartIndex: mediaVideoCycleStartIndex,
     cycleSeen: [...mediaVideoCycleSeen],
     sources
   }, null, 2), 'utf8');
@@ -1003,20 +1093,30 @@ async function fetchYoutubeLive(source) {
     return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: sourceUrl, live: false, title: '', thumbnail: '', viewers: 0, checkedAt: new Date().toISOString() };
   }
   const html = decodeYoutubePageState(await fetchMediaText(sourceUrl));
-  const liveVideoId = html.match(/"videoId":"([\w-]{6,})"[\s\S]{0,7000}?"style":"LIVE"/i)?.[1]
-    || html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([\w-]{6,})"/i)?.[1]
+  // The channel /live page contains several recommended videos. Prefer the
+  // videoDetails block explicitly marked isLive, otherwise a recommended
+  // video can be mistaken for the current broadcast (wrong title/cover).
+  const liveDetails = html.match(/"videoDetails":\{([\s\S]{0,12000}?)"isLive":true/i)?.[1] || '';
+  const liveDetailsId = liveDetails.match(/"videoId":"([A-Za-z0-9_-]{11})"/i)?.[1] || '';
+  const liveDetailsTitle = mediaText(liveDetails.match(/"title":"((?:\\.|[^"\\])*)"/i)?.[1] || '');
+  const liveVideoId = liveDetailsId
+    || html.match(/"videoId":"([A-Za-z0-9_-]{11})"[\s\S]{0,7000}?"style":"LIVE"/i)?.[1]
+    || html.match(/liveStreamabilityRenderer"[^}]*"videoId":"([A-Za-z0-9_-]{11})"/i)?.[1]
     || '';
   const videoId = liveVideoId
-    || html.match(/[?&]v=([\w-]{6,})/i)?.[1]
-    || html.match(/"videoId":"([\w-]{6,})"/i)?.[1]
-    || html.match(/ytimg\.com\/vi\/([\w-]{6,})\//i)?.[1]
+    || html.match(/[?&]v=([A-Za-z0-9_-]{11})/i)?.[1]
+    || html.match(/"videoId":"([A-Za-z0-9_-]{11})"/i)?.[1]
+    || html.match(/ytimg\.com\/vi\/([A-Za-z0-9_-]{11})\//i)?.[1]
     || '';
   const videoPos = videoId ? html.indexOf(videoId) : -1;
   const videoWindow = videoPos >= 0 ? html.slice(Math.max(0, videoPos - 1200), videoPos + 6000) : '';
   const channelLiveBadge = /"text":"LIVE"|"imageName":"LIVE"|"style":"LIVE"|"iconType":"LIVE"/i.test(videoWindow);
   const online = !/"status"\s*:\s*"LIVE_STREAM_OFFLINE"/i.test(html)
     && ( /"isLiveNow"\s*:\s*true|<meta itemprop=["']isLiveBroadcast["'] content=["']True|liveStreamabilityRenderer"\s*:\s*\{[^}]*"videoId"/i.test(html) || Boolean(liveVideoId) || channelLiveBadge );
-  const title = mediaText(html.match(/<meta property=["']og:title["'] content=["']([^"']+)/i)?.[1] || '');
+  const title = liveDetailsTitle
+    || mediaText(html.match(/<meta[^>]+(?:property|name)=["']og:title["'][^>]+content=["']([^"']+)/i)?.[1] || '')
+    || mediaText(html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:title["']/i)?.[1] || '')
+    || source.name;
   const viewers = Number(html.match(/(?:concurrentViewers|viewCount|viewerCount)[^\d]{0,20}(\d+)/i)?.[1] || 0);
   return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : sourceUrl, live: online, title, thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '', viewers, checkedAt: new Date().toISOString() };
 }
@@ -1086,13 +1186,13 @@ async function fetchLivePlayerLeaderboardStats(rlIds) {
   if (!profileIds.length) return null;
   const key = profileIds.join(',');
   const cached = livePlayerStatsCache.get(key);
-  if (cached && Date.now() - cached.savedAt < personalStatsCacheTtl) return cached.data;
+  if (cached && Date.now() - cached.savedAt < livePlayerStatsCacheTtl) return cached.data;
   if (livePlayerStatsRefreshes.has(key)) return livePlayerStatsRefreshes.get(key);
 
-  const refresh = (async () => {
+  const refreshWork = (async () => {
     const endpoint = new URL('https://aoe-api.worldsedgelink.com/community/leaderboard/getPersonalStat');
     endpoint.search = new URLSearchParams({ title: 'age2', profile_ids: JSON.stringify(profileIds.map(Number)) });
-    const response = await fetch(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+    const response = await fetchUpstreamWithRateLimit(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`直播玩家天梯接口返回 HTTP ${response.status}`);
     const payload = await response.json();
     if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '直播玩家天梯接口返回失败');
@@ -1109,12 +1209,27 @@ async function fetchLivePlayerLeaderboardStats(rlIds) {
     const data = { randomMap1v1: select(3), randomMapTeam: select(4) };
     livePlayerStatsCache.set(key, { savedAt: Date.now(), data });
     return data;
-  })().catch(error => {
+  })();
+  const refresh = withMediaTimeout(refreshWork, mediaLiveStatsTimeout, `直播玩家天梯请求 ${key}`).catch(error => {
     if (cached) return cached.data;
     throw error;
   }).finally(() => livePlayerStatsRefreshes.delete(key));
   livePlayerStatsRefreshes.set(key, refresh);
   return refresh;
+}
+
+async function fetchMediaLiveSource(source) {
+  if (source.platform === 'bilibili') {
+    const roomId = source.url.match(/live\.bilibili\.com\/(?:blanc\/)?(\d+)/i)?.[1];
+    return fetchBilibiliLive({ ...source, roomId, url: source.url });
+  }
+  if (source.platform === 'youtube_live' || source.platform === 'youtube') {
+    return fetchYoutubeLive({ ...source, liveUrl: source.url, url: source.url, platform: 'youtube', isCN: source.isCN });
+  }
+  if (source.platform === 'twitch') return fetchTwitchLive(source);
+  if (source.platform === 'douyu') return fetchDouyuLive(source);
+  if (source.platform === 'douyin') return fetchDouyinLive(source);
+  return fetchGenericLive(source);
 }
 
 async function fetchMediaLive() {
@@ -1126,29 +1241,20 @@ async function fetchMediaLive() {
     const batch = sources.slice(index, index + batchSize);
     const batchResults = await Promise.all(batch.map(async source => {
       try {
-        let item;
-        if (source.platform === 'bilibili') {
-          const roomId = source.url.match(/live\.bilibili\.com\/(\d+)/i)?.[1];
-          item = await fetchBilibiliLive({ ...source, roomId, url: source.url });
-        } else if (source.platform === 'youtube_live' || source.platform === 'youtube') {
-          item = await fetchYoutubeLive({ ...source, liveUrl: source.url, url: source.url, platform: 'youtube', isCN: source.isCN });
-        } else if (source.platform === 'twitch') {
-          item = await fetchTwitchLive(source);
-        } else if (source.platform === 'douyu') {
-          item = await fetchDouyuLive(source);
-        } else if (source.platform === 'douyin') {
-          item = await fetchDouyinLive(source);
-        } else {
-          item = await fetchGenericLive(source);
-        }
+        const item = await withMediaTimeout(
+          fetchMediaLiveSource(source),
+          mediaLiveSourceTimeout,
+          `直播源 ${source.name || source.platform || source.url}`
+        );
         return { ...item, name: source.name, rl: source.rl || [], isCN: source.isCN, sourceOrder: source.sourceOrder };
       } catch (error) {
         console.warn(`[media] live source failed: ${source.name || source.platform}`, error.message);
-        return null;
+        return { __failed: true, platform: source.platform || '', url: source.url || '', name: source.name || '', sourceOrder: source.sourceOrder };
       }
     }));
     results.push(...batchResults.filter(Boolean));
   }
+  const failedSourceKeys = new Set(results.filter(item => item?.__failed).map(item => `${item.platform}|${item.url}`));
   const priority = { twitch: 6, youtube: 5, douyin: 4, douyu: 3, bilibili: 2 };
   const selected = new Map();
   for (const item of results.filter(entry => entry.live)) {
@@ -1156,21 +1262,25 @@ async function fetchMediaLive() {
     const current = selected.get(key);
     if (!current || (priority[item.platform] || 1) > (priority[current.platform] || 1)) selected.set(key, item);
   }
-  const enriched = await Promise.all([...selected.values()].map(async item => {
+  const enriched = [];
+  for (const item of selected.values()) {
     const { rl, ...publicItem } = item;
+    const profileIds = (Array.isArray(rl) ? rl : []).map(String).filter(id => /^\d+$/.test(id));
     try {
       const leaderboards = await fetchLivePlayerLeaderboardStats(rl);
-      return leaderboards ? { ...publicItem, leaderboards } : publicItem;
+      enriched.push(leaderboards ? { ...publicItem, profileIds, leaderboards } : { ...publicItem, profileIds });
     } catch (error) {
       console.warn(`[media] live player stats failed: ${item.name || item.id}`, error.message);
-      return publicItem;
+      enriched.push({ ...publicItem, profileIds });
     }
-  }));
-  return enriched.sort((a, b) => {
+  }
+  const sorted = enriched.sort((a, b) => {
     if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
     if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
     return a.isCN ? -1 : 1;
   });
+  Object.defineProperty(sorted, 'failedSourceKeys', { value: failedSourceKeys, enumerable: false });
+  return sorted;
 }
 
 function refreshMediaVideos() {
@@ -1188,10 +1298,17 @@ function refreshMediaVideos() {
       return mediaCache.data;
     }
 
-    const candidates = (Array.isArray(mediaSources.videos) ? mediaSources.videos : [])
+    const videoSources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
+    const candidates = videoSources
       .map(source => ({ source, state: mediaVideoSourceStates.get(mediaVideoSourceKey(source)) }))
-      .filter(({ source, state }) => state && state.nextCheckAt <= now && (source.platform !== 'bilibili' || now >= mediaVideoBlockedUntil))
-      .sort((a, b) => a.state.nextCheckAt - b.state.nextCheckAt || a.state.lastAttemptAt - b.state.lastAttemptAt);
+      .filter(({ source, state }) => state && !mediaVideoCycleSeen.has(mediaVideoSourceKey(source)) && state.nextCheckAt <= now && (source.platform !== 'bilibili' || now >= mediaVideoBlockedUntil))
+      .sort((a, b) => {
+        const aIndex = videoSources.indexOf(a.source);
+        const bIndex = videoSources.indexOf(b.source);
+        const aOrder = (aIndex - mediaVideoCycleStartIndex + videoSources.length) % videoSources.length;
+        const bOrder = (bIndex - mediaVideoCycleStartIndex + videoSources.length) % videoSources.length;
+        return aOrder - bOrder || a.state.nextCheckAt - b.state.nextCheckAt || a.state.lastAttemptAt - b.state.lastAttemptAt;
+      });
     const candidate = candidates[0];
     if (!candidate) {
       updateMediaVideoNextRefreshAt();
@@ -1201,7 +1318,7 @@ function refreshMediaVideos() {
     const { source, state } = candidate;
     const key = mediaVideoSourceKey(source);
     state.lastAttemptAt = now;
-    mediaVideoNextRequestAt = now + mediaVideoRequestGapMin;
+    mediaVideoNextRequestAt = now + randomMediaDelay(mediaVideoRequestGapMin, mediaVideoRequestGapMax);
     try {
       const videos = await fetchMediaVideoSource(source);
       const cachedIds = new Set(mediaCache.data.videos.map(item => String(item?.id || '')).filter(Boolean));
@@ -1209,7 +1326,7 @@ function refreshMediaVideos() {
       state.lastSuccessAt = Date.now();
       state.failureCount = 0;
       state.idleSuccesses = hasNewVideo ? 0 : Math.min(4, state.idleSuccesses + 1);
-      state.nextCheckAt = Date.now() + mediaVideoCycleDelay;
+      state.nextCheckAt = Date.now();
       if (source.platform === 'bilibili' && mediaVideoRateLimitStrikes > 0) mediaVideoRateLimitStrikes -= 1;
 
       if (videos.length) {
@@ -1230,20 +1347,21 @@ function refreshMediaVideos() {
       state.failureCount += 1;
       if (source.platform === 'bilibili' && isBilibiliRateLimit(error)) {
         mediaVideoRateLimitStrikes += 1;
-        const backoff = Math.min(mediaVideoCircuitMaxDelay, mediaVideoCircuitBaseDelay * (2 ** (mediaVideoRateLimitStrikes - 1)));
+        const baseBackoff = Math.min(mediaVideoCircuitMaxDelay, mediaVideoCircuitBaseDelay * (2 ** (mediaVideoRateLimitStrikes - 1)));
+        const backoff = Math.min(mediaVideoCircuitMaxDelay, randomMediaDelay(baseBackoff * 0.85, baseBackoff * 1.15));
         mediaVideoBlockedUntil = Date.now() + Math.max(backoff, Number(error.retryAfterMs) || 0);
         state.nextCheckAt = mediaVideoBlockedUntil;
         console.warn(`[media] B站触发风控，暂停视频检测至 ${new Date(mediaVideoBlockedUntil).toISOString()}: ${source.name || key}`);
       } else {
-        state.nextCheckAt = Date.now() + mediaVideoCycleDelay;
+        state.nextCheckAt = Date.now();
         console.warn(`[media] video source failed: ${source.name || key}`, error.message);
       }
     }
     mediaVideoCycleSeen.add(key);
-    const videoSources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
     const cycleComplete = videoSources.length > 0 && videoSources.every(videoSource => mediaVideoCycleSeen.has(mediaVideoSourceKey(videoSource)));
     if (cycleComplete) {
-      const cycleNextAt = Date.now() + mediaVideoCycleDelay;
+      const cycleNextAt = Date.now() + randomMediaCycleDelay();
+      mediaVideoCycleStartIndex = 0;
       for (const videoSource of videoSources) {
         const videoState = mediaVideoSourceStates.get(mediaVideoSourceKey(videoSource));
         if (videoState) videoState.nextCheckAt = cycleNextAt;
@@ -1252,7 +1370,7 @@ function refreshMediaVideos() {
       mediaVideoNextRequestAt = cycleNextAt;
       console.log(`[media] video cycle complete; next cycle ${new Date(cycleNextAt).toISOString()}`);
     } else {
-      mediaVideoNextRequestAt = Date.now() + mediaVideoRequestGapMin;
+      mediaVideoNextRequestAt = Date.now() + randomMediaDelay(mediaVideoRequestGapMin, mediaVideoRequestGapMax);
     }
     updateMediaVideoNextRefreshAt();
     await savePersistentMediaVideoState();
@@ -1263,9 +1381,31 @@ function refreshMediaVideos() {
 
 function refreshMediaLive() {
   if (mediaLiveRefreshPromise) return mediaLiveRefreshPromise;
-  mediaLiveRefreshPromise = fetchMediaLive().then(live => {
+  const refreshStartedAt = Date.now();
+  const refreshWork = loadPersistentMediaLive().then(() => fetchMediaLive()).then(async live => {
+    if (Date.now() - refreshStartedAt >= mediaLiveRoundTimeout) {
+      throw new Error('直播刷新结果已超过整轮时限，丢弃过期结果');
+    }
+    const failedSourceKeys = live.failedSourceKeys || new Set();
+    const merged = [...live];
+    const mergedKeys = new Set(merged.map(item => `${item.platform || ''}|${item.url || ''}`));
+    const mergeNow = Date.now();
+    for (const previous of Array.isArray(mediaCache.data.live) ? mediaCache.data.live : []) {
+      const key = `${previous.platform || ''}|${previous.url || ''}`;
+      const checkedAt = Date.parse(previous.checkedAt || '');
+      const withinFailureGrace = Number.isFinite(checkedAt) && mergeNow - checkedAt <= mediaLiveFailedSourceGrace;
+      if (failedSourceKeys.has(key) && !mergedKeys.has(key) && withinFailureGrace) {
+        merged.push(previous);
+        mergedKeys.add(key);
+      }
+    }
+    merged.sort((a, b) => {
+      if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
+      if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
+      return a.isCN ? -1 : 1;
+    });
     const now = Date.now();
-    mediaCache.data.live = live;
+    mediaCache.data.live = merged;
     mediaCache.data.liveUpdatedAt = new Date(now).toISOString();
     mediaCache.data.nextLiveRefreshAt = new Date(now + mediaLiveRefreshInterval).toISOString();
     mediaCache.data.updatedAt = new Date(now).toISOString();
@@ -1274,8 +1414,12 @@ function refreshMediaLive() {
       Date.parse(mediaCache.data.nextLiveRefreshAt)
     )).toISOString();
     mediaCache.liveSavedAt = now;
+    await writeFile(mediaLiveCachePath, JSON.stringify({ savedAt: new Date(now).toISOString(), live: merged }, null, 2), 'utf8');
+    console.log(`[media] live refresh complete: ${merged.length} live streams; next refresh ${mediaCache.data.nextLiveRefreshAt}`);
     return mediaCache.data;
-  }).finally(() => { mediaLiveRefreshPromise = null; });
+  });
+  mediaLiveRefreshPromise = withMediaTimeout(refreshWork, mediaLiveRoundTimeout, '直播刷新整轮任务')
+    .finally(() => { mediaLiveRefreshPromise = null; });
   return mediaLiveRefreshPromise;
 }
 
@@ -1287,6 +1431,7 @@ async function startMediaVideoScheduler() {
     mediaVideoNextRequestAt = 0;
     mediaVideoBlockedUntil = 0;
     mediaVideoRateLimitStrikes = 0;
+    mediaVideoCycleStartIndex = 0;
     mediaVideoCycleSeen.clear();
     for (const source of Array.isArray(mediaSources.videos) ? mediaSources.videos : []) {
       const state = mediaVideoSourceStates.get(mediaVideoSourceKey(source));
@@ -1311,7 +1456,7 @@ function refreshMediaCache() {
 }
 
 async function getMediaCache() {
-  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
+  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState(), loadPersistentMediaLive()]);
   ensureMediaVideoSourceStates();
   if (!mediaVideoSchedulerTimer && !mediaVideosRefreshPromise) scheduleMediaVideoRefresh();
   const now = Date.now();
@@ -1327,59 +1472,84 @@ async function getMediaCache() {
   return mediaCache.data;
 }
 
-function gameAssetPath(kind, slug) {
-  return join(gameAssetCacheDir, kind, `${slug}.png`);
+const gameAssetService = createGameAssetService({ join, readFile, writeFile, mkdir, fetch, gameAssetCacheDir, gameAssetRefreshes });
+const { getGameAsset } = gameAssetService;
+
+async function fetchLeaderboardPage(id, page) {
+  const upstream = new URL(api);
+  upstream.search = new URLSearchParams({ title: 'age2', leaderboard_id: String(id), sortBy: '1', start: String((page - 1) * 100 + 1), count: '100' });
+  const response = await fetchUpstreamWithRateLimit(upstream, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`上游服务返回 HTTP ${response.status}`);
+  const payload = await response.json();
+  if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '游戏数据服务暂不可用');
+  return payload;
 }
 
-async function getGameAsset(kind, slug) {
-  const target = gameAssetPath(kind, slug);
-  try {
-    return await readFile(target);
-  } catch {
-    // Continue to the upstream fetch when this asset has not been cached yet.
+async function fetchLeaderboard(id, pageCount = 3, startPage = 1) {
+  if (id === 15) return fetchTournamentEloLeaderboard(pageCount, startPage);
+  const pages = [];
+  for (let page = startPage; page < startPage + pageCount; page += 1) {
+    if (pages.length) await new Promise(resolve => setTimeout(resolve, 250));
+    pages.push(await fetchLeaderboardPage(id, page));
   }
-  const key = `${kind}/${slug}`;
-  if (!gameAssetRefreshes.has(key)) {
-    const refresh = (async () => {
-      const compactSlug = slug.replaceAll('_', '');
-      const candidates = kind === 'map'
-        ? [`maps/rm_${slug}.png`, `maps/${slug}.png`, `maps/rm_${compactSlug}.png`, `maps/${compactSlug}.png`]
-        : [`civilizations/${slug}.png`, ...(slug === 'inca' ? ['civilizations/incas.png'] : []), ...(slug === 'maya' ? ['civilizations/mayans.png'] : [])];
-      let response = null;
-      for (const upstreamPath of candidates) {
-        const candidate = await fetch(`https://backend.cdn.aoe2companion.com/public/aoe2/de/${upstreamPath}`, { signal: AbortSignal.timeout(15000) });
-        if (candidate.ok) { response = candidate; break; }
-      }
-      if (!response) throw new Error('游戏资源不存在');
-      const data = Buffer.from(await response.arrayBuffer());
-      await mkdir(join(gameAssetCacheDir, kind), { recursive: true });
-      await writeFile(target, data);
-      return data;
-    })().finally(() => gameAssetRefreshes.delete(key));
-    gameAssetRefreshes.set(key, refresh);
-  }
-  return gameAssetRefreshes.get(key);
+  const rows = leaderboardRowsFromPayloads(pages).map(row => isForcedChinaProfile(row.profileId) ? { ...row, country: 'cn' } : row);
+  const total = Math.min(maxLeaderboardRows, Number(pages[0]?.rankTotal || 0) || rows.length);
+  return {
+    leaderboardId: id,
+    label: types[id],
+    total,
+    pageSize: 100,
+    pageCount: Math.min(Math.ceil(maxLeaderboardRows / 100), Math.max(1, Math.ceil(total / 100))),
+    loadedPages: Array.from({ length: pageCount }, (_, index) => startPage + index),
+    updatedAt: new Date().toISOString(),
+    rows: rows.slice(0, Math.min(pageCount * 100, total, maxLeaderboardRows))
+  };
 }
 
-async function fetchLeaderboard(id) {
-  // The game service caps each response at 100 players, so collect twenty pages.
-  const pages = await Promise.all(Array.from({ length: 20 }, async (_, page) => {
-    const upstream = new URL(api);
-    upstream.search = new URLSearchParams({ title: 'age2', leaderboard_id: String(id), sortBy: '1', start: String(page * 100 + 1), count: '100' });
-    const response = await fetch(upstream, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`上游服务返回 HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '游戏数据服务暂不可用');
-    return payload;
-  }));
-  const groups = pages.flatMap(payload => payload.statGroups || []);
-  const stats = new Map(pages.flatMap(payload => payload.leaderboardStats || []).map(row => [row.statgroup_id, row]));
-  const rows = groups.flatMap(group => (group.members || []).map(member => {
-    const stat = stats.get(group.id);
-    const steamId = member.name?.match(/^\/steam\/(\d+)$/)?.[1] || '';
-    return stat ? { rank: stat.rank, name: member.alias || member.name || '未知玩家', alias: member.alias || '', clan: member.clan || '', country: member.country || '', rating: stat.rating, highestRating: stat.highestrating ?? stat.rating, wins: stat.wins, losses: stat.losses, streak: stat.streak, lastMatchDate: stat.lastmatchdate ?? null, profileId: member.profile_id, steamId } : [];
-  })).sort((a, b) => a.rank - b.rank).slice(0, 2000);
-  return { leaderboardId: id, label: types[id], total: pages[0].rankTotal || rows.length, updatedAt: new Date().toISOString(), rows };
+async function fetchTournamentEloLeaderboard(pageCount = 3, startPage = 1) {
+  if (!tournamentEloPlayersCache || Date.now() - tournamentEloPlayersFetchedAt >= 60 * 60_000) {
+    const response = await fetchUpstreamWithRateLimit('https://aoe-elo.com/', { headers: { accept: 'text/html', 'user-agent': 'AOE2DE-CN/1.0' }, signal: AbortSignal.timeout(30_000) });
+    if (!response.ok) throw new Error(`aoe-elo 返回 HTTP ${response.status}`);
+    const html = await response.text();
+    const match = html.match(/page\.statTable\.data\s*=\s*(\[[\s\S]*?\]);\s*\/\* code \*\//);
+    if (!match) throw new Error('aoe-elo 页面未找到榜单数据');
+    let pageRows;
+    try { pageRows = JSON.parse(match[1]); } catch { throw new Error('aoe-elo 榜单数据解析失败'); }
+    if (!Array.isArray(pageRows)) throw new Error('aoe-elo 榜单数据格式无效');
+    tournamentEloPlayersCache = pageRows
+    .filter(row => row?.player && Number.isFinite(Number(row.elo)))
+    .sort((a, b) => Number(a.rank || 1e9) - Number(b.rank || 1e9) || Number(b.elo) - Number(a.elo))
+    .slice(0, maxLeaderboardRows)
+    .map((row, index) => ({
+      profileId: String(row.player.id || ''),
+      steamId: '',
+      name: String(row.player.public_name || row.player.name || '未知玩家'),
+      country: String(row.player.public_country_key || row.player.country_key || '').toUpperCase(),
+      rating: Number(row.elo) || 0,
+      highestRating: Number(row.elo_peak) || Number(row.elo) || 0,
+      wins: Number(row.num_wins) || 0,
+      losses: Math.max(0, (Number(row.num_matches) || 0) - (Number(row.num_wins) || 0)),
+      streak: 0,
+      eloChange: Number(row.elo_dev) || 0,
+      lastMatchDate: row.last_series_time ? Math.floor(Date.parse(row.last_series_time) / 1000) : 0,
+      rank: Number(row.rank) > 0 ? Number(row.rank) : index + 1
+    }));
+    tournamentEloPlayersFetchedAt = Date.now();
+  }
+  const allRows = tournamentEloPlayersCache;
+  const total = allRows.length;
+  const start = (startPage - 1) * 100;
+  const end = Math.min(start + pageCount * 100, total);
+  return {
+    leaderboardId: 15,
+    label: types[15],
+    total,
+    pageSize: 100,
+    pageCount: Math.max(1, Math.ceil(total / 100)),
+    loadedPages: Array.from({ length: Math.max(0, Math.ceil((end - start) / 100)) }, (_, index) => startPage + index),
+    updatedAt: new Date().toISOString(),
+    rows: allRows.slice(start, end)
+  };
 }
 
 function parseInsightsCard(html, title) {
@@ -1390,6 +1560,7 @@ function parseInsightsCard(html, title) {
 
 async function fetchInsightsSummaryPage(leaderboardId, country = '') {
   const url = new URL(`https://www.aoe2insights.com/leaderboard/${leaderboardId}/`);
+  url.searchParams.set('alltime', 'False');
   if (country) url.searchParams.set('country', country.toLowerCase());
   else url.searchParams.set('page', '1');
   const response = await fetch(url, { headers: { accept: 'text/html', 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(20_000) });
@@ -1402,6 +1573,13 @@ async function fetchAoE2InsightsSummary(leaderboardId, country) {
   const cached = aoe2InsightsSummaryCache.get(key);
   if (cached && Date.now() - cached.savedAt < aoe2InsightsSummaryTtl) return cached.data;
   if (aoe2InsightsSummaryRefreshes.has(key)) return aoe2InsightsSummaryRefreshes.get(key);
+  if (leaderboardId === 15) {
+    const board = await getLeaderboard(15);
+    const ratings = (board.rows || []).map(row => Number(row.rating)).filter(Number.isFinite);
+    const data = { averageRating: ratings.length ? ratings.reduce((sum, value) => sum + value, 0) / ratings.length : null, countryPlayers: country && country !== 'all' ? 0 : board.total, totalPlayers: board.total, top100Country: country && country !== 'all' ? 0 : Math.min(100, board.total) };
+    aoe2InsightsSummaryCache.set(key, { savedAt: Date.now(), data });
+    return data;
+  }
   const refresh = (async () => {
     let globalHtml = null;
     let fallbackBoard = null;
@@ -1414,7 +1592,7 @@ async function fetchAoE2InsightsSummary(leaderboardId, country) {
       ? Number(String(parseInsightsCard(globalHtml, 'Players') || '').replace(/,/g, '')) || 0
       : Number(fallbackBoard?.total || fallbackRatings.length);
     if (!country || country === 'all') return { averageRating, countryPlayers: totalPlayers, totalPlayers, top100Country: Math.min(100, totalPlayers) };
-    const codes = country === 'CN' ? ['cn', 'hk', 'mo'] : [country.toLowerCase()];
+    const codes = country === 'CN' ? ['cn', 'mo'] : [country.toLowerCase()];
     const pages = await Promise.all(codes.map(code => fetchInsightsSummaryPage(leaderboardId, code)));
     const countryStats = pages.map(html => ({
       players: Number(String(parseInsightsCard(html, 'Players') || '').replace(/,/g, '')) || 0,
@@ -1438,7 +1616,7 @@ function settleCacheWaiters(id, error) {
 
 function refreshLeaderboard(id) {
   if (leaderboardRefreshes.has(id)) return leaderboardRefreshes.get(id);
-  const refresh = fetchLeaderboard(id).then(data => {
+  const refresh = fetchLeaderboard(id, 3, 1).then(data => {
     const expiresAt = nextLeaderboardRefreshAt(id);
     leaderboardCache.set(id, { data, expiresAt });
     settleCacheWaiters(id);
@@ -1454,14 +1632,34 @@ function refreshLeaderboard(id) {
 async function getLeaderboard(id) {
   let cached = leaderboardCache.get(id);
   if (!cached) {
-    // Warm an empty cache on first access; scheduled refreshes still follow the
-    // fixed second marks below.
     await refreshLeaderboard(id);
     cached = leaderboardCache.get(id);
   }
-  // Stale snapshots remain usable while the scheduled refresh is in progress.
   const now = Date.now();
   return { ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now) };
+}
+
+async function getLeaderboardPage(id, page) {
+  const requestedPage = Math.min(Math.ceil(maxLeaderboardRows / 100), Math.max(1, Number(page) || 1));
+  let cached = leaderboardCache.get(id);
+  if (!cached) cached = { data: await getLeaderboard(id), expiresAt: nextLeaderboardRefreshAt(id) };
+  if (requestedPage > 3 && !cached.data.loadedPages?.includes(requestedPage)) {
+    const key = `${id}:${requestedPage}`;
+    let refresh = leaderboardRefreshes.get(key);
+    if (!refresh) {
+      refresh = fetchLeaderboard(id, 1, requestedPage).then(pageData => {
+        const current = leaderboardCache.get(id) || cached;
+        const merged = mergeLeaderboardData(current.data, pageData, maxLeaderboardRows);
+        leaderboardCache.set(id, { data: merged, expiresAt: current.expiresAt || nextLeaderboardRefreshAt(id) });
+        return merged;
+      }).finally(() => leaderboardRefreshes.delete(key));
+      leaderboardRefreshes.set(key, refresh);
+    }
+    await refresh;
+    cached = leaderboardCache.get(id);
+  }
+  const now = Date.now();
+  return { ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now), requestedPage };
 }
 
 function nextLeaderboardRefreshAt(id, now = Date.now()) {
@@ -1796,14 +1994,16 @@ function normalizeCompanionMatches(payload) {
     let leaderboard = leaderboardValue === 'dm_1v1' ? 'DM 1v1' : leaderboardValue === 'dm_tg' || leaderboardValue === 'dm_team' ? 'DM TG' : leaderboardValue === 'rm_1v1' ? 'RM 1v1' : leaderboardValue === 'rm_tg' || leaderboardValue === 'rm_team' ? 'RM TG' : leaderboardValue === 'ew_1v1' ? 'EW 1v1' : leaderboardValue === 'ew_tg' || leaderboardValue === 'ew_team' ? 'EW TG' : '';
     if (!leaderboard && /DEATHMATCH|^DM$/.test(rawType)) leaderboard = /1V1|1\s*V\s*1/.test(rawDiplomacy) ? 'DM 1v1' : 'DM TG';
     const players = [];
-    const teams = (Array.isArray(match.teams) ? match.teams : []).map(team => {
+    const teams = (Array.isArray(match.teams) ? match.teams : []).map((team, teamIndex) => {
       const members = [];
       for (const source of Array.isArray(team.players) ? team.players : []) {
         const player = {
           id: String(source.profileId), number: players.length, name: source.name || `玩家 ${source.profileId}`,
-          civilization: source.civName || source.civ || '未知民族', color_hex: source.colorHex || '#84928a',
+          civilization: source.civName || source.civ || '未知民族', civilization_id: source.civ || '', color_hex: source.colorHex || '#84928a',
           rating: Number.isFinite(Number(source.rating)) ? Number(source.rating) : null,
+          color: Number.isFinite(Number(source.color)) ? Number(source.color) : null,
           ratingDelta: Number.isFinite(Number(source.ratingDiff)) ? Number(source.ratingDiff) : null,
+          team: source.team ?? teamIndex + 1, country: source.country || '',
           winner: source.won === true
         };
         players.push(player);
@@ -1813,6 +2013,10 @@ function normalizeCompanionMatches(payload) {
     });
     const started = companionEpoch(match.started);
     const finished = companionEpoch(match.finished);
+    // A missing finished timestamp can survive in upstream/cache data after
+    // a disconnected match. Never expose an implausibly old record as LIVE.
+    const now = Math.floor(Date.now() / 1000);
+    const plausibleLiveAge = started > 0 && started <= now + 300 && now - started <= 3 * 60 * 60;
     return {
       id: match.matchId,
       leaderboard,
@@ -1823,64 +2027,65 @@ function normalizeCompanionMatches(payload) {
       started,
       finished,
       abandoned: match.abandoned === true,
-      live: Boolean(started && !finished && !match.abandoned),
+      live: Boolean(plausibleLiveAge && !finished && !match.abandoned),
       duration: started && finished && finished >= started ? finished - started : 0,
+      server: match.server || '',
       players,
       teams
     };
   }).sort((a, b) => Number(b.started) - Number(a.started));
 }
 
-async function fetchWorldsEdgeMatchesOnce(profileId, page = 1, perPage = 100) {
-  const endpoint = new URL('https://data.aoe2companion.com/api/matches');
-  endpoint.searchParams.set('profile_ids', String(profileId));
-  endpoint.searchParams.set('use_enums', 'true');
-  endpoint.searchParams.set('page', String(page));
-  endpoint.searchParams.set('per_page', String(Math.min(100, Math.max(1, perPage))));
-  let lastError;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      const response = await fetch(endpoint, {
-        headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36', accept: 'application/json' },
-        signal: AbortSignal.timeout(30_000)
-      });
-      if (!response.ok) throw new Error(`AoE2 Companion 请求失败（HTTP ${response.status}）`);
-      const payload = await response.json();
-      const matches = normalizeCompanionMatches(payload);
-      return { matches, hasMore: matches.length >= Math.min(100, Math.max(1, perPage)) };
-    } catch (error) {
-      lastError = error;
-      if (attempt < 4) await new Promise(resolve => setTimeout(resolve, Math.min(1000 * (attempt + 1), 4000)));
-    }
-  }
-  throw lastError || new Error('AoE2 Companion 请求失败');
-}
+const profileService = createProfileService({
+  getProfileDb: () => profileDb,
+  leaderboardCache,
+  ladderOrder,
+  types,
+  personalStatsCache,
+  personalStatsCacheTtl,
+  fetchUpstreamWithRateLimit,
+  forceChinaCountry,
+  WebSocket
+});
+const { localProfileDetails, profileLeaderboardSummary, fetchPersonalLeaderboardStats } = profileService;
 
-async function fetchLatestWorldsEdgeMatchOnce(profileId) {
-  const endpoint = new URL('https://data.aoe2companion.com/api/matches');
-  endpoint.searchParams.set('profile_ids', String(profileId));
-  endpoint.searchParams.set('use_enums', 'true');
-  endpoint.searchParams.set('page', '1');
-  endpoint.searchParams.set('per_page', '1');
-  let lastError;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      const response = await fetch(endpoint, {
-        headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36', accept: 'application/json' },
-        signal: AbortSignal.timeout(30_000)
-      });
-      if (!response.ok) throw new Error(`AoE2 Companion 请求失败（HTTP ${response.status}）`);
-      const payload = await response.json();
-      const matches = normalizeCompanionMatches(payload);
-      return matches[0] || null;
-    } catch (error) {
-      lastError = error;
-      if (attempt < 4) await new Promise(resolve => setTimeout(resolve, Math.min(1000 * (attempt + 1), 4000)));
-    }
-  }
-  throw lastError || new Error('AoE2 Companion 请求失败');
-}
+const matchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches });
+const { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce } = matchesService;
 
+const realtimeDanmakuNotifier = createRealtimeDanmakuNotifier({
+  statePath: join(dataDir, 'danmaku', 'realtime-match-added.json'),
+  readFile,
+  writeFile,
+  execFileAsync,
+  pythonExecutable: process.platform === 'win32'
+    ? join(root, '.venv-danmaku', 'Scripts', 'python.exe')
+    : join(root, '.venv-danmaku', 'bin', 'python'),
+  scriptPath: join(root, 'tools', 'live_danmaku.py'),
+  playwrightBrowsersPath: join(root, '.cache', 'ms-playwright'),
+  watchers: [
+    { profileId: '197964', platform: 'douyu', room: '753676' },
+    { profileId: '226575', platform: 'douyu', room: '1029928' },
+    { profileId: '1449222', platform: 'bilibili', room: '22751576' }
+  ]
+});
+const realtimeService = createRealtimeService({
+  realtimePayloadPath: join(dataDir, 'realtime-payload.json'),
+  readFile,
+  writeFile,
+  fetchLatestWorldsEdgeMatchOnce,
+  localProfileDetails,
+  getLeaderboard,
+  getMediaCache,
+  loadRlReference,
+  fetchPersonalLeaderboardStats,
+  worldsEdgeMatchCache,
+  worldsEdgeMatchCachePath,
+  forceChinaCountry,
+  getLiveTournamentForPlayer,
+  WebSocket,
+  onMatchAdded: realtimeDanmakuNotifier.handleMatchAdded
+});
+// End of server entrypoint.
 async function getWorldsEdgeMatches(profileId, page = 1) {
   const key = String(profileId);
   let current = worldsEdgeMatchCache.get(key);
@@ -2012,54 +2217,6 @@ async function getWorldsEdgeMatches(profileId, page = 1) {
   })().finally(() => worldsEdgeMatchRefreshes.delete(String(profileId)));
   worldsEdgeMatchRefreshes.set(key, refresh);
   return refresh;
-}
-
-function localProfileDetails(profileId) {
-  if (!profileDb) return null;
-  const row = profileDb.prepare('SELECT profile_id AS profileId, steam_id AS steamId, name, clan, last_match_time AS lastMatchTime, country FROM profiles WHERE profile_id = ?').get(String(profileId));
-  if (!row) return null;
-  const leaderboardRow = [...leaderboardCache.values()]
-    .flatMap(cache => cache.data?.rows || [])
-    .find(item => String(item.profileId) === String(profileId));
-  const inferredClan = String(row.name || '').match(/^([A-Z0-9]{2,})[_\s.]/i)?.[1] || '';
-  const clan = row.clan || leaderboardRow?.clan || inferredClan;
-  return {
-    avatar: '',
-    player: { id: row.profileId, name: row.name || `玩家 ${row.profileId}`, country_code: row.country || leaderboardRow?.country || '', team: clan, steamId: row.steamId || '', lastMatchTime: row.lastMatchTime || '' },
-    accounts: [],
-    live: null,
-    matches: [],
-    leaderboards: profileLeaderboardSummary(profileId)
-  };
-}
-
-function profileLeaderboardSummary(profileId) {
-  return ladderOrder.map(id => {
-    const cached = leaderboardCache.get(id);
-    const row = cached?.data.rows.find(item => String(item.profileId) === String(profileId));
-    return row ? { id, label: types[id], rank: row.rank, rating: row.rating, highestRating: row.highestRating, wins: row.wins, losses: row.losses, streak: row.streak } : { id, label: types[id], rank: null };
-  });
-}
-
-async function fetchPersonalLeaderboardStats(profileId) {
-  const key = String(profileId);
-  const cached = personalStatsCache.get(key);
-  if (cached && Date.now() - cached.savedAt < personalStatsCacheTtl) return cached.data;
-  const endpoint = new URL('https://aoe-api.worldsedgelink.com/community/leaderboard/getPersonalStat');
-  endpoint.search = new URLSearchParams({ title: 'age2', profile_ids: JSON.stringify([Number(profileId)]) });
-  const response = await fetch(endpoint, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`个人天梯接口返回 HTTP ${response.status}`);
-  const payload = await response.json();
-  if (payload?.result?.code !== 0) throw new Error(payload?.result?.message || '个人天梯接口返回失败');
-  const stats = new Map((payload.leaderboardStats || []).map(stat => [Number(stat.leaderboard_id), stat]));
-  const data = ladderOrder.map(id => {
-    const stat = stats.get(id);
-    if (!stat) return { id, label: types[id], hasData: false, active: false, rank: null };
-    const active = Number(stat.rank) > 0;
-    return { id, label: types[id], hasData: true, active, rank: active ? Number(stat.rank) : null, rating: stat.rating ?? null, highestRating: Number(stat.highestrating) > 0 ? stat.highestrating : (stat.rating ?? null), wins: stat.wins ?? null, losses: stat.losses ?? null, streak: stat.streak ?? null, lastMatchDate: stat.lastmatchdate ?? null, rankTotal: stat.ranktotal ?? null };
-  });
-  personalStatsCache.set(key, { savedAt: Date.now(), data });
-  return data;
 }
 
 function aoe2RecsProfilePath(profileId) {
@@ -2240,8 +2397,650 @@ function searchProfiles(query, leaderboardId) {
   return results.slice(0, 30);
 }
 
+const chinaDayFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+const feedbackDailyCounts = new Map();
+let feedbackStatePromise = null;
+let feedbackWriteQueue = Promise.resolve();
+let siteTrafficStatePromise = null;
+let siteTrafficState = { version: 1, days: {} };
+let siteDailyArchiveTimer = null;
+let siteDailyArchiveWriteQueue = Promise.resolve();
+let liquipediaMatchesCache = null;
+let liquipediaMatchesCacheLoaded = false;
+let liquipediaMatchesRefreshPromise = null;
+let liquipediaMatchesLastError = null;
+const liquipediaLivePlayerTournaments = new Map();
+let liquipediaTournamentsCache = null;
+let liquipediaTournamentsRefreshPromise = null;
+
+function parseLiquipediaTournaments(html) {
+  const source = String(html || '');
+  const listStart = source.indexOf('class="tournaments-list"');
+  if (listStart < 0) return [];
+  const list = source.slice(listStart);
+  const items = [];
+  for (const item of list.matchAll(/<li>([\s\S]*?)<\/li>/gi)) {
+    const block = item[1];
+    if (!/data-filter-category="Age of Empires II"/i.test(block)) continue;
+    const tier = decodeLiquipediaHtml(block.match(/tournament-badge[^>]*>[\s\S]*?<div class="tournament-badge(?:__|&#95;&#95;)text">([\s\S]*?)<\/div>/i)?.[1] || '');
+    const name = decodeLiquipediaHtml(block.match(/class="tournament-name">\s*<a[^>]*>([\s\S]*?)<\/a>/i)?.[1] || '');
+    const href = block.match(/class="tournament-name">\s*<a[^>]*href="([^"]+)"/i)?.[1] || '';
+    const logo = block.match(/class="tournament-icon"[\s\S]*?<img[^>]*src="([^"]+)"/i)?.[1] || '';
+    const dates = decodeLiquipediaHtml(block.match(/class="tournaments-list-dates"[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i)?.[1] || '');
+    const sectionMatches = [...list.slice(0, item.index || 0).matchAll(/tournaments-list-heading[^>]*>\s*([^<]+)\s*</gi)];
+    const section = sectionMatches.length ? sectionMatches[sectionMatches.length - 1][1].trim() : '';
+    if (!name) continue;
+    items.push({ name, tier: tier || 'Misc', dates, status: /ongoing/i.test(section) ? 'Ongoing' : /completed|finished/i.test(section) ? 'Completed' : 'Upcoming', url: liquipediaUrl(href), logo: liquipediaUrl(logo) });
+  }
+  return items;
+}
+
+async function loadLiquipediaTournaments() {
+  if (liquipediaTournamentsCache && Date.now() - Date.parse(liquipediaTournamentsCache.fetchedAt || 0) < liquipediaMatchesRefreshInterval) return liquipediaTournamentsCache;
+  if (liquipediaTournamentsRefreshPromise) return liquipediaTournamentsRefreshPromise;
+  liquipediaTournamentsRefreshPromise = (async () => {
+    try {
+      const cached = JSON.parse(await readFile(liquipediaTournamentsCachePath, 'utf8'));
+      if (cached?.fetchedAt && Date.now() - Date.parse(cached.fetchedAt) < liquipediaMatchesRefreshInterval) { liquipediaTournamentsCache = cached; return cached; }
+    } catch {}
+    const response = await fetch(`${liquipediaApiUrl}?action=parse&page=Main_Page&prop=text&format=json`, { headers: { accept: 'application/json', 'user-agent': liquipediaUserAgent }, signal: AbortSignal.timeout(25_000) });
+    if (!response.ok) throw new Error(`Liquipedia 首页返回 HTTP ${response.status}`);
+    const payload = await response.json();
+    const next = { fetchedAt: new Date().toISOString(), tournaments: parseLiquipediaTournaments(payload?.parse?.text?.['*'] || '') };
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(`${liquipediaTournamentsCachePath}.tmp`, JSON.stringify(next, null, 2), 'utf8');
+    await rename(`${liquipediaTournamentsCachePath}.tmp`, liquipediaTournamentsCachePath);
+    liquipediaTournamentsCache = next;
+    return next;
+  })().finally(() => { liquipediaTournamentsRefreshPromise = null; });
+  return liquipediaTournamentsRefreshPromise;
+}
+
+function normalizeEventPlayerName(value) {
+  return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function rebuildLiquipediaLivePlayerCache(data) {
+  liquipediaLivePlayerTournaments.clear();
+  for (const match of Array.isArray(data?.upcoming) ? data.upcoming : []) {
+    if (match?.status !== 'ongoing') continue;
+    const tournament = String(match.tournament?.name || '').trim();
+    if (!tournament) continue;
+    const event = { name: tournament, url: String(match.tournament?.url || ''), bestOf: Number(match.bestOf) || null, score: Array.isArray(match.score) ? match.score : ['', ''] };
+    for (const opponent of Array.isArray(match.opponents) ? match.opponents : []) {
+      const names = [...(Array.isArray(opponent?.members) ? opponent.members : []), opponent?.name];
+      for (const name of names) {
+        const key = normalizeEventPlayerName(name);
+        if (key && !liquipediaLivePlayerTournaments.has(key)) liquipediaLivePlayerTournaments.set(key, event);
+      }
+    }
+  }
+}
+
+function getLiveTournamentForPlayer(playerName) {
+  const key = normalizeEventPlayerName(playerName);
+  return key ? liquipediaLivePlayerTournaments.get(key) || null : null;
+}
+let siteTrafficWriteQueue = Promise.resolve();
+
+function chinaDayKey(date = new Date()) {
+  const parts = Object.fromEntries(chinaDayFormatter.formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function normalizeClientIp(value) {
+  let ip = String(value || '').split(',')[0].trim();
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  if (/^\[[^\]]+\](?::\d+)?$/.test(ip)) ip = ip.slice(1, ip.indexOf(']'));
+  if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(ip)) ip = ip.slice(0, ip.lastIndexOf(':'));
+  return ip || 'unknown';
+}
+
+function isInternalIp(ip) {
+  if (ip === '::1' || ip === '127.0.0.1') return true;
+  if (/^10\./.test(ip) || /^192\.168\./.test(ip) || /^169\.254\./.test(ip)) return true;
+  const private172 = ip.match(/^172\.(\d+)\./);
+  if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return true;
+  return /^(?:fc|fd|fe80):/i.test(ip);
+}
+
+function requestClientIp(req) {
+  const peerIp = normalizeClientIp(req.socket?.remoteAddress);
+  const realIp = isInternalIp(peerIp) ? normalizeClientIp(req.headers['x-real-ip']) : '';
+  return realIp && realIp !== 'unknown' ? realIp : peerIp;
+}
+
+function excludeFromSiteTraffic(ip) {
+  return siteTrafficExcludedIps.has(ip) || isInternalIp(ip) || ip === 'unknown';
+}
+
+async function readJsonRequest(req, maxBytes = 4096) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        tooLarge = true;
+        return;
+      }
+      if (!tooLarge) chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (tooLarge) {
+        const error = new Error('提交内容过长');
+        error.statusCode = 413;
+        return reject(error);
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      } catch {
+        const error = new Error('提交格式不正确');
+        error.statusCode = 400;
+        reject(error);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function ensureFeedbackState() {
+  if (feedbackStatePromise) return feedbackStatePromise;
+  feedbackStatePromise = (async () => {
+    let text = '';
+    try {
+      text = await readFile(feedbackLogPath, 'utf8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    const today = chinaDayKey();
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        const recordDay = record.day || chinaDayKey(new Date(record.sentAt));
+        if (recordDay !== today || !record.ip) continue;
+        const key = `${today}|${record.ip}`;
+        feedbackDailyCounts.set(key, (feedbackDailyCounts.get(key) || 0) + 1);
+      } catch {}
+    }
+  })().catch(error => {
+    feedbackStatePromise = null;
+    throw error;
+  });
+  return feedbackStatePromise;
+}
+
+async function feedbackStatus(ip) {
+  await ensureFeedbackState();
+  const key = `${chinaDayKey()}|${ip}`;
+  const used = feedbackDailyCounts.get(key) || 0;
+  return { limit: feedbackDailyLimit, used, remaining: Math.max(0, feedbackDailyLimit - used) };
+}
+
+async function saveFeedback(ip, content) {
+  const day = chinaDayKey();
+  const key = `${day}|${ip}`;
+  const status = await feedbackStatus(ip);
+  if (status.remaining <= 0) {
+    const error = new Error('今天的反馈提交次数已用完，请明天再试');
+    error.statusCode = 429;
+    throw error;
+  }
+  const sentAt = new Date().toISOString();
+  const record = { day, ip, content, sentAt };
+  feedbackDailyCounts.set(key, status.used + 1);
+  const write = feedbackWriteQueue.catch(() => {}).then(async () => {
+    await mkdir(dataDir, { recursive: true });
+    await appendFile(feedbackLogPath, `${JSON.stringify(record)}\n`, 'utf8');
+  });
+  feedbackWriteQueue = write;
+  try {
+    await write;
+  } catch (error) {
+    feedbackDailyCounts.set(key, Math.max(0, (feedbackDailyCounts.get(key) || 1) - 1));
+    throw error;
+  }
+  return { sentAt, limit: feedbackDailyLimit, used: status.used + 1, remaining: Math.max(0, status.remaining - 1) };
+}
+
+async function ensureSiteTrafficState() {
+  if (siteTrafficStatePromise) return siteTrafficStatePromise;
+  siteTrafficStatePromise = (async () => {
+    try {
+      const saved = JSON.parse(await readFile(siteTrafficPath, 'utf8'));
+      if (saved && typeof saved.days === 'object') siteTrafficState = { version: 1, days: saved.days };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    return siteTrafficState;
+  })().catch(error => {
+    siteTrafficStatePromise = null;
+    throw error;
+  });
+  return siteTrafficStatePromise;
+}
+
+function currentSiteStats() {
+  const date = chinaDayKey();
+  const day = siteTrafficState.days[date] || {};
+  const visitors = Array.isArray(day.visitors) ? day.visitors : [];
+  return { date, users: visitors.length, views: Math.max(0, Number(day.views) || 0) };
+}
+
+async function persistSiteTraffic() {
+  const snapshot = JSON.stringify(siteTrafficState, null, 2);
+  const temporaryPath = `${siteTrafficPath}.tmp`;
+  const write = siteTrafficWriteQueue.catch(() => {}).then(async () => {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(temporaryPath, snapshot, 'utf8');
+    await rename(temporaryPath, siteTrafficPath);
+  });
+  siteTrafficWriteQueue = write;
+  return write;
+}
+
+async function recordPageView(req) {
+  await ensureSiteTrafficState();
+  const ip = requestClientIp(req);
+  if (excludeFromSiteTraffic(ip)) return { ...currentSiteStats(), counted: false };
+  const date = chinaDayKey();
+  const day = siteTrafficState.days[date] && typeof siteTrafficState.days[date] === 'object'
+    ? siteTrafficState.days[date]
+    : { views: 0, visitors: [], updatedAt: null };
+  const visitors = new Set(Array.isArray(day.visitors) ? day.visitors : []);
+  visitors.add(createHash('sha256').update(`aoe2cn-site-traffic-v1:${ip}`).digest('hex'));
+  siteTrafficState.days[date] = {
+    views: Math.max(0, Number(day.views) || 0) + 1,
+    visitors: [...visitors],
+    uniqueVisitors: visitors.size,
+    updatedAt: new Date().toISOString()
+  };
+  await persistSiteTraffic();
+  return { ...currentSiteStats(), counted: true };
+}
+
+async function archiveSiteDay(date = chinaDayKey()) {
+  await ensureSiteTrafficState();
+  let existing = '';
+  try { existing = await readFile(siteDailyArchivePath, 'utf8'); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  for (const line of existing.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try { if (JSON.parse(line).date === date) return false; } catch {}
+  }
+  let feedbackText = '';
+  try { feedbackText = await readFile(feedbackLogPath, 'utf8'); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  const feedback = [];
+  for (const line of feedbackText.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line);
+      const recordDay = record.day || chinaDayKey(new Date(record.sentAt));
+      if (recordDay === date && typeof record.content === 'string') feedback.push({ content: record.content, sentAt: record.sentAt || null });
+    } catch {}
+  }
+  const day = siteTrafficState.days[date] || {};
+  const visitors = Array.isArray(day.visitors) ? day.visitors : [];
+  const record = {
+    date,
+    recordedAt: new Date().toISOString(),
+    users: visitors.length,
+    views: Math.max(0, Number(day.views) || 0),
+    feedback
+  };
+  const write = siteDailyArchiveWriteQueue.catch(() => {}).then(async () => {
+    await mkdir(dataDir, { recursive: true });
+    await appendFile(siteDailyArchivePath, `${JSON.stringify(record)}\n`, 'utf8');
+  });
+  siteDailyArchiveWriteQueue = write;
+  await write;
+  console.log(`[stats] daily archive saved: ${date}; users ${record.users}; views ${record.views}; feedback ${feedback.length}`);
+  return true;
+}
+
+function scheduleSiteDailyArchive() {
+  if (siteDailyArchiveTimer) clearTimeout(siteDailyArchiveTimer);
+  const now = Date.now();
+  const today = chinaDayKey(new Date(now));
+  let target = Date.parse(`${today}T23:59:00+08:00`);
+  if (!Number.isFinite(target) || target <= now) {
+    const tomorrow = new Date(Date.parse(`${today}T12:00:00+08:00`) + 24 * 60 * 60_000);
+    target = Date.parse(`${chinaDayKey(tomorrow)}T23:59:00+08:00`);
+  }
+  siteDailyArchiveTimer = setTimeout(async () => {
+    try { await archiveSiteDay(chinaDayKey()); } catch (error) { console.warn('[stats] daily archive failed:', error.message); }
+    scheduleSiteDailyArchive();
+  }, Math.max(1_000, target - now));
+  siteDailyArchiveTimer.unref?.();
+  console.log(`[stats] daily archive scheduled: ${new Date(target).toISOString()}`);
+}
+
+function decodeLiquipediaHtml(value) {
+  return String(value || '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function liquipediaUrl(value) {
+  try {
+    const url = new URL(decodeLiquipediaHtml(value), 'https://liquipedia.net');
+    return url.hostname === 'liquipedia.net' || url.hostname.endsWith('.liquipedia.net') ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function balancedDivAt(source, start) {
+  const tokens = /<\/?div\b[^>]*>/gi;
+  tokens.lastIndex = start;
+  let depth = 0;
+  for (let token; (token = tokens.exec(source));) {
+    if (token[0].startsWith('</')) depth -= 1;
+    else depth += 1;
+    if (depth === 0) return source.slice(start, tokens.lastIndex);
+  }
+  return '';
+}
+
+function liquipediaDivBlocks(source, className) {
+  const openings = /<div\b[^>]*class="([^"]*)"[^>]*>/gi;
+  const blocks = [];
+  for (const opening of source.matchAll(openings)) {
+    if (!opening[1].split(/\s+/).includes(className)) continue;
+    const block = balancedDivAt(source, opening.index);
+    if (block) blocks.push({ opening: opening[0], html: block });
+  }
+  return blocks;
+}
+
+function parseLiquipediaMatch(card) {
+  const timestamp = Number(card.match(/data-timestamp="(\d+)"/)?.[1] || 0);
+  const finished = /data-finished="finished"/i.test(card);
+  const opponentBlocks = liquipediaDivBlocks(card, 'match-info-header-opponent').slice(0, 2);
+  const opponents = opponentBlocks.map(block => {
+    const members = [...block.html.matchAll(/<span class="name"[^>]*>([\s\S]*?)<\/span>/gi)]
+      .map(match => decodeLiquipediaHtml(match[1]))
+      .filter(Boolean);
+    const flagImage = block.html.match(/<span class="flag"[^>]*>[\s\S]*?<img\b[^>]*src="([^"]+)"/i)?.[1] || '';
+    const country = decodeLiquipediaHtml(block.html.match(/<span class="flag"[^>]*>[\s\S]*?<img\b[^>]*alt="([^"]*)"/i)?.[1]);
+    const countryCode = flagImage.match(/\/([a-z]{2})_hd\.png(?:\/|$)/i)?.[1]?.toUpperCase() || '';
+    const href = block.html.match(/<span class="name"[^>]*>[\s\S]*?<a\b[^>]*href="([^"]+)"/i)?.[1] || '';
+    return {
+      name: members.join(' / ') || '待定',
+      members,
+      country,
+      countryCode,
+      flag: liquipediaUrl(flagImage),
+      url: liquipediaUrl(href),
+      winner: /match-info-header-winner/i.test(block.opening),
+      loser: /match-info-header-loser/i.test(block.opening)
+    };
+  });
+  while (opponents.length < 2) opponents.push({ name: '待定', members: [], country: '', countryCode: '', flag: '', url: '', winner: false, loser: false });
+  const scores = [...card.matchAll(/class="match-info-header-scoreholder-score(?: [^"]*)?"[^>]*>([\s\S]*?)<\/span>/gi)]
+    .map(match => decodeLiquipediaHtml(match[1]))
+    .slice(0, 2);
+  const tournamentBlock = liquipediaDivBlocks(card, 'match-info-tournament')[0]?.html || '';
+  const tournamentName = decodeLiquipediaHtml(tournamentBlock.match(/<span class="match-info-tournament-name"[^>]*>([\s\S]*?)<\/span>/i)?.[1]) || '未命名赛事';
+  const tournamentHref = tournamentBlock.match(/<a\b[^>]*href="([^"]+)"/i)?.[1] || '';
+  let tournamentLogoLight = '';
+  let tournamentLogoDark = '';
+  for (const logo of tournamentBlock.matchAll(/<span class="league-icon-small-image([^"]*)"[^>]*>[\s\S]*?<img\b[^>]*src="([^"]+)"/gi)) {
+    const source = liquipediaUrl(logo[2]);
+    if (!source) continue;
+    if (/darkmode/i.test(logo[1])) tournamentLogoDark ||= source;
+    else if (/lightmode/i.test(logo[1])) tournamentLogoLight ||= source;
+    else {
+      tournamentLogoLight ||= source;
+      tournamentLogoDark ||= source;
+    }
+  }
+  const plainText = decodeLiquipediaHtml(card);
+  const bestOf = Number(plainText.match(/\(Bo(\d+)\)/i)?.[1] || 0) || null;
+  const status = finished ? 'completed' : timestamp > 0 && timestamp * 1000 <= Date.now() ? 'ongoing' : 'upcoming';
+  const identity = [timestamp, tournamentName, ...opponents.map(opponent => opponent.name)].join('|');
+  return {
+    id: createHash('sha256').update(identity).digest('hex').slice(0, 16),
+    status,
+    startTime: timestamp > 0 ? new Date(timestamp * 1000).toISOString() : null,
+    timestamp,
+    opponents,
+    score: scores.length >= 2 ? scores : ['', ''],
+    bestOf,
+    tournament: {
+      name: tournamentName,
+      url: liquipediaUrl(tournamentHref),
+      logo: tournamentLogoLight || tournamentLogoDark,
+      logoLight: tournamentLogoLight || tournamentLogoDark,
+      logoDark: tournamentLogoDark || tournamentLogoLight
+    }
+  };
+}
+
+function parseLiquipediaMatches(html) {
+  const deduped = new Map();
+  for (const block of liquipediaDivBlocks(html, 'match-info')) {
+    const match = parseLiquipediaMatch(block.html);
+    if (match.timestamp && match.opponents.some(opponent => opponent.name !== '待定')) deduped.set(match.id, match);
+  }
+  const matches = [...deduped.values()];
+  const upcoming = matches
+    .filter(match => match.status !== 'completed')
+    .sort((left, right) => (left.status === 'ongoing' ? -1 : 1) - (right.status === 'ongoing' ? -1 : 1) || left.timestamp - right.timestamp);
+  const completed = matches.filter(match => match.status === 'completed').sort((left, right) => right.timestamp - left.timestamp);
+  return { upcoming, completed };
+}
+
+async function loadLiquipediaMatchesCache() {
+  if (liquipediaMatchesCacheLoaded) return liquipediaMatchesCache;
+  liquipediaMatchesCacheLoaded = true;
+  try {
+    const cached = JSON.parse(await readFile(liquipediaMatchesCachePath, 'utf8'));
+    if (cached && Array.isArray(cached.upcoming) && Array.isArray(cached.completed)) {
+      liquipediaMatchesCache = cached;
+      rebuildLiquipediaLivePlayerCache(cached);
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn('[events] cached matches unavailable:', error.message);
+  }
+  return liquipediaMatchesCache;
+}
+
+async function refreshLiquipediaMatches() {
+  if (liquipediaMatchesRefreshPromise) return liquipediaMatchesRefreshPromise;
+  liquipediaMatchesRefreshPromise = (async () => {
+    await loadLiquipediaMatchesCache();
+    const cachedAt = Date.parse(liquipediaMatchesCache?.fetchedAt || 0);
+    if (Number.isFinite(cachedAt) && Date.now() - cachedAt < liquipediaMatchesRefreshInterval) return liquipediaMatchesCache;
+    const sourceText = '<div data-aoe2cn-section="upcoming">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=upcoming|limit=50|filterbuttons-game=Age of Empires II}}</div><div data-aoe2cn-section="recent">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=recent|limit=50|filterbuttons-game=Age of Empires II}}</div>';
+    const form = new URLSearchParams({ action: 'parse', text: sourceText, title: 'Liquipedia:Upcoming and ongoing matches', prop: 'text', format: 'json', formatversion: '2' });
+    const response = await fetch(liquipediaApiUrl, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'accept-encoding': 'gzip',
+        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'user-agent': liquipediaUserAgent
+      },
+      body: form,
+      signal: AbortSignal.timeout(25_000)
+    });
+    if (!response.ok) throw new Error(`Liquipedia API 返回 HTTP ${response.status}`);
+    const payload = await response.json();
+    const html = String(payload?.parse?.text || '');
+    if (!html.includes('match-info')) throw new Error('Liquipedia API 未返回比赛信息');
+    const parsed = parseLiquipediaMatches(html);
+    const next = {
+      fetchedAt: new Date().toISOString(),
+      refreshIntervalMs: liquipediaMatchesRefreshInterval,
+      upcoming: parsed.upcoming,
+      completed: parsed.completed,
+      source: {
+        name: 'Liquipedia',
+        url: 'https://liquipedia.net/ageofempires/Liquipedia:Upcoming_and_ongoing_matches',
+        license: 'CC BY-SA 3.0',
+        licenseUrl: 'https://creativecommons.org/licenses/by-sa/3.0/'
+      }
+    };
+    await mkdir(dataDir, { recursive: true });
+    const temporaryPath = `${liquipediaMatchesCachePath}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify(next, null, 2), 'utf8');
+    await rename(temporaryPath, liquipediaMatchesCachePath);
+    liquipediaMatchesCache = next;
+    rebuildLiquipediaLivePlayerCache(next);
+    liquipediaMatchesLastError = null;
+    return next;
+  })().catch(error => {
+    liquipediaMatchesLastError = error.message || String(error);
+    throw error;
+  }).finally(() => {
+    liquipediaMatchesRefreshPromise = null;
+  });
+  return liquipediaMatchesRefreshPromise;
+}
+
+async function startLiquipediaMatchesLifecycle() {
+  await loadLiquipediaMatchesCache();
+  try {
+    await refreshLiquipediaMatches();
+  } catch (error) {
+    console.warn('[events] initial Liquipedia refresh failed:', error.message);
+  }
+  setInterval(() => {
+    refreshLiquipediaMatches().catch(error => console.warn('[events] Liquipedia refresh failed:', error.message));
+  }, liquipediaMatchesRefreshInterval).unref();
+}
+
+function sendNoStoreJson(res, statusCode, data) {
+  res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  return res.end(JSON.stringify(data));
+}
+
+function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
+  const versionText = String(version || 'snapshot').replace(/[^a-zA-Z0-9_.:-]/g, '_');
+  const etag = `"${versionText}"`;
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    etag,
+    'cache-control': `public, max-age=${Math.max(1, Math.floor(maxAgeSeconds || 60))}, stale-while-revalidate=30`
+  };
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  res.writeHead(200, headers);
+  return res.end(JSON.stringify(data));
+}
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === '/api/site-stats') {
+    if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
+    try {
+      await ensureSiteTrafficState();
+      const stats = currentSiteStats();
+      return sendVersionedJson(req, res, stats, `site-stats-${stats.date}-${stats.users}-${stats.views}`, 60);
+    } catch (error) {
+      return sendNoStoreJson(res, 500, { error: error.message || '读取访问统计失败' });
+    }
+  }
+  if (url.pathname === '/api/page-view') {
+    if (req.method !== 'POST') return sendNoStoreJson(res, 405, { error: '仅支持 POST 请求' });
+    try {
+      return sendNoStoreJson(res, 200, await recordPageView(req));
+    } catch (error) {
+      return sendNoStoreJson(res, 500, { error: error.message || '记录访问失败' });
+    }
+  }
+  if (url.pathname === '/api/events') {
+    if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
+    const cached = await loadLiquipediaMatchesCache();
+    if (!cached) return sendNoStoreJson(res, 503, { error: '赛事数据正在首次同步，请稍后重试' });
+    const data = { ...cached, stale: Boolean(liquipediaMatchesLastError) };
+    return sendVersionedJson(req, res, data, `events-${cached.fetchedAt}`, 60);
+  }
+  if (url.pathname === '/api/tournaments') {
+    if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
+    try {
+      const data = await loadLiquipediaTournaments();
+      return sendVersionedJson(req, res, data, `tournaments-${data.fetchedAt}`, 60);
+    } catch (error) {
+      return sendNoStoreJson(res, 502, { error: error.message || '赛事列表获取失败' });
+    }
+  }
+  if (url.pathname === '/api/feedback') {
+    const ip = requestClientIp(req);
+    if (req.method === 'GET') {
+      try {
+        return sendNoStoreJson(res, 200, await feedbackStatus(ip));
+      } catch (error) {
+        return sendNoStoreJson(res, 500, { error: error.message || '读取反馈状态失败' });
+      }
+    }
+    if (req.method !== 'POST') return sendNoStoreJson(res, 405, { error: '仅支持 GET 或 POST 请求' });
+    try {
+      const payload = await readJsonRequest(req);
+      const content = String(payload?.content || '').replace(/\u0000/g, '').replace(/\r\n?/g, '\n').trim();
+      const length = [...content].length;
+      if (!length) return sendNoStoreJson(res, 400, { error: '请输入建议或反馈' });
+      if (length > feedbackMaxLength) return sendNoStoreJson(res, 400, { error: `反馈内容不能超过 ${feedbackMaxLength} 个字` });
+      return sendNoStoreJson(res, 201, { ok: true, ...(await saveFeedback(ip, content)) });
+    } catch (error) {
+      const statusCode = Number(error?.statusCode) || 500;
+      return sendNoStoreJson(res, statusCode, { error: statusCode >= 500 ? '反馈保存失败，请稍后再试' : error.message });
+    }
+  }
+  if (url.pathname === '/api/realtime/status') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify(realtimeService.getRealtimeStatus()));
+  }
+  if (url.pathname === '/api/realtime/version') {
+    let profileIds = [];
+    try { const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8')); profileIds = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276]; } catch { profileIds = [506898,8793414,212721,3025516,1966276]; }
+    const ids = [...new Set(profileIds.map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const cachedPayload = await realtimeService.getCachedPayload(ids);
+    const version = cachedPayload?.checkedAt || null;
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify({ version, checkedAt: version }));
+  }
+  if (url.pathname === '/api/realtime') {
+    let profileIds = [];
+    try { const requested = url.searchParams.get('profile_ids'); if (requested) profileIds = JSON.parse(requested); else { const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8')); profileIds = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276]; } } catch { profileIds = [506898,8793414,212721,3025516,1966276]; }
+    const ids = [...new Set(profileIds.map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const key = ids.join(',');
+    // This endpoint is cache-only. The scheduled server task is the only code
+    // path that calls the upstream match API; browser reads never trigger refresh.
+    const cachedPayload = await realtimeService.getCachedPayload(ids);
+    if (cachedPayload) {
+      const etag = `"realtime-${Buffer.from(String(cachedPayload.checkedAt || 'empty')).toString('base64url')}"`;
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
+        return res.end();
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-cache', etag });
+      return res.end(JSON.stringify(cachedPayload));
+    }
+    const emptyPayload = { source: 'aoe2companion-latest', checkedAt: null, states: [] };
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify(emptyPayload));
+  }
   if (url.pathname === '/api/profile-search/status') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(profileStatePayload()));
@@ -2305,6 +3104,22 @@ http.createServer(async (req, res) => {
     if (!/^\d+$/.test(profileId)) {
       res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: '无效的选手 ID' }));
+    }
+    if (url.searchParams.get('latest') === '1') {
+      try {
+        const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end(JSON.stringify({ matches: latest ? [latest] : [], latest: true }));
+      } catch {
+        try {
+          const fallback = await getWorldsEdgeMatches(profileId, 1);
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          return res.end(JSON.stringify({ matches: fallback.matches?.[0] ? [fallback.matches[0]] : [], latest: true, stale: true }));
+        } catch (error) {
+          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          return res.end(JSON.stringify({ error: error.message || '获取最新对局失败' }));
+        }
+      }
     }
     const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
     const limit = Math.min(100, Math.max(20, Number(url.searchParams.get('limit') || 100)));
@@ -2415,7 +3230,10 @@ http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ error: '不支持的榜单类型' }));
     }
     try {
-      const data = await getLeaderboard(id);
+      const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+      const data = await getLeaderboardPage(id, page);
+      // Each response carries the next scheduler deadline even when rows have
+      // not changed. An ETag based only on updatedAt can reuse an expired body.
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify(data));
     } catch (error) {
@@ -2441,8 +3259,8 @@ http.createServer(async (req, res) => {
   if (url.pathname === '/api/media') {
     try {
       const data = await getMediaCache();
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify(data));
+      const maxAgeSeconds = Math.max(1, Math.ceil((Date.parse(data.nextRefreshAt || '') - Date.now()) / 1000));
+      return sendVersionedJson(req, res, data, `media-${data.updatedAt || 'snapshot'}`, maxAgeSeconds);
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: error.message || '获取视频直播数据失败' }));
@@ -2491,14 +3309,14 @@ http.createServer(async (req, res) => {
           const profileCacheKey = `profile:${profileId}`;
           const cachedAvatar = avatarCache.get(profileCacheKey);
           if (cachedAvatar?.expires > Date.now()) {
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
             return res.end(JSON.stringify(cachedAvatar));
           }
           const avatar = await fetchAoE2RecsAvatar();
           if (avatar) {
             const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
             avatarCache.set(profileCacheKey, cached);
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
             return res.end(JSON.stringify(cached));
           }
         } catch {}
@@ -2518,7 +3336,7 @@ http.createServer(async (req, res) => {
         cached = { avatar: safeAvatar, expires: Date.now() + 24 * 60 * 60_000 };
         avatarCache.set(steamId, cached);
       }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
       return res.end(JSON.stringify(cached));
     } catch (error) {
       if (validProfileId) {
@@ -2527,7 +3345,7 @@ http.createServer(async (req, res) => {
           if (avatar) {
             const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
             avatarCache.set(steamId, cached);
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
             return res.end(JSON.stringify(cached));
           }
         } catch {}
@@ -2537,28 +3355,47 @@ http.createServer(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|updates|realtime|events|feedback|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const path = normalize(join(root, 'public', relative));
   if (!path.startsWith(join(root, 'public'))) {
     res.writeHead(403); return res.end('Forbidden');
   }
   try {
     const data = await readFile(path);
-    res.writeHead(200, { 'content-type': mime[extname(path)] || 'application/octet-stream' });
+    const extension = extname(path).toLowerCase();
+    const cacheableAsset = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf'].includes(extension);
+    res.writeHead(200, {
+      'content-type': mime[extension] || 'application/octet-stream',
+      'cache-control': cacheableAsset ? 'public, max-age=604800, immutable' : 'no-cache'
+    });
     res.end(data);
   } catch {
     res.writeHead(404); res.end('Not found');
   }
 }).listen(port, () => {
   console.log(`AoE2DE Ladder running at http://localhost:${port}`);
+  startLiquipediaMatchesLifecycle().catch(error => console.warn('[events] lifecycle startup failed:', error.message));
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
   startBilibiliUpdatesLifecycle().catch(error => console.warn('[updates] lifecycle startup failed:', error.message));
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
+  ensureSiteTrafficState().then(() => scheduleSiteDailyArchive()).catch(error => console.warn('[stats] daily archive startup failed:', error.message));
+  let lastRealtimeApiFallbackAt = Date.now();
+  const refreshRealtimeOnServer = async () => {
+    try {
+      const pool = JSON.parse(await readFile(join(dataDir, 'realtime-profile-pool.json'), 'utf8'));
+      const ids = Array.isArray(pool.ids) && pool.ids.length ? pool.ids : [506898,8793414,212721,3025516,1966276];
+      await realtimeService.startRealtimeWebSockets(ids);
+      if (!realtimeService.realtimeWebSocketsHealthy(ids)) {
+        const cachedPayload = await realtimeService.getCachedPayload(ids);
+        const fallbackIntervalMs = 5 * 60 * 1000;
+        if (!cachedPayload || Date.now() - lastRealtimeApiFallbackAt >= fallbackIntervalMs) {
+          lastRealtimeApiFallbackAt = Date.now();
+          await realtimeService.refreshRealtimePayload(ids);
+        }
+      }
+    } catch (error) { console.warn('[realtime] scheduled refresh failed:', error.message); }
+  };
+  setTimeout(refreshRealtimeOnServer, 1000).unref();
+  setInterval(refreshRealtimeOnServer, 60 * 1000).unref();
 });
-
-
-
-
-
-
 
