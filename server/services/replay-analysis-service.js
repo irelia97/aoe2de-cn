@@ -16,7 +16,7 @@ export function createReplayAnalysisService({ cacheDir, assetsDir, fetchImpl = f
     if (now() - lastCleanup < 60000) return;
     lastCleanup = now();
     const entries = await readdir(cacheDir);
-    const files = await Promise.all(entries.filter(name => /^v[12]-\d+-\d+\.json\.gz$/.test(name)).map(async name => ({ name, info: await stat(join(cacheDir, name)).catch(() => null) })));
+    const files = await Promise.all(entries.filter(name => /^v[123]-\d+-\d+\.json\.gz$/.test(name)).map(async name => ({ name, info: await stat(join(cacheDir, name)).catch(() => null) })));
     files.sort((a, b) => (b.info?.mtimeMs || 0) - (a.info?.mtimeMs || 0));
     await Promise.all(files.filter((file, index) => file.info && (now() - file.info.mtimeMs >= replayCacheTtl || index >= 128)).map(file => rm(join(cacheDir, file.name), { force: true })));
   }
@@ -36,7 +36,11 @@ export function createReplayAnalysisService({ cacheDir, assetsDir, fetchImpl = f
       const payload = await response.json();
       if (String(payload.matchId) !== key) throw new Error('对局信息不匹配');
       const started = Date.parse(payload.started);
-      const data = { matchId: key, started: Number.isFinite(started) ? Math.floor(started / 1000) : null, server: typeof payload.server === 'string' ? payload.server : '' };
+      const players = (Array.isArray(payload.teams) ? payload.teams : []).flatMap(team => Array.isArray(team.players) ? team.players : []);
+      const results = payload.finished && players.some(player => player.won === true)
+        ? players.filter(player => player.profileId != null && typeof player.won === 'boolean').map(player => ({ profileId: String(player.profileId), won: player.won }))
+        : [];
+      const data = { matchId: key, started: Number.isFinite(started) ? Math.floor(started / 1000) : null, server: typeof payload.server === 'string' ? payload.server : '', results };
       matchInfoCache.delete(key);
       matchInfoCache.set(key, { data, savedAt: now() });
       if (matchInfoCache.size > 128) matchInfoCache.delete(matchInfoCache.keys().next().value);
@@ -85,7 +89,7 @@ export function createReplayAnalysisService({ cacheDir, assetsDir, fetchImpl = f
 
   async function get(matchId, profileId) {
     if (!/^[1-9]\d{0,15}$/.test(String(matchId)) || !/^[1-9]\d{0,15}$/.test(String(profileId))) throw new Error('无效的比赛或玩家 ID');
-    const key = `v2-${matchId}-${profileId}`;
+    const key = `v3-${matchId}-${profileId}`;
     await mkdir(cacheDir, { recursive: true });
     const path = join(cacheDir, `${key}.json.gz`);
     try {

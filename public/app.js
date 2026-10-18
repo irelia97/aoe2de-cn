@@ -1830,7 +1830,7 @@ function replayTimelineMarkup(full, players, durationMs) {
   target.style.setProperty("--timeline-bucket-width", `${100 / bucketCount}%`);
   const ticks = Array.from({ length: bucketCount + 1 }, (_, index) => start + index * bucketSize);
   const tickMarkup = ticks.map(time => `<span style="left:${((time - start) / span * 100).toFixed(3)}%">${replayTimelineTime(time)}</span>`).join('');
-  const rows = groups.flatMap(([teamIndex, teamPlayers]) => [`<div class="replay-timeline-team"><span>队伍 ${Number(teamIndex) + 1}</span><b class="${teamPlayers.some(player => player.winner) ? 'replay-result-win' : 'replay-result-loss'}">${teamPlayers.some(player => player.winner) ? '胜者' : '失败'}</b></div>`, ...teamPlayers.map(player => {
+  const rows = groups.flatMap(([teamIndex, teamPlayers]) => [`<div class="replay-timeline-team"><span>队伍 ${Number(teamIndex) + 1}</span>${replayResultBadge(teamPlayers, teamIndex)}</div>`, ...teamPlayers.map(player => {
     const playerId = Number(player.player_number);
     const items = (events.get(playerId) || []).sort((a, b) => a.time - b.time);
     const laneEnds = [];
@@ -1932,7 +1932,22 @@ async function replayLoadMatchInfo(matchId, requestId, recordedStart) {
     const server = document.querySelector('[data-replay-summary-field="server"] strong');
     if (time && info.started) time.textContent = replayStartTime(info.started);
     if (server && info.server) { server.textContent = realtimeServerName(info.server); server.title = info.server; }
+    replayApplyMatchResults(info);
   } catch { /* Optional match metadata must not interrupt local replay analysis. */ }
+}
+let replayResultPlayers = [];
+function replayResultBadge(teamPlayers, teamIndex) {
+  const won = teamPlayers.some(player => player.winner === true);
+  const lost = teamPlayers.length && teamPlayers.every(player => player.winner === false);
+  return `<b data-replay-team-result="${teamIndex}" class="${won ? 'replay-result-win' : lost ? 'replay-result-loss' : 'replay-result-unknown'}">${won ? '胜者' : lost ? '失败' : '未判定'}</b>`;
+}
+function replayApplyMatchResults(info) {
+  const outcomes = new Map((Array.isArray(info?.results) ? info.results : []).filter(player => typeof player.won === 'boolean').map(player => [String(player.profileId), player.won]));
+  replayResultPlayers.forEach(player => { player.winner = outcomes.get(String(player.profile_id)) ?? null; });
+  document.querySelectorAll('[data-replay-team-result]').forEach(badge => {
+    const teamIndex = Number(badge.dataset.replayTeamResult);
+    badge.outerHTML = replayResultBadge(replayResultPlayers.filter(player => player.teamIndex === teamIndex), teamIndex);
+  });
 }
 function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   const settings = summary?.header?.game_settings || {};
@@ -1947,17 +1962,19 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
     custom_civ_ids: Array.isArray(player.custom_civ_ids) ? player.custom_civ_ids : [],
     resigned: Boolean(player.resigned),
     teamIndex,
-    winner: Boolean(team.winner)
+    winner: null
   })));
+  replayResultPlayers = players;
+  replayApplyMatchResults(matchInfo);
   const playerNames = new Map(players.map(player => [String(player.player_number), player.name]));
   const chat = replayFindChat(full, playerNames);
   const playerStats = replayPlayerStats(full, summary?.duration);
   const operations = Array.isArray(full?.operations) ? full.operations.length : 0;
-  document.querySelector('#replaySummary').innerHTML = [['版本号', replayBuild], ['时长', replayFormatTime((Number(summary?.duration) || 0) / 1000)], ['地图', replayMapName(settings)], ['房间名', settings.lobby_name || '—'], ['玩家', players.length], ['开始时间（北京时间）', replayStartTime(matchInfo?.started || header.timestamp), 'startedAt'], ['服务器位置', matchInfo?.server ? realtimeServerName(matchInfo.server) : '未记录', 'server'], ['地图种子', header.replay?.random_seed != null && Number.isFinite(Number(header.replay.random_seed)) ? String(header.replay.random_seed) : '未记录', 'mapSeed']].map(([label, value, field]) => `<div class="replay-summary-item${field === 'startedAt' ? ' replay-summary-time' : ''}"${field ? ` data-replay-summary-field="${field}"` : ''}><small>${escapeHtml(label)}</small><strong title="${escapeHtml(String(value ?? '—'))}">${escapeHtml(String(value ?? '—'))}</strong></div>`).join('');
+  document.querySelector('#replaySummary').innerHTML = [['版本号', replayBuild], ['游戏时长', replayFormatTime((Number(summary?.duration) || 0) / 1000)], ['地图', replayMapName(settings)], ['房间名', settings.lobby_name || '—'], ['玩家', players.length], ['开始时间（北京时间）', replayStartTime(matchInfo?.started || header.timestamp), 'startedAt'], ['服务器位置', matchInfo?.server ? realtimeServerName(matchInfo.server) : '未记录', 'server'], ['地图种子', header.replay?.random_seed != null && Number.isFinite(Number(header.replay.random_seed)) ? String(header.replay.random_seed) : '未记录', 'mapSeed']].map(([label, value, field]) => `<div class="replay-summary-item${field === 'startedAt' ? ' replay-summary-time' : ''}"${field ? ` data-replay-summary-field="${field}"` : ''}><small>${escapeHtml(label)}</small><strong title="${escapeHtml(String(value ?? '—'))}">${escapeHtml(String(value ?? '—'))}</strong></div>`).join('');
   const replayGameSettings = document.querySelector('#replayGameSettings');
   if (replayGameSettings) replayGameSettings.innerHTML = replayGameSettingMarkup(settings, summary);
   const teamGroups = [...new Map(players.map(player => [player.teamIndex, players.filter(candidate => candidate.teamIndex === player.teamIndex)])).entries()];
-    document.querySelector('#replayPlayers').innerHTML = teamGroups.length ? teamGroups.map(([teamIndex, teamPlayers]) => `<section class="replay-team"><div class="replay-team-heading"><strong>队伍 ${Number(teamIndex) + 1}</strong><b class="${teamPlayers.some(player => player.winner) ? 'replay-result-win' : 'replay-result-loss'}">${teamPlayers.some(player => player.winner) ? '胜者' : '失败'}</b></div><div class="replay-player-columns"><span aria-hidden="true"></span><span>玩家 / 文明</span><span>eAPM</span><span>最多队列单位</span></div>${teamPlayers.map(player => { const stat = playerStats.get(String(player.player_number)); const queued = replayQueuedUnitInfo(stat); const playerName = escapeHtml(player.name || `玩家 ${player.player_number ?? ''}`); const profileLink = player.profile_id ? `<a class="replay-player-name-link" href="/profile/${encodeURIComponent(String(player.profile_id))}">${playerName}</a>` : `<strong>${playerName}</strong>`; const civIcon = replayCivIcon(player); return `<div class="replay-player-row"><span class="replay-player-color" style="--player-color:${replayPlayerColor(player.color_id)}"></span><div><strong>${profileLink}</strong><small class="replay-player-civ">${civIcon ? `<img src="${escapeHtml(civIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(replayCivLabel(player))}</span></small></div><span class="replay-player-eapm">${stat ? stat.eapm.toFixed(1) : '—'}</span><span class="replay-player-queue">${queued.length ? queued.map(unit => `<span class="replay-player-queue-item" title="${escapeHtml(`${unit.name} × ${unit.count}`)}">${unit.icon ? `<img src="${escapeHtml(unit.icon)}" alt="${escapeHtml(unit.name)}" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(`${unit.name} × ${unit.count}`)}</span></span>`).join('') : '—'}</span></div>`; }).join('')}</section>`).join('') : '<div class="replay-empty">未读取到玩家资料。</div>';
+    document.querySelector('#replayPlayers').innerHTML = teamGroups.length ? teamGroups.map(([teamIndex, teamPlayers]) => `<section class="replay-team"><div class="replay-team-heading"><strong>队伍 ${Number(teamIndex) + 1}</strong>${replayResultBadge(teamPlayers, teamIndex)}</div><div class="replay-player-columns"><span aria-hidden="true"></span><span>玩家 / 文明</span><span>eAPM</span><span>最多队列单位</span></div>${teamPlayers.map(player => { const stat = playerStats.get(String(player.player_number)); const queued = replayQueuedUnitInfo(stat); const playerName = escapeHtml(player.name || `玩家 ${player.player_number ?? ''}`); const profileLink = player.profile_id ? `<a class="replay-player-name-link" href="/profile/${encodeURIComponent(String(player.profile_id))}">${playerName}</a>` : `<strong>${playerName}</strong>`; const civIcon = replayCivIcon(player); return `<div class="replay-player-row"><span class="replay-player-color" style="--player-color:${replayPlayerColor(player.color_id)}"></span><div><strong>${profileLink}</strong><small class="replay-player-civ">${civIcon ? `<img src="${escapeHtml(civIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(replayCivLabel(player))}</span></small></div><span class="replay-player-eapm">${stat ? stat.eapm.toFixed(1) : '—'}</span><span class="replay-player-queue">${queued.length ? queued.map(unit => `<span class="replay-player-queue-item" title="${escapeHtml(`${unit.name} × ${unit.count}`)}">${unit.icon ? `<img src="${escapeHtml(unit.icon)}" alt="${escapeHtml(unit.name)}" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(`${unit.name} × ${unit.count}`)}</span></span>`).join('') : '—'}</span></div>`; }).join('')}</section>`).join('') : '<div class="replay-empty">未读取到玩家资料。</div>';
   document.querySelector('#replayPlayerCount').textContent = `${players.length} 人`;
   document.querySelector('#replayChatCount').textContent = `${chat.length} 条`;
   replayTimelineMarkup(full, players, summary?.duration);
@@ -1981,7 +1998,7 @@ async function loadServerReplay(matchId, profileId) {
     await Promise.all([replayLoadUnitMap(), replayLoadTechMap()]);
     if (requestId !== replayAnalysisRequest) return;
     replaySummaryMarkup(data.summary, data.full, data.file, data.matchInfo);
-    if (!data.matchInfo?.server) replayLoadMatchInfo(matchId, requestId, Number(data.summary?.header?.timestamp) || 0);
+    if (!data.matchInfo?.server || !Array.isArray(data.matchInfo?.results)) replayLoadMatchInfo(matchId, requestId, Number(data.summary?.header?.timestamp) || 0);
     status.textContent = response.headers.get('x-replay-cache') === 'HIT' ? '已读取缓存分析。分析结果缓存 30 分钟。' : '录像分析完成。分析结果缓存 30 分钟。';
   } catch (error) {
     if (requestId !== replayAnalysisRequest) return;
@@ -2440,7 +2457,9 @@ function realtimeStatusActivity(state) {
     ? `${rawScore[0] ?? 0}:${rawScore[1] ?? 0}`
     : '0:0';
   const tournamentName = typeof match.tournament === 'string' ? match.tournament.trim() : String(match.tournament?.name || '').trim();
-  const format = Number(match.bestOf) > 0 ? `BO${Number(match.bestOf)}` : '';
+  const tournamentBestOf = Number(match.tournament?.bestOf);
+  const bestOf = Number.isInteger(tournamentBestOf) && tournamentBestOf > 0 ? tournamentBestOf : Number(match.bestOf);
+  const format = Number.isInteger(bestOf) && bestOf > 0 ? `BO${bestOf}` : '';
   const eventMeta = tournamentName ? `<span class="realtime-status-match-meta">（${escapeHtml(format || '赛事')}，${escapeHtml(score)}）</span>` : '';
   return `<span class="realtime-status-activity"><a class="realtime-status-live-link" href="aoe2de://1/${encodeURIComponent(String(match.id || null))}" title="在游戏内观战">◉ ${escapeHtml(label)}</a>${eventMeta}</span>`;
 }
@@ -2448,14 +2467,9 @@ function alignRealtimeStatusActivity() {
   document.querySelectorAll('.realtime-status-activity').forEach(activity => {
     const link = activity.querySelector('.realtime-status-live-link');
     const meta = activity.querySelector('.realtime-status-match-meta');
-    if (!link || !meta || !activity.offsetWidth) return;
-    activity.classList.remove('is-wrapped');
+    if (!link || !meta) return;
+    activity.classList.add('is-wrapped');
     activity.style.removeProperty('width');
-    if (meta.offsetTop > link.offsetTop + 2) {
-      const width = link.offsetWidth;
-      activity.style.width = `${width}px`;
-      activity.classList.add('is-wrapped');
-    }
   });
 }
 window.addEventListener('resize', alignRealtimeStatusActivity);
@@ -2463,7 +2477,7 @@ document.fonts?.ready.then(alignRealtimeStatusActivity);
 function renderRealtimeStatus(states) {
   const target = document.querySelector('#realtimeStatusRows');
   if (!target) return;
-  const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.live?.url);
+  const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.live?.url || Number(state?.graceUntil) > Date.now());
   const identityMap = new Map();
   const priority = state => [
     realtimeStateIsActive(state) ? 3 : state?.live?.url ? 2 : 1,
@@ -2505,7 +2519,7 @@ function renderRealtimeStatus(states) {
         : escapeHtml(tournamentName))
       : '';
     const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${realtimePlatformIconMarkup(state.live.platform)}${escapeHtml(state.live.title || '正在直播')}</a>` : '';
-    return `<tr><td>${rating}</td><td><a class="realtime-status-player" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${tournament || '—'}</td><td>${live}</td></tr>`;
+    return `<tr><td>${rating}</td><td><a class="realtime-status-player" title="${name}" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${tournament || '—'}</td><td>${live}</td></tr>`;
   }).join('');
   alignRealtimeStatusActivity();
 }
@@ -2525,9 +2539,9 @@ function realtimeGroupedPlayers(match) {
 function realtimePlayerRow(player,index) {
   const color=Number(player.color);
   const number=Number.isFinite(color)&&color>0?color:index+1;
-  const rating=Number(player.rating);
-  const ratingText=Number.isFinite(rating)&&rating>0?rating.toLocaleString('zh-CN'):'-';
-  return `<div class="realtime-player-row"><span class="realtime-player-number" style="background:${escapeHtml(realtimePlayerColor(number,index))}">${number}</span><span class="realtime-country">${countryFlag(player.country)}</span><a class="realtime-player-name" href="/profile/${encodeURIComponent(String(player.profileId||null))}"><strong>${escapeHtml(player.name||`玩家 ${player.profileId||''}`)}</strong></a><span class="realtime-player-civ">${realtimeCivIconMarkup(player.civilizationId)}${escapeHtml(civilizationNameZh(player.civilization||'未知文明'))}</span><span class="realtime-player-rating">${ratingText}</span></div>`;
+  const rating=player.ratingMode==='rm_1v1'?Number(player.rating):NaN;
+  const ratingText=Number.isFinite(rating)&&rating>0?rating.toLocaleString('zh-CN'):'—';
+  return `<div class="realtime-player-row"><span class="realtime-player-number" style="background:${escapeHtml(realtimePlayerColor(number,index))}">${number}</span><span class="realtime-country">${countryFlag(player.country)}</span><a class="realtime-player-name" href="/profile/${encodeURIComponent(String(player.profileId||null))}"><strong>${escapeHtml(player.name||`玩家 ${player.profileId||''}`)}</strong></a><span class="realtime-player-civ">${realtimeCivIconMarkup(player.civilizationId)}${escapeHtml(civilizationNameZh(player.civilization||'未知文明'))}</span><span class="realtime-player-rating" title="1v1 随机地图分数">${ratingText}</span></div>`;
 }
 function renderRealtimeCards(payload) {
   const container=document.querySelector('#realtimePlayers');
@@ -2542,11 +2556,11 @@ function renderRealtimeCards(payload) {
   if (statusPanel) statusPanel.hidden=false;
   container.hidden=false;
   const matchAverageRating = state => {
-    const ratings=(Array.isArray(state?.match?.players)?state.match.players:[]).map(player=>Number(player.rating)).filter(rating=>Number.isFinite(rating)&&rating>0);
+    const ratings=(Array.isArray(state?.match?.players)?state.match.players:[]).filter(player=>player.ratingMode==='rm_1v1').map(player=>Number(player.rating)).filter(rating=>Number.isFinite(rating)&&rating>0);
     return ratings.length?ratings.reduce((sum,rating)=>sum+rating,0)/ratings.length:-Infinity;
   };
   const games=[...new Map(states.filter(realtimeStateIsActive).map(state=>[String(state.match.id||state.profileId),state])).values()]
-    .sort((a,b)=>matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
+    .sort((a,b)=>Number(Boolean(b.match?.tournament || b.match?.event || b.match?.eventName))-Number(Boolean(a.match?.tournament || a.match?.event || a.match?.eventName))||matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
   if (updated) updated.textContent=payload?.checkedAt?`更新于 ${new Date(payload.checkedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`:'等待更新';
   if (!games.length) {
     container.innerHTML='<div class="realtime-empty"><div class="realtime-empty-icon">◌</div><h3>当前没有检测到进行中的对局</h3><p>检测池中的玩家均未返回正在进行的最新对局。</p></div>';
@@ -2661,6 +2675,13 @@ async function recordCurrentPageView() {
   }
 }
 
+const feedbackSponsorToggle = document.querySelector('#feedbackSponsorToggle');
+feedbackSponsorToggle?.addEventListener('click', () => {
+  const qr = document.querySelector('#feedbackSponsorQr');
+  if (!qr) return;
+  qr.hidden = !qr.hidden;
+  feedbackSponsorToggle.setAttribute('aria-expanded', String(!qr.hidden));
+});
 const feedbackForm = document.querySelector('#feedbackForm');
 const feedbackContent = document.querySelector('#feedbackContent');
 const feedbackCounter = document.querySelector('#feedbackCounter');

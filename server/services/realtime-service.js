@@ -61,8 +61,36 @@ export function createRealtimeService(deps) {
 
   let realtimePayloadCache = null;
   let realtimeRefreshPromise = null;
+  const recentGames = new Map();
+  const gracePeriod = 5 * 60 * 1000;
+
+  function withGameGrace(states) {
+    const now = Date.now();
+    return states.map(state => {
+      const id = String(state.profileId);
+      if (state.status === 'game' && state.match) {
+        recentGames.set(id, { state, endedAt: null });
+        return { ...state, graceUntil: null };
+      }
+      let recent = recentGames.get(id);
+      const finished = Number(state.match?.finished) * 1000;
+      if (finished > 0 && finished <= now && (!recent || String(recent.state.match?.id) === String(state.match.id))) {
+        if (!recent || recent.endedAt == null) {
+          recent = { state, endedAt: finished };
+          recentGames.set(id, recent);
+        }
+      }
+      if (recent && recent.endedAt == null) recent.endedAt = now;
+      if (recent && now < recent.endedAt + gracePeriod) {
+        return { ...recent.state, ...state, status: 'offline', match: recent.state.match, graceUntil: recent.endedAt + gracePeriod };
+      }
+      recentGames.delete(id);
+      return { ...state, graceUntil: null };
+    });
+  }
 
   async function buildEnrichedPayload(profileIds, states, source = 'aoe2companion-latest') {
+    states = withGameGrace(states);
     const liveByProfile = new Map();
     try {
       const media = await getMediaCache();
@@ -76,10 +104,11 @@ export function createRealtimeService(deps) {
     // Read RM 1v1 from each player's profile data. Do not use the top-2000
     // leaderboard here: players outside that list would otherwise fall back
     // to the rating attached to the current match (for example RM TG).
-    const activeProfileIds = [...new Set(states
-      .map(state => String(state.profileId || '').trim())
-      .filter(id => id && (states.find(state => String(state.profileId || '').trim() === id)?.status === 'game' || liveByProfile.has(id)))
-      .filter(id => /^\d+$/.test(id)))];
+    const activeProfileIds = [...new Set(states.flatMap(state => {
+      const visible = state.status === 'game' || state.graceUntil > Date.now() || liveByProfile.has(String(state.profileId));
+      if (!visible) return [];
+      return [state.profileId, ...(state.status === 'game' && Array.isArray(state.match?.players) ? state.match.players.map(player => player.profileId) : [])];
+    }).map(id => String(id || '').trim()).filter(id => /^[1-9]\d*$/.test(id)))];
     for (let offset = 0; offset < activeProfileIds.length; offset += 8) {
       const batch = activeProfileIds.slice(offset, offset + 8);
       await Promise.all(batch.map(async profileId => {
@@ -129,7 +158,8 @@ export function createRealtimeService(deps) {
           })()
         }
         : state.match;
-      return { ...state, match, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: playerName, team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
+      const ratedMatch = match ? { ...match, players: (match.players || []).map(player => ({ ...player, rating: ratingMap.get(String(player.profileId)) ?? null, ratingMode: 'rm_1v1' })) } : null;
+      return { ...state, match: ratedMatch, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: playerName, team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
     });
     return { source, checkedAt: new Date().toISOString(), states: enrichedStates };
   }
@@ -155,11 +185,22 @@ export function createRealtimeService(deps) {
   function socketMatchPlayerIds(match) {
     return new Set((Array.isArray(match?.players) ? match.players : []).map(player => String(player?.id ?? player?.profileId ?? player?.profile_id ?? '').trim()).filter(id => /^\d+$/.test(id)));
   }
-  function removeRealtimeMatch(matchId) {
+  function removeRealtimeMatch(matchId, finishedAt = null) {
     const id = String(matchId || '');
     if (!id) return false;
     let changed = false;
     for (const group of realtimeSocketGroups.values()) {
+      const match = group.matches.get(id);
+      if (match) {
+        const parsed = typeof finishedAt === 'string' ? Date.parse(finishedAt) : Number(finishedAt) * 1000;
+        const endedAt = parsed > 0 && parsed <= Date.now() ? parsed : Date.now();
+        for (const playerId of socketMatchPlayerIds(match)) {
+          const recent = recentGames.get(String(playerId));
+          if (!recent || String(recent.state.match?.id) === id) {
+            recentGames.set(String(playerId), { state: normalizeRealtimeLatestMatch({ ...match, live: false, finished: Math.floor(endedAt / 1000) }, playerId), endedAt: recent?.endedAt ?? endedAt });
+          }
+        }
+      }
       if (group.matches.delete(id)) changed = true;
     }
     if (changed) scheduleRealtimeSocketPublish();
@@ -269,7 +310,7 @@ export function createRealtimeService(deps) {
     const started = typeof match.started === 'string' ? Math.floor(Date.parse(match.started) / 1000) : Number(match.started || 0);
     const finished = typeof match.finished === 'string' ? Math.floor(Date.parse(match.finished) / 1000) : Number(match.finished || 0);
     const rawPlayers = Array.isArray(match.players) ? match.players : Array.isArray(match.teams) ? match.teams.flatMap(team => Array.isArray(team?.players) ? team.players : []) : [];
-    return { ...match, id: match.id ?? match.matchId ?? null, started: Number.isFinite(started) ? started : 0, finished: Number.isFinite(finished) ? finished : 0, rms: match.rms || match.map || match.mapName || '', leaderboard: match.leaderboard || match.leaderboardId || '', players: rawPlayers.map(player => ({ ...player, id: player.id ?? player.profileId ?? null, civilization: player.civilization || player.civ || '', civilization_id: player.civilization_id || player.civ || '', country: player.country || '' })) };
+    return { ...match, id: match.id ?? match.matchId ?? null, started: Number.isFinite(started) ? started : 0, finished: Number.isFinite(finished) ? finished : 0, rms: [match.mapName, match.rms, match.map].find(value => value && !/^(unknown|未知地图)$/i.test(String(value).trim())) || '', leaderboard: match.leaderboard || match.leaderboardId || '', players: rawPlayers.map(player => ({ ...player, id: player.id ?? player.profileId ?? null, civilization: player.civilization || player.civ || '', civilization_id: player.civilization_id || player.civ || '', country: player.country || '' })) };
   }
   function socketStates() {
     const matchByProfile = new Map();
@@ -290,6 +331,16 @@ export function createRealtimeService(deps) {
       realtimePayloadCache = { key, payload };
       await writeFile(realtimePayloadPath, JSON.stringify({ key, payload }), 'utf8');
       realtimeLastPublishAt = payload.checkedAt;
+      // Use normalized, enriched matches for every ingestion path (socket,
+      // reconciliation and warm restore). The notifier persists match deduplication.
+      const notifiedMatches = new Set();
+      for (const state of payload.states || []) {
+        if (state?.status !== 'game' || !state.match) continue;
+        const id = String(state.match.id ?? state.match.matchId ?? '');
+        if (!id || notifiedMatches.has(id)) continue;
+        notifiedMatches.add(id);
+        Promise.resolve(onMatchAdded(state.match)).catch(error => console.warn('[danmaku] normalized match hook failed:', error.message));
+      }
       console.log(`[realtime] websocket cache refreshed: ${payload.states.length} states`);
     } catch (error) { console.warn('[realtime] websocket cache publish failed:', error.message); }
   }
@@ -321,12 +372,10 @@ export function createRealtimeService(deps) {
           const finished = data.finished != null && data.finished !== 0 && data.finished !== '';
           const abandoned = data.abandoned === true;
           if (finished || abandoned) {
-            if (removeRealtimeMatch(id)) changed = true;
+            if (removeRealtimeMatch(id, data.finished)) changed = true;
           }
           else if (!type || type === 'matchAdded' || type === 'matchUpdated' || type === 'matchStarted') {
-            const isNewMatch = ![...realtimeSocketGroups.values()].some(item => item.matches.has(id));
             if (upsertRealtimeMatch(group, data)) changed = true;
-            if (isNewMatch) Promise.resolve(onMatchAdded(data)).catch(error => console.warn('[danmaku] matchAdded hook failed:', error.message));
           }
         }
         if (changed) scheduleRealtimeSocketPublish();
@@ -374,6 +423,9 @@ export function createRealtimeService(deps) {
       } catch {}
     }
     for (const state of Array.isArray(cachedPayload?.states) ? cachedPayload.states : []) {
+      if (state.graceUntil > Date.now() && state.match) {
+        recentGames.set(String(state.profileId), { state, endedAt: state.graceUntil - gracePeriod });
+      }
       if (state?.status !== 'game' || !state.match) continue;
       const group = [...realtimeSocketGroups.values()].find(item => item.ids.includes(String(state.profileId)));
       if (!group) continue;

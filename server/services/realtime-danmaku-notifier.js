@@ -8,6 +8,7 @@ function normalizeKey(value) {
 
 const mapNamesZh = new Map(Object.entries({
   arabia: '阿拉伯半岛',
+  arabiandesert: '阿拉伯沙漠',
   arena: '竞技场',
   blackforest: '黑森林',
   fourlakes: '四片湖泊',
@@ -108,7 +109,7 @@ export function createRealtimeDanmakuNotifier(deps) {
 
   async function processMatch(match) {
     const id = matchId(match);
-    if (!id || String(match?.leaderboardId || match?.leaderboard || '').toLowerCase() !== 'rm_1v1') return;
+    if (!id) return;
     if (match?.finished || match?.abandoned || !Array.isArray(match?.players) || match.players.length !== 2) return;
     const profileIds = new Set(match.players.map(player => String(player?.profileId ?? player?.id ?? '')));
     const matchedWatchers = watchers.filter(watcher => profileIds.has(String(watcher.profileId)));

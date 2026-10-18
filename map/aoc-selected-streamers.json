@@ -1,5 +1,5 @@
 {
-  "playerCount": 72,
+  "playerCount": 74,
   "players": [
     {
       "name": "Yo",
@@ -196,7 +196,7 @@
     {
       "name": "CNZS_骑士老爷",
       "rl": [
-        "24073031"
+        "1477179"
       ],
       "live_links": {
         "bilibili": [
@@ -1186,6 +1186,16 @@
         ]
       },
       "isCN": false
+    },
+    {
+      "name": "白衣采桑",
+      "rl": [],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/14434330"
+        ]
+      },
+      "isCN": true
     }
   ]
 }

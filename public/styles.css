@@ -1463,3 +1463,38 @@ html[data-resolved-theme="light"] .replay-analysis-page{--replay-chat-color-0:#3
 
 .page-realtime .realtime-status-activity.is-wrapped{display:inline-grid;grid-template-columns:minmax(0,1fr);justify-content:start}
 .page-realtime .realtime-status-activity.is-wrapped .realtime-status-match-meta{justify-self:center;margin-inline:0}
+
+/* Shift only the realtime team column without changing table layout. */
+.page-realtime .realtime-status-table th:nth-child(3),.page-realtime .realtime-status-table td:nth-child(3){text-indent:12px}
+
+.page-realtime .realtime-status-player{display:flex;min-width:0;max-width:100%}
+.page-realtime .realtime-status-player>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-realtime .realtime-status-player>:not(:last-child){flex-shrink:0}
+
+.page-realtime .realtime-status-player{font-size:12px}
+
+/* Use the spare cell padding for the nickname without resizing any column. */
+.page-realtime .realtime-status-table td:nth-child(2){overflow:visible}
+.page-realtime .realtime-status-player{width:calc(100% + 20px);max-width:none}
+
+/* Give status more width by moving the tournament boundary to the right. */
+.page-realtime .realtime-status-table th:nth-child(4){width:26%}
+.page-realtime .realtime-status-table th:nth-child(5){width:23%}
+.page-realtime .realtime-status-table td:nth-child(5){font-size:12px}
+
+/* Shift team/status content without moving cell backgrounds or other columns. */
+.page-realtime .realtime-status-table th:nth-child(3),.page-realtime .realtime-status-table td:nth-child(3){text-indent:20px}
+.page-realtime .realtime-status-table th:nth-child(4){text-indent:8px}
+.page-realtime .realtime-status-activity{left:2px;max-width:calc(100% - 8px)}
+
+/* Recover status-cell padding while leaving the table columns in place. */
+.page-realtime .realtime-status-table td:nth-child(4){padding-right:0}
+.page-realtime .realtime-status-activity{max-width:100%}
+
+.replay-team-heading .replay-result-unknown,.replay-timeline-team .replay-result-unknown{color:var(--muted)}
+
+.feedback-sponsor-toggle{min-height:50px;padding:14px 30px;border:1px solid #ffd77a;border-radius:10px;background:linear-gradient(135deg,#ffe296,#f5b942);color:#392400;font:800 17px var(--sans);letter-spacing:.04em;box-shadow:0 4px 16px rgba(245,185,66,.3);cursor:pointer;transition:filter .18s,box-shadow .18s,transform .18s}
+.feedback-sponsor-toggle:hover{filter:brightness(1.08);box-shadow:0 6px 22px rgba(245,185,66,.45);transform:translateY(-1px)}
+.feedback-sponsor-toggle:focus-visible{outline:2px solid var(--green);outline-offset:4px}
+.feedback-sponsor-qr{display:grid;justify-items:center;max-width:100%;margin-top:20px}
+#feedbackSponsorQr[hidden]{display:none}

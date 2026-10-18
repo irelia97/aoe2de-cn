@@ -79,9 +79,15 @@ if (parentPort) {
     const bytes = extractReplay(workerData.bytes);
     if (bytes.length > maxReplaySize) throw new Error('录像文件过大');
     const summary = glue.parse_rec_summary(bytes);
+    const summaryData = plain(summary);
+    const outcomes = new Map((workerData.metadata.matchInfo?.results || []).map(player => [String(player.profileId), player.won]));
+    for (const team of summaryData.teams) {
+      const values = team.players.map(player => outcomes.get(String(player.profile_id)));
+      team.winner = values.some(value => value === true) ? true : values.length && values.every(value => value === false) ? false : null;
+    }
     const result = {
       ...workerData.metadata,
-      summary: plain(summary),
+      summary: summaryData,
       full: compactReplay(glue.parse_rec(bytes)),
       file: { name: `AgeIIDE_Replay_${workerData.metadata.matchId}.aoe2record`, size: bytes.length },
     };

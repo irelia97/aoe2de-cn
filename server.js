@@ -1561,6 +1561,13 @@ function parseInsightsCard(html, title) {
   return match ? match[1].replace(/&nbsp;/g, ' ').trim() : null;
 }
 
+function parseInsightsCurrentPlayerCount(html) {
+  // Global summary cards can include historical players even with alltime=False.
+  const activeTile = html.match(/<a\b[^>]*class="filter-tile active"[^>]*>[\s\S]*?<span class="filter-tile-count">\s*([\d,]+)\s*<\/span>/i);
+  if (!activeTile) throw new Error('AoE2Insights 当前榜单人数缺失');
+  return Number(activeTile[1].replace(/,/g, ''));
+}
+
 async function fetchInsightsSummaryPage(leaderboardId, country = '') {
   const url = new URL(`https://www.aoe2insights.com/leaderboard/${leaderboardId}/`);
   url.searchParams.set('alltime', 'False');
@@ -1592,7 +1599,7 @@ async function fetchAoE2InsightsSummary(leaderboardId, country) {
       ? Number(String(parseInsightsCard(globalHtml, 'Average Elo') || '').replace(/,/g, '')) || null
       : (fallbackRatings.length ? fallbackRatings.reduce((sum, value) => sum + value, 0) / fallbackRatings.length : null);
     const totalPlayers = globalHtml
-      ? Number(String(parseInsightsCard(globalHtml, 'Players') || '').replace(/,/g, '')) || 0
+      ? parseInsightsCurrentPlayerCount(globalHtml)
       : Number(fallbackBoard?.total || fallbackRatings.length);
     if (!country || country === 'all') return { averageRating, countryPlayers: totalPlayers, totalPlayers, top100Country: Math.min(100, totalPlayers) };
     const codes = country === 'CN' ? ['cn', 'mo'] : [country.toLowerCase()];
