@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { ProxyAgent, WebSocket, setGlobalDispatcher } from 'undici';
 import { chromium } from 'playwright';
+import { createBilibiliRequestGate } from './server/services/bilibili-request-gate.js';
 import { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects } from 'hyparquet';
 import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
@@ -133,8 +134,8 @@ let profileRefreshTimer = null;
 const profileRefreshState = { refreshing: false, stage: '等待启动', downloadedBytes: 0, totalBytes: 0, processedRows: 0, startedAt: null, error: null };
 const mediaVideoActiveRefreshMin = 30 * 60_000;
 const mediaVideoActiveRefreshMax = 60 * 60_000;
-const mediaVideoRequestGapMin = 5 * 60_000;
-const mediaVideoRequestGapMax = 10 * 60_000;
+const mediaVideoRequestGapMin = 2 * 60_000;
+const mediaVideoRequestGapMax = 3 * 60_000;
 const mediaVideoCycleDelayMin = 2.5 * 60 * 60_000;
 const mediaVideoCycleDelayMax = 3.5 * 60 * 60_000;
 function randomMediaCycleDelay() {
@@ -152,9 +153,6 @@ const bilibiliCookie = process.env.BILIBILI_COOKIE || process.env.BILI_COOKIE ||
   try { return readFileSync(bilibiliCookiePath, 'utf8').trim(); } catch { return ''; }
 })();
 console.log(`[media] bilibili browser cookie loaded: ${bilibiliCookie.length > 0 ? 'yes' : 'no'} (${bilibiliCookie.length} chars)`);
-let bilibiliWbiKeys = null;
-let bilibiliWbiKeyDay = 0;
-let bilibiliWbiKeyPromise = null;
 let bilibiliBrowserPromise = null;
 const bilibiliUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36';
 const mediaVideoCachePath = join(dataDir, 'media-videos.json');
@@ -166,7 +164,6 @@ const bilibiliUpdatesCachePath = join(dataDir, 'bilibili-updates.json');
 const bilibiliUpdatesReadlistUrl = 'https://www.bilibili.com/read/readlist/rl153587';
 const bilibiliUpdatesListApi = 'https://api.bilibili.com/x/article/list/web/articles?id=153587&web_location=333.1400';
 const bilibiliUpdatesRefreshInterval = 12 * 60 * 60_000;
-const bilibiliVideoTagsCache = new Map();
 let bilibiliUpdatesCache = null;
 let bilibiliUpdatesRefreshPromise = null;
 let bilibiliUpdatesRefreshTimer = null;
@@ -206,10 +203,11 @@ let mediaVideoSchedulerTimer = null;
 let mediaVideoStateLoaded = false;
 let mediaVideoNextRequestAt = 0;
 let mediaVideoBlockedUntil = 0;
+let bilibiliApiBlockedUntil = 0;
 let mediaVideoRateLimitStrikes = 0;
 const mediaVideoSourceStates = new Map();
 const mediaVideoCycleSeen = new Set();
-let mediaVideoCycleStartIndex = 0;
+let mediaVideoCycleOrder = [];
 let mediaLiveRefreshPromise = null;
 let mediaPersistentVideosLoaded = false;
 let mediaPersistentLiveLoaded = false;
@@ -276,6 +274,20 @@ function mediaXmlTag(block, tag) {
   return match ? mediaText(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')) : '';
 }
 
+const bilibiliRequestGate = createBilibiliRequestGate({
+  getBlockedUntil: host => host === 'api.bilibili.com' ? bilibiliApiBlockedUntil : 0,
+  onRisk: async ({host, blockedUntil}) => {
+    if (host !== 'api.bilibili.com') return;
+    await loadPersistentMediaVideoState();
+    bilibiliApiBlockedUntil = Math.max(bilibiliApiBlockedUntil, blockedUntil);
+    await savePersistentMediaVideoState();
+  }
+});
+async function fetchBilibiliRequest(url, options = {}) {
+  await loadPersistentMediaVideoState();
+  return bilibiliRequestGate.request(url, options);
+}
+
 function bilibiliHeaders(extra = {}) {
   return {
     accept: 'application/json, text/plain, */*',
@@ -291,55 +303,10 @@ function bilibiliHeaders(extra = {}) {
   };
 }
 
-function hasBilibiliSoftRisk(value, depth = 0) {
-  if (depth > 7 || value == null) return false;
-  if (typeof value === 'string') return value.includes('v_voucher');
-  if (Array.isArray(value)) return value.some(item => hasBilibiliSoftRisk(item, depth + 1));
-  if (typeof value !== 'object') return false;
-  return Object.entries(value).some(([key, item]) => key.includes('v_voucher') || hasBilibiliSoftRisk(item, depth + 1));
-}
-
-const wbiMixinKeyTable = [
-  46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-  27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-  37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-  22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
-];
-
-async function loadBilibiliWbiKeys() {
-  const today = Math.floor(Date.now() / 86_400_000);
-  if (bilibiliWbiKeys && bilibiliWbiKeyDay === today) return bilibiliWbiKeys;
-  if (bilibiliWbiKeyPromise) return bilibiliWbiKeyPromise;
-  bilibiliWbiKeyPromise = (async () => {
-    const response = await fetch('https://api.bilibili.com/x/web-interface/nav', { headers: bilibiliHeaders(), signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new Error(`B站 WBI 导航接口返回 HTTP ${response.status}`);
-    const payload = await response.json();
-    const imgUrl = payload?.data?.wbi_img?.img_url || '';
-    const subUrl = payload?.data?.wbi_img?.sub_url || '';
-    const imgKey = imgUrl.split('/').pop()?.split('.')[0] || '';
-    const subKey = subUrl.split('/').pop()?.split('.')[0] || '';
-    if (!imgKey || !subKey) throw new Error('B站 WBI 密钥为空');
-    bilibiliWbiKeys = { imgKey, subKey, mixinKey: wbiMixinKeyTable.map(index => `${imgKey}${subKey}`[index] || '').join('').slice(0, 32) };
-    bilibiliWbiKeyDay = today;
-    return bilibiliWbiKeys;
-  })().finally(() => { bilibiliWbiKeyPromise = null; });
-  return bilibiliWbiKeyPromise;
-}
-
-async function bilibiliWbiUrl(baseUrl, params) {
-  const keys = await loadBilibiliWbiKeys();
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) query.set(key, String(value));
-  query.set('wts', String(Math.floor(Date.now() / 1000)));
-  const unsigned = [...query.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`).join('&');
-  query.set('w_rid', createHash('md5').update(unsigned + keys.mixinKey).digest('hex'));
-  const url = new URL(baseUrl);
-  url.search = query.toString();
-  return url;
-}
-
 async function fetchMediaJson(url, options = {}) {
-  const response = await fetch(url, { ...options, headers: bilibiliHeaders(options.headers || {}), signal: options.signal || AbortSignal.timeout(15_000) });
+  const host = new URL(url).hostname;
+  const requester = /(?:^|\.)bilibili\.com$/i.test(host) ? fetchBilibiliRequest : fetch;
+  const response = await requester(url, { ...options, headers: bilibiliHeaders(options.headers || {}), signal: options.signal || AbortSignal.timeout(15_000) });
   if (!response.ok) {
     const error = new Error(`媒体接口返回 HTTP ${response.status}`);
     error.status = response.status;
@@ -353,7 +320,7 @@ async function fetchMediaJson(url, options = {}) {
   }
   const payload = await response.json();
   const hostname = new URL(url).hostname;
-  if (/(?:^|\.)bilibili\.com$/i.test(hostname) && hasBilibiliSoftRisk(payload)) {
+  if (/(?:^|\.)bilibili\.com$/i.test(hostname) && bilibiliRequestGate.softRisk(payload)) {
     const error = new Error('B站返回软风控占位数据，暂不更新缓存');
     error.bilibiliCode = -352;
     error.softRisk = true;
@@ -372,7 +339,8 @@ async function fetchMediaText(url) {
   const headers = /(?:^|\.)bilibili\.com$/i.test(hostname)
     ? bilibiliHeaders({ accept: 'text/html, application/atom+xml, application/xml' })
     : { accept: 'text/html, application/atom+xml, application/xml', 'user-agent': bilibiliUserAgent };
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(20_000) });
+  const requester = /(?:^|\.)bilibili\.com$/i.test(hostname) ? fetchBilibiliRequest : fetch;
+  const response = await requester(url, { headers, signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`媒体页面返回 HTTP ${response.status}`);
   return response.text();
 }
@@ -538,12 +506,12 @@ async function fetchBilibiliArticlePageViaBrowser(id) {
       'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8'
     };
     if (bilibiliCookie) headers.cookie = bilibiliCookie;
-    const response = await fetch(articleUrl, { headers, signal: AbortSignal.timeout(60_000) });
+    const response = await fetchBilibiliRequest(articleUrl, { headers, timeoutMs: 60000 });
     if (response.ok) {
       const html = await response.text();
       if (html.includes('opus-module-content')) return html;
     }
-  } catch {}
+  } catch (error) { if (isBilibiliRateLimit(error)) throw error; }
   // Keep the PowerShell path as a Windows-only fallback for existing installations.
   if (process.platform === 'win32') {
     try {
@@ -573,7 +541,7 @@ async function fetchBilibiliArticlePageViaBrowser(id) {
 }
 
 async function fetchBilibiliArticleApi(id, fallback = {}) {
-  const response = await fetch(`https://api.bilibili.com/x/article/view?id=${encodeURIComponent(id)}`, { headers: bilibiliHeaders(), signal: AbortSignal.timeout(30_000) });
+  const response = await fetchBilibiliRequest(`https://api.bilibili.com/x/article/view?id=${encodeURIComponent(id)}`, { headers: bilibiliHeaders(), signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`文章接口 HTTP ${response.status}`);
   const payload = await response.json();
   if (Number(payload?.code) !== 0 || !payload?.data) throw new Error(`文章接口业务码 ${payload?.code}`);
@@ -608,7 +576,7 @@ async function readBilibiliUpdatesCache() {
 async function refreshBilibiliUpdates() {
   if (bilibiliUpdatesRefreshPromise) return bilibiliUpdatesRefreshPromise;
   bilibiliUpdatesRefreshPromise = (async () => {
-    const response = await fetch(bilibiliUpdatesListApi, { headers: bilibiliHeaders(), signal: AbortSignal.timeout(30_000) });
+    const response = await fetchBilibiliRequest(bilibiliUpdatesListApi, { headers: bilibiliHeaders(), signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new Error(`Bilibili 文集接口 HTTP ${response.status}`);
     const payload = await response.json();
     const list = Array.isArray(payload?.data?.articles) ? payload.data.articles : [];
@@ -628,6 +596,7 @@ async function refreshBilibiliUpdates() {
           const parsed = await fetchBilibiliArticleApi(id, item);
           newArticles[index] = { ...parsed, summary: item.summary || '', words: item.words || 0, publishTime: item.publish_time || 0 };
         } catch (error) {
+          if (isBilibiliRateLimit(error)) throw error;
           console.warn(`[updates] article ${id} failed:`, error.message);
         }
       }
@@ -741,42 +710,24 @@ function mediaVideoItem(source, item) {
   };
 }
 
-async function fetchBilibiliVideo(source) {
-  const payload = await fetchMediaJson(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(source.bvid)}`);
-  const item = payload?.data;
-  if (!item?.bvid) throw new Error('B站视频资料为空');
-  return mediaVideoItem(source, {
-    id: item.bvid,
-    title: item.title,
-    url: `https://www.bilibili.com/video/${item.bvid}`,
-    thumbnail: item.pic,
-    channel: item.owner?.name || '',
-    publishedAt: item.pubdate ? new Date(Number(item.pubdate) * 1000).toISOString() : null
-  });
-}
-
-async function fetchBilibiliVideoTags(bvid) {
-  const key = String(bvid || '').trim();
-  if (!key) return [];
-  if (bilibiliVideoTagsCache.has(key)) return bilibiliVideoTagsCache.get(key);
-  const payload = await fetchMediaJson(`https://api.bilibili.com/x/web-interface/view/detail/tag?bvid=${encodeURIComponent(key)}`);
-  const tags = Array.isArray(payload?.data) ? payload.data : Object.values(payload?.data || {});
-  const names = tags.map(tag => String(tag?.tag_name || tag?.name || '').trim()).filter(Boolean);
-  bilibiliVideoTagsCache.set(key, names);
-  return names;
-}
-
-function bilibiliTagMatchesEmpire2(tags) {
-  return tags.some(tag => {
-    const value = String(tag || '').replace(/\s+/g, '').toUpperCase();
-    return /帝国时代(?:2|２|二|贰|貳|II|Ⅱ)(?![0-9０-９IVXLCDMⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ])/u.test(value);
-  });
-}
-
 async function fetchBilibiliVideos(source) {
-  // A 412/-352/-403 response is an anti-abuse signal, not a transient
-  // network error. Retrying within seconds only reinforces the signal.
-  return fetchBilibiliVideosViaApi(source);
+  const python = process.platform === 'win32' ? join(root, '.venv-danmaku', 'Scripts', 'python.exe') : join(root, '.venv-danmaku', 'bin', 'python');
+  const args = [join(root, 'tools', 'check-bilibili-updates-browser.py'), '--mid', String(source.id), '--limit', '12'];
+  if (!mediaVideoWhitelist.some(name => String(source.name || '').trim() === name)) args.push('--check-tags');
+  const command = process.platform === 'win32' ? python : 'xvfb-run';
+  const commandArgs = process.platform === 'win32' ? args : ['-a', '-s', '-screen 0 1440x1000x24', python, ...args, '--headed'];
+  const {stdout} = await execFileAsync(command, commandArgs, { timeout: 240000, maxBuffer: 2 * 1024 * 1024, env: {...process.env, PLAYWRIGHT_BROWSERS_PATH: join(dataDir, 'ms-playwright')} });
+  const result = JSON.parse(stdout);
+  if (result.status !== 'ok') {
+    const error = new Error('B站动态页检查：' + result.status + '，UP=' + source.id + '，响应=' + JSON.stringify(result.diagnostic || {}));
+    if (['verification_required', 'inconsistent_empty'].includes(result.status)) error.riskResponse = true;
+    throw error;
+  }
+  console.log('[media] browser dynamics checked: ' + (source.name || source.id) + '; BV count=' + result.videos.length);
+  return result.videos.map(video => {
+    const cached = mediaCache.data.videos.find(item => String(item.id) === video.bvid);
+    return { ...mediaVideoItem(source, { id: video.bvid, title: video.title, url: video.url, thumbnail: video.thumbnail || cached?.thumbnail || '', publishedAt: video.publishedAt || cached?.publishedAt || null }), browserTagMatches: video.tagMatches === true || Boolean(cached) };
+  });
 }
 
 function bilibiliChromePath() {
@@ -800,56 +751,6 @@ async function getBilibiliBrowser() {
   return bilibiliBrowserPromise;
 }
 
-async function fetchBilibiliVideosInBrowser(source) {
-  const browser = await getBilibiliBrowser();
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-    extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' }
-  });
-  if (bilibiliCookie) {
-    await context.addCookies(bilibiliCookie.split(';').map(pair => {
-      const separator = pair.indexOf('=');
-      return separator > 0 ? { name: pair.slice(0, separator).trim(), value: pair.slice(separator + 1).trim(), domain: '.bilibili.com', path: '/', secure: true } : null;
-    }).filter(Boolean));
-  }
-  const page = await context.newPage();
-  try {
-    const responsePromise = page.waitForResponse(response => response.url().includes('/x/space/wbi/arc/search'), { timeout: 30_000 });
-    await page.goto(`https://space.bilibili.com/${encodeURIComponent(source.id)}/video`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const response = await responsePromise;
-    const payload = await response.json();
-    if (Number(payload?.code) !== 0) {
-      const error = new Error(`B站浏览器接口返回业务码 ${payload?.code}${payload?.message ? `：${payload.message}` : ''}`);
-      error.bilibiliCode = Number(payload?.code);
-      throw error;
-    }
-    const list = payload?.data?.list?.vlist || [];
-    console.log(`[media] browser video source checked: ${source.name || source.id}; items ${list.length}`);
-    return list.map(item => mediaVideoItem(source, {
-      id: item.bvid || item.aid,
-      title: item.title,
-      url: item.bvid ? `https://www.bilibili.com/video/${item.bvid}` : `https://space.bilibili.com/${source.id}`,
-      thumbnail: item.pic,
-      publishedAt: item.created ? new Date(Number(item.created) * 1000).toISOString() : null
-    }));
-  } finally {
-    await context.close().catch(() => {});
-  }
-}
-
-async function fetchBilibiliVideosViaApi(source) {
-  const url = await bilibiliWbiUrl('https://api.bilibili.com/x/space/wbi/arc/search', { mid: source.id, ps: 12, pn: 1, order: 'pubdate' });
-  const payload = await fetchMediaJson(url);
-  const list = payload?.data?.list?.vlist || [];
-  return list.map(item => mediaVideoItem(source, {
-    id: item.bvid || item.aid,
-    title: item.title,
-    url: item.bvid ? `https://www.bilibili.com/video/${item.bvid}` : `https://space.bilibili.com/${source.id}`,
-    thumbnail: item.pic,
-    publishedAt: item.created ? new Date(Number(item.created) * 1000).toISOString() : null
-  }));
-}
-
 async function fetchRssVideos(source) {
   const xml = await fetchMediaText(source.feedUrl);
   const entries = [...xml.matchAll(/<(?:entry|item)\b[\s\S]*?<\/(?:entry|item)>/gi)].map(match => match[0]);
@@ -862,8 +763,7 @@ async function fetchRssVideos(source) {
 
 async function fetchMediaVideoSource(source) {
   let results = [];
-  if (source.platform === 'bilibili' && source.bvid) results = [await fetchBilibiliVideo(source)];
-  else if (source.platform === 'bilibili') results = await fetchBilibiliVideos(source);
+  if (source.platform === 'bilibili') results = await fetchBilibiliVideos(source);
   else if (source.platform === 'youtube') results = await fetchRssVideos({ ...source, feedUrl: source.feedUrl || `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(source.channelId || '')}` });
   else if (source.platform === 'rss' && source.feedUrl) results = await fetchRssVideos(source);
   const filtered = [];
@@ -878,14 +778,7 @@ async function fetchMediaVideoSource(source) {
       }
       const title = String(item.title || '').replace(/\s+/g, '');
       let matches = Boolean(title) && !/帝国(?:时代)?[34]/.test(title) && (title.includes('帝国') || title.includes('帝国时代'));
-      if (!matches && source.platform === 'bilibili' && /^BV[0-9A-Za-z]{10}$/i.test(String(item.id || ''))) {
-        try {
-          const tags = await fetchBilibiliVideoTags(item.id);
-          matches = bilibiliTagMatchesEmpire2(tags);
-        } catch (error) {
-          console.warn(`[media] B站视频标签获取失败: ${item.id}`, error.message);
-        }
-      }
+      if (!matches && item.browserTagMatches === true) matches = true;
       if (matches) filtered.push(item);
   }
   return filtered
@@ -948,8 +841,9 @@ async function loadPersistentMediaVideoState() {
     const saved = JSON.parse(await readFile(mediaVideoStatePath, 'utf8'));
     mediaVideoNextRequestAt = mediaTimestamp(saved.nextRequestAt);
     mediaVideoBlockedUntil = mediaTimestamp(saved.blockedUntil);
+    bilibiliApiBlockedUntil = mediaTimestamp(saved.apiBlockedUntil);
     mediaVideoRateLimitStrikes = Math.max(0, Number(saved.rateLimitStrikes) || 0);
-    mediaVideoCycleStartIndex = Math.max(0, Number(saved.cycleStartIndex) || 0);
+    mediaVideoCycleOrder = [...new Set(Array.isArray(saved.cycleOrder) ? saved.cycleOrder.map(String) : [])];
     for (const key of Array.isArray(saved.cycleSeen) ? saved.cycleSeen : []) mediaVideoCycleSeen.add(String(key));
     for (const [key, value] of Object.entries(saved.sources || {})) {
       mediaVideoSourceStates.set(key, {
@@ -965,7 +859,19 @@ async function loadPersistentMediaVideoState() {
   }
 }
 
+function shuffledMediaVideoKeys(keys, random = Math.random) {
+  const order = [...new Set(keys)];
+  for (let i = order.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
 function ensureMediaVideoSourceStates() {
+  const keys = (mediaSources.videos || []).map(mediaVideoSourceKey);
+  mediaVideoCycleOrder = mediaVideoCycleOrder.filter(key => keys.includes(key));
+  const missing = keys.filter(key => !mediaVideoCycleOrder.includes(key));
+  mediaVideoCycleOrder.push(...shuffledMediaVideoKeys(missing));
   const now = Date.now();
   for (const source of Array.isArray(mediaSources.videos) ? mediaSources.videos : []) {
     const key = mediaVideoSourceKey(source);
@@ -991,8 +897,10 @@ async function savePersistentMediaVideoState() {
     savedAt: new Date().toISOString(),
     nextRequestAt: mediaVideoNextRequestAt ? new Date(mediaVideoNextRequestAt).toISOString() : null,
     blockedUntil: mediaVideoBlockedUntil ? new Date(mediaVideoBlockedUntil).toISOString() : null,
+    apiBlockedUntil: bilibiliApiBlockedUntil ? new Date(bilibiliApiBlockedUntil).toISOString() : null,
+    videoFetchMode: 'browser-dynamic-v1',
     rateLimitStrikes: mediaVideoRateLimitStrikes,
-    cycleStartIndex: mediaVideoCycleStartIndex,
+    cycleOrder: mediaVideoCycleOrder,
     cycleSeen: [...mediaVideoCycleSeen],
     sources
   }, null, 2), 'utf8');
@@ -1006,7 +914,7 @@ function mediaVideoSuccessDelay(idleSuccesses) {
 }
 
 function isBilibiliRateLimit(error) {
-  return Number(error?.status) === 412 || [-412, -352, -403].includes(Number(error?.bilibiliCode));
+  return error?.riskResponse === true || error?.cooldown === true || [403, 412, 429].includes(Number(error?.status)) || [-412, -352, -403].includes(Number(error?.bilibiliCode));
 }
 
 function mediaVideoNextDueAt() {
@@ -1305,11 +1213,7 @@ function refreshMediaVideos() {
       .map(source => ({ source, state: mediaVideoSourceStates.get(mediaVideoSourceKey(source)) }))
       .filter(({ source, state }) => state && !mediaVideoCycleSeen.has(mediaVideoSourceKey(source)) && state.nextCheckAt <= now && (source.platform !== 'bilibili' || now >= mediaVideoBlockedUntil))
       .sort((a, b) => {
-        const aIndex = videoSources.indexOf(a.source);
-        const bIndex = videoSources.indexOf(b.source);
-        const aOrder = (aIndex - mediaVideoCycleStartIndex + videoSources.length) % videoSources.length;
-        const bOrder = (bIndex - mediaVideoCycleStartIndex + videoSources.length) % videoSources.length;
-        return aOrder - bOrder || a.state.nextCheckAt - b.state.nextCheckAt || a.state.lastAttemptAt - b.state.lastAttemptAt;
+        return mediaVideoCycleOrder.indexOf(mediaVideoSourceKey(a.source)) - mediaVideoCycleOrder.indexOf(mediaVideoSourceKey(b.source));
       });
     const candidate = candidates[0];
     if (!candidate) {
@@ -1325,6 +1229,7 @@ function refreshMediaVideos() {
       const videos = await fetchMediaVideoSource(source);
       const cachedIds = new Set(mediaCache.data.videos.map(item => String(item?.id || '')).filter(Boolean));
       const hasNewVideo = videos.some(item => item?.id && !cachedIds.has(String(item.id)));
+      mediaVideoCycleSeen.add(key);
       state.lastSuccessAt = Date.now();
       state.failureCount = 0;
       state.idleSuccesses = hasNewVideo ? 0 : Math.min(4, state.idleSuccesses + 1);
@@ -1353,17 +1258,16 @@ function refreshMediaVideos() {
         const backoff = Math.min(mediaVideoCircuitMaxDelay, randomMediaDelay(baseBackoff * 0.85, baseBackoff * 1.15));
         mediaVideoBlockedUntil = Date.now() + Math.max(backoff, Number(error.retryAfterMs) || 0);
         state.nextCheckAt = mediaVideoBlockedUntil;
-        console.warn(`[media] B站触发风控，暂停视频检测至 ${new Date(mediaVideoBlockedUntil).toISOString()}: ${source.name || key}`);
+        console.warn(`[media] B站触发风控，暂停视频检测至 ${new Date(mediaVideoBlockedUntil).toISOString()}: ${source.name || key}；原因：${error.message}`);
       } else {
-        state.nextCheckAt = Date.now();
+        state.nextCheckAt = Date.now() + 10 * 60_000;
         console.warn(`[media] video source failed: ${source.name || key}`, error.message);
       }
     }
-    mediaVideoCycleSeen.add(key);
     const cycleComplete = videoSources.length > 0 && videoSources.every(videoSource => mediaVideoCycleSeen.has(mediaVideoSourceKey(videoSource)));
     if (cycleComplete) {
       const cycleNextAt = Date.now() + randomMediaCycleDelay();
-      mediaVideoCycleStartIndex = 0;
+      mediaVideoCycleOrder = shuffledMediaVideoKeys((mediaSources.videos || []).map(mediaVideoSourceKey));
       for (const videoSource of videoSources) {
         const videoState = mediaVideoSourceStates.get(mediaVideoSourceKey(videoSource));
         if (videoState) videoState.nextCheckAt = cycleNextAt;
@@ -1433,7 +1337,7 @@ async function startMediaVideoScheduler() {
     mediaVideoNextRequestAt = 0;
     mediaVideoBlockedUntil = 0;
     mediaVideoRateLimitStrikes = 0;
-    mediaVideoCycleStartIndex = 0;
+    mediaVideoCycleOrder = shuffledMediaVideoKeys((mediaSources.videos || []).map(mediaVideoSourceKey));
     mediaVideoCycleSeen.clear();
     for (const source of Array.isArray(mediaSources.videos) ? mediaSources.videos : []) {
       const state = mediaVideoSourceStates.get(mediaVideoSourceKey(source));
@@ -2021,8 +1925,7 @@ const realtimeDanmakuNotifier = createRealtimeDanmakuNotifier({
   playwrightBrowsersPath: join(root, '.cache', 'ms-playwright'),
   watchers: [
     { profileId: '197964', platform: 'douyu', room: '753676' },
-    { profileId: '226575', platform: 'douyu', room: '1029928' },
-    { profileId: '1449222', platform: 'bilibili', room: '22751576' }
+    { profileId: '226575', platform: 'douyu', room: '1029928' }
   ]
 });
 const realtimeService = createRealtimeService({

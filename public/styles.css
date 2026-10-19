@@ -1511,3 +1511,5 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 .profile-subsection-heading.profile-matches-section-heading{justify-content:flex-start;align-items:center;gap:12px}.profile-matches-section-heading .profile-matches-heading{flex:0 0 auto}.profile-matches-section-heading .profile-matches-filter{flex:0 0 auto}
 
 .profile-subsection-heading.profile-matches-section-heading{padding:14px 21px 10px}.profile-matches-section-heading .profile-matches-heading{margin:0;padding:0;line-height:1.4}.profile-matches-section-heading .profile-matches-filter{margin:0}
+
+.profile-account-link svg{display:block;width:18px;height:18px;flex-shrink:0}.profile-identity-links .profile-account-link svg{width:24px;height:24px;padding:2px;box-sizing:border-box}

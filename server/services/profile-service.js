@@ -52,6 +52,21 @@ export function createProfileService(deps) {
       const active = Number(stat.rank) > 0;
       return { id, label: types[id], hasData: true, active, rank: active ? Number(stat.rank) : null, rating: stat.rating ?? null, highestRating: Number(stat.highestrating) > 0 ? stat.highestrating : (stat.rating ?? null), wins: stat.wins ?? null, losses: stat.losses ?? null, streak: stat.streak ?? null, lastMatchDate: stat.lastmatchdate ?? null, rankTotal: stat.ranktotal ?? null };
     });
+    try {
+      const response = await fetchUpstreamWithRateLimit('https://data.aoe2companion.com/api/profiles/' + encodeURIComponent(key), { headers: { accept: 'application/json', 'user-agent': 'https://aoe2cn.cc' }, signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error('Companion 玩家接口 HTTP ' + response.status);
+      const profile = await response.json();
+      const lobby = (Array.isArray(profile.leaderboards) ? profile.leaderboards : []).find(row => row.leaderboardId === 'unranked');
+      if (lobby) {
+        const number = value => value != null && Number.isFinite(Number(value)) ? Number(value) : null;
+        const time = Date.parse(lobby.lastMatchTime);
+        data.push({ id: 0, label: '大厅局', hasData: true, active: Number.isFinite(time) && Date.now() - time <= 30 * 24 * 60 * 60_000, rank: null, rating: null, highestRating: null, wins: number(lobby.wins), losses: number(lobby.losses), games: number(lobby.games), lastMatchDate: Number.isFinite(time) ? Math.floor(time / 1000) : null, source: 'aoe2companion-unranked' });
+      } else data.push({ id: 0, label: '大厅局', hasData: false, active: false, rank: null });
+    } catch (error) {
+      const previous = cached?.data?.find(row => Number(row.id) === 0);
+      if (previous) data.push({ ...previous, stale: true });
+      console.warn('[profile] lobby statistics unavailable:', error.message);
+    }
     personalStatsCache.set(key, { savedAt: Date.now(), data });
     return data;
   }
