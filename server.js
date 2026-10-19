@@ -13,6 +13,7 @@ import { chromium } from 'playwright';
 import { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects } from 'hyparquet';
 import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
+import { createLeaderboardDumpSummary } from './server/services/leaderboard-dump-summary.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
 import { createReplayAnalysisService } from './server/services/replay-analysis-service.js';
 import { recentFeedback } from './server/services/feedback-feed.js';
@@ -29,6 +30,7 @@ if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const dataDir = join(root, '.cache');
+const leaderboardDumpSummary = createLeaderboardDumpSummary({ cacheDir: dataDir, forceCountry: forceChinaCountry });
 const replayAnalysisService = createReplayAnalysisService({ cacheDir: join(dataDir, 'replay-analysis'), assetsDir: join(root, 'public', 'assets', 'aoe2rec') });
 const feedbackLogPath = join(dataDir, 'feedback-submissions.jsonl');
 const siteTrafficPath = join(dataDir, 'site-traffic.json');
@@ -100,9 +102,6 @@ async function fetchUpstreamWithRateLimit(url, options = {}) {
   }
   return response;
 }
-const aoe2InsightsSummaryCache = new Map();
-const aoe2InsightsSummaryRefreshes = new Map();
-const aoe2InsightsSummaryTtl = 60 * 60_000;
 // Refresh cadence is defined per leaderboard. The two most frequently viewed
 // ladders update every three minutes at fixed wall-clock marks; the other ladders are
 // refreshed once every six hours and staggered by one hour to spread upstream
@@ -1478,9 +1477,9 @@ async function getMediaCache() {
 const gameAssetService = createGameAssetService({ join, readFile, writeFile, mkdir, fetch, gameAssetCacheDir, gameAssetRefreshes });
 const { getGameAsset } = gameAssetService;
 
-async function fetchLeaderboardPage(id, page) {
+async function fetchLeaderboardPage(id, page, count = 100) {
   const upstream = new URL(api);
-  upstream.search = new URLSearchParams({ title: 'age2', leaderboard_id: String(id), sortBy: '1', start: String((page - 1) * 100 + 1), count: '100' });
+  upstream.search = new URLSearchParams({ title: 'age2', leaderboard_id: String(id), sortBy: '1', start: String((page - 1) * 100 + 1), count: String(count) });
   const response = await fetchUpstreamWithRateLimit(upstream, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
   if (!response.ok) throw new Error(`上游服务返回 HTTP ${response.status}`);
   const payload = await response.json();
@@ -1488,12 +1487,15 @@ async function fetchLeaderboardPage(id, page) {
   return payload;
 }
 
-async function fetchLeaderboard(id, pageCount = 3, startPage = 1) {
+async function fetchLeaderboard(id, pageCount = Math.ceil(maxLeaderboardRows / 100), startPage = 1) {
   if (id === 15) return fetchTournamentEloLeaderboard(pageCount, startPage);
   const pages = [];
-  for (let page = startPage; page < startPage + pageCount; page += 1) {
+  const endPage = startPage + pageCount;
+  for (let page = startPage; page < endPage; page += 2) {
     if (pages.length) await new Promise(resolve => setTimeout(resolve, 250));
-    pages.push(await fetchLeaderboardPage(id, page));
+    const count = Math.min(200, (endPage - page) * 100);
+    pages.push(await fetchLeaderboardPage(id, page, count));
+    if ((page - 1) * 100 + count >= Number(pages[0]?.rankTotal || 0)) break;
   }
   const rows = leaderboardRowsFromPayloads(pages).map(row => isForcedChinaProfile(row.profileId) ? { ...row, country: 'cn' } : row);
   const total = Math.min(maxLeaderboardRows, Number(pages[0]?.rankTotal || 0) || rows.length);
@@ -1503,7 +1505,7 @@ async function fetchLeaderboard(id, pageCount = 3, startPage = 1) {
     total,
     pageSize: 100,
     pageCount: Math.min(Math.ceil(maxLeaderboardRows / 100), Math.max(1, Math.ceil(total / 100))),
-    loadedPages: Array.from({ length: pageCount }, (_, index) => startPage + index),
+    loadedPages: Array.from({ length: Math.min(pageCount, Math.ceil(rows.length / 100)) }, (_, index) => startPage + index),
     updatedAt: new Date().toISOString(),
     rows: rows.slice(0, Math.min(pageCount * 100, total, maxLeaderboardRows))
   };
@@ -1555,67 +1557,12 @@ async function fetchTournamentEloLeaderboard(pageCount = 3, startPage = 1) {
   };
 }
 
-function parseInsightsCard(html, title) {
-  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = html.match(new RegExp(`<span class="card-title">\\s*${escaped}\\s*</span>\\s*<span class="card-value">\\s*([^<]+?)\\s*</span>`, 'i'));
-  return match ? match[1].replace(/&nbsp;/g, ' ').trim() : null;
-}
-
-function parseInsightsCurrentPlayerCount(html) {
-  // Global summary cards can include historical players even with alltime=False.
-  const activeTile = html.match(/<a\b[^>]*class="filter-tile active"[^>]*>[\s\S]*?<span class="filter-tile-count">\s*([\d,]+)\s*<\/span>/i);
-  if (!activeTile) throw new Error('AoE2Insights 当前榜单人数缺失');
-  return Number(activeTile[1].replace(/,/g, ''));
-}
-
-async function fetchInsightsSummaryPage(leaderboardId, country = '') {
-  const url = new URL(`https://www.aoe2insights.com/leaderboard/${leaderboardId}/`);
-  url.searchParams.set('alltime', 'False');
-  if (country) url.searchParams.set('country', country.toLowerCase());
-  else url.searchParams.set('page', '1');
-  const response = await fetch(url, { headers: { accept: 'text/html', 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(20_000) });
-  if (!response.ok) throw new Error(`AoE2Insights 请求失败（HTTP ${response.status}）`);
-  return response.text();
-}
-
-async function fetchAoE2InsightsSummary(leaderboardId, country) {
-  const key = `${leaderboardId}:${country || 'all'}`;
-  const cached = aoe2InsightsSummaryCache.get(key);
-  if (cached && Date.now() - cached.savedAt < aoe2InsightsSummaryTtl) return cached.data;
-  if (aoe2InsightsSummaryRefreshes.has(key)) return aoe2InsightsSummaryRefreshes.get(key);
-  if (leaderboardId === 15) {
-    const board = await getLeaderboard(15);
-    const ratings = (board.rows || []).map(row => Number(row.rating)).filter(Number.isFinite);
-    const data = { averageRating: ratings.length ? ratings.reduce((sum, value) => sum + value, 0) / ratings.length : null, countryPlayers: country && country !== 'all' ? 0 : board.total, totalPlayers: board.total, top100Country: country && country !== 'all' ? 0 : Math.min(100, board.total) };
-    aoe2InsightsSummaryCache.set(key, { savedAt: Date.now(), data });
-    return data;
-  }
-  const refresh = (async () => {
-    let globalHtml = null;
-    let fallbackBoard = null;
-    try { globalHtml = await fetchInsightsSummaryPage(leaderboardId); } catch { fallbackBoard = await getLeaderboard(leaderboardId); }
-    const fallbackRatings = fallbackBoard?.rows?.map(row => Number(row.rating)).filter(Number.isFinite) || [];
-    const averageRating = globalHtml
-      ? Number(String(parseInsightsCard(globalHtml, 'Average Elo') || '').replace(/,/g, '')) || null
-      : (fallbackRatings.length ? fallbackRatings.reduce((sum, value) => sum + value, 0) / fallbackRatings.length : null);
-    const totalPlayers = globalHtml
-      ? parseInsightsCurrentPlayerCount(globalHtml)
-      : Number(fallbackBoard?.total || fallbackRatings.length);
-    if (!country || country === 'all') return { averageRating, countryPlayers: totalPlayers, totalPlayers, top100Country: Math.min(100, totalPlayers) };
-    const codes = country === 'CN' ? ['cn', 'mo'] : [country.toLowerCase()];
-    const pages = await Promise.all(codes.map(code => fetchInsightsSummaryPage(leaderboardId, code)));
-    const countryStats = pages.map(html => ({
-      players: Number(String(parseInsightsCard(html, 'Players') || '').replace(/,/g, '')) || 0,
-      average: Number(String(parseInsightsCard(html, 'Average Elo') || '').replace(/,/g, '')) || 0,
-      top100: Number(String(parseInsightsCard(html, 'Players in Top 100') || '').replace(/,/g, '')) || 0
-    }));
-    const countryPlayers = countryStats.reduce((sum, stat) => sum + stat.players, 0);
-    const top100Country = countryStats.reduce((sum, stat) => sum + stat.top100, 0);
-    const weightedPlayers = countryStats.reduce((sum, stat) => sum + stat.average * stat.players, 0);
-    return { averageRating: countryPlayers ? weightedPlayers / countryPlayers : null, countryPlayers, totalPlayers, top100Country };
-  })().then(data => { aoe2InsightsSummaryCache.set(key, { savedAt: Date.now(), data }); return data; }).finally(() => aoe2InsightsSummaryRefreshes.delete(key));
-  aoe2InsightsSummaryRefreshes.set(key, refresh);
-  return refresh;
+async function fetchLeaderboardSummary(leaderboardId, country) {
+  if (leaderboardId !== 15) return leaderboardDumpSummary.get(leaderboardId, country);
+  const board = await getLeaderboard(15);
+  const rows = (board.rows || []).filter(row => !country || country === 'all' || (country === 'CN' ? ['cn', 'mo'].includes(String(row.country).toLowerCase()) : String(row.country).toLowerCase() === country.toLowerCase()));
+  const ratings = rows.map(row => Number(row.rating)).filter(Number.isFinite);
+  return { averageRating: ratings.length ? ratings.reduce((a,b)=>a+b,0)/ratings.length : null, countryPlayers: rows.length, totalPlayers: board.total, top100Country: rows.filter(row=>Number(row.rank)>0&&Number(row.rank)<=100).length };
 }
 
 function settleCacheWaiters(id, error) {
@@ -1626,7 +1573,7 @@ function settleCacheWaiters(id, error) {
 
 function refreshLeaderboard(id) {
   if (leaderboardRefreshes.has(id)) return leaderboardRefreshes.get(id);
-  const refresh = fetchLeaderboard(id, 3, 1).then(data => {
+  const refresh = fetchLeaderboard(id, Math.ceil(maxLeaderboardRows / 100), 1).then(data => {
     const expiresAt = nextLeaderboardRefreshAt(id);
     leaderboardCache.set(id, { data, expiresAt });
     settleCacheWaiters(id);
@@ -3291,7 +3238,7 @@ http.createServer(async (req, res) => {
       const requestedCountry = String(url.searchParams.get('country') || 'all');
       const country = requestedCountry.toLowerCase() === 'all' ? 'all' : requestedCountry.toUpperCase();
       if (!types[leaderboardId]) throw new Error('榜单类型无效');
-      const summary = await fetchAoE2InsightsSummary(leaderboardId, country);
+      const summary = await fetchLeaderboardSummary(leaderboardId, country);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify(summary));
     } catch (error) {
@@ -3453,6 +3400,7 @@ http.createServer(async (req, res) => {
   startLiquipediaMatchesLifecycle().catch(error => console.warn('[events] lifecycle startup failed:', error.message));
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
   startBilibiliUpdatesLifecycle().catch(error => console.warn('[updates] lifecycle startup failed:', error.message));
+  leaderboardDumpSummary.start();
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
   ensureSiteTrafficState().then(() => scheduleSiteDailyArchive()).catch(error => console.warn('[stats] daily archive startup failed:', error.message));
   let lastRealtimeApiFallbackAt = Date.now();

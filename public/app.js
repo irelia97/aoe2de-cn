@@ -32,7 +32,7 @@ const leaderboardPageRequests = new Map();
 const leaderboardRetryAt = new Map();
 const leaderboardSummaryCache = new Map();
 const leaderboardSummaryRequests = new Map();
-const leaderboardLocalCachePrefix = 'aoe2de:leaderboard-cache:v2:';
+const leaderboardLocalCachePrefix = 'aoe2de:leaderboard-cache:v3:';
 function readLeaderboardLocalCache(id) {
   try {
     const cached = JSON.parse(localStorage.getItem(`${leaderboardLocalCachePrefix}${id}`) || 'null');
@@ -297,7 +297,10 @@ function setError(message) {
   document.querySelector('#retryBtn')?.addEventListener('click', loadLeaderboard);
 }
 function renderLeaderboardSummary(summary) {
-  document.querySelector('#statAverage').textContent = summary && Number.isFinite(Number(summary.averageRating)) ? fmt.format(Number(summary.averageRating)) : '-';
+  const summaryTime = summary?.dataUpdatedAt || summary?.updatedAt;
+  const summaryTitle = summary?.source === 'aoe2companion-leaderboard-parquet' ? '每日榜单统计' + (summaryTime ? ' · 数据时间：' + new Date(summaryTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + '（北京时间）' : '') : '';
+  for (const id of ['statAverage', 'statPlayers', 'statTop100']) document.querySelector('#' + id).title = summaryTitle;
+  document.querySelector('#statAverage').textContent = summary && summary.averageRating != null && Number.isFinite(Number(summary.averageRating)) ? Number(summary.averageRating).toLocaleString('zh-CN', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '-';
   document.querySelector('#statPlayers').textContent = summary ? `${fmt.format(Number(summary.countryPlayers || 0))}/${fmt.format(Number(summary.totalPlayers || 0))}` : '-';
   document.querySelector('#statTop100').textContent = summary ? fmt.format(Number(summary.top100Country || 0)) : '-';
 }
@@ -1047,6 +1050,17 @@ function loadProfileLeaderboards(profileId) {
     .then(data => { if (data?.leaderboards) renderProfileLeaderboards(data.leaderboards); })
     .catch(() => {});
 }
+function profileMatchCategory(match) {
+  const type = profileMatchLeaderboard(match);
+  if (type === 'RM 1v1') return 'rm_1v1';
+  if (type === 'RM TG') return 'rm_team';
+  if (!type || type.toLowerCase() === 'unranked') return 'lobby';
+  return 'other';
+}
+function filterProfileMatches(matches) {
+  const filter = document.querySelector('#profileMatchesFilter')?.value || 'all';
+  return filter === 'all' ? matches : matches.filter(match => profileMatchCategory(match) === filter);
+}
 function renderProfileMatches(profile, matchesOverride = null, visibleCount = 100) {
   const body = document.querySelector('#profileMatchesBody');
   if (!body) return;
@@ -1067,7 +1081,8 @@ function renderProfileMatches(profile, matchesOverride = null, visibleCount = 10
   const liveMatch = matches.length && isLiveMatch(matches[0]) ? matches[0] : null;
   const historyMatches = matches.filter(match => match !== liveMatch);
   const ratingDeltas = profileMatchRatingDeltas(matches);
-  const visibleMatches = (liveMatch ? [liveMatch] : []).concat(historyMatches.slice(0, visibleCount));
+  const visibleMatches = filterProfileMatches((liveMatch ? [liveMatch] : []).concat(historyMatches)).slice(0, visibleCount);
+  if (!visibleMatches.length) { body.innerHTML = '<div class="profile-matches-empty">最近对局中暂无符合筛选的记录</div>'; return; }
   body.innerHTML = visibleMatches.map(match => {
     const live = match === liveMatch;
     const players = Array.isArray(match.players) ? match.players : [];
@@ -1208,8 +1223,9 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
       for (const opponent of (Array.isArray(match.players) ? match.players : []).filter(player => !selfMembers.has(String(player.number)))) {
         const name = String(opponent.name || '').trim();
         if (name) {
-          const prior = entry.opponents.get(name) || { id: String(opponent.id || ''), total: 0, wins: 0, losses: 0 };
+          const prior = entry.opponents.get(name) || { id: String(opponent.id || ''), total: 0, wins: 0, losses: 0, latest: 0 };
           prior.total += 1;
+          prior.latest = Math.max(prior.latest, Number(match.started || match.finished || 0));
           if (selfWon) prior.wins += 1;
           if (selfLost) prior.losses += 1;
           entry.opponents.set(name, prior);
@@ -1222,7 +1238,7 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
     const mostFrequent = values => [...values.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))[0] || ['', 0];
     const civilization = mostFrequent(entry.civilizations);
     const map = mostFrequent(entry.maps);
-    const opponent = [...entry.opponents.entries()].sort((a, b) => b[1].losses - a[1].losses || b[1].total - a[1].total || a[0].localeCompare(b[0], 'zh-CN'))[0] || ['', { total: 0, wins: 0, losses: 0 }];
+    const opponent = [...entry.opponents.entries()].sort((a, b) => a[1].wins * b[1].total - b[1].wins * a[1].total || b[1].latest - a[1].latest || a[0].localeCompare(b[0], 'zh-CN'))[0] || ['', { total: 0, wins: 0, losses: 0 }];
     stats.set(id, { civilization: civilization[0], civilizationCount: civilization[1], civilizationIcon: entry.civilizationIcons.get(civilization[0]) || '', map: map[0], mapCount: map[1], opponent: opponent[0], opponentId: opponent[1].id || '', opponentWins: opponent[1].wins, opponentTotal: opponent[1].total });
   }
   return stats;
@@ -1254,11 +1270,13 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     if (!isCurrent()) return;
     renderProfileMatches(profile, matches, visibleCount);
     if (more) {
-      more.hidden = visibleCount >= matches.length && !hasMore;
+      more.hidden = visibleCount >= filterProfileMatches(matches).length && !hasMore;
       more.disabled = loading;
       more.textContent = loading ? '加载中…' : '显示更多';
     }
   };
+  const matchFilter = document.querySelector('#profileMatchesFilter');
+  if (matchFilter) matchFilter.onchange = () => { visibleCount = 20; render(); };
   const fetchPage = async (offset, limit = 100, progressive = false) => {
     const suffix = progressive ? '&progressive=1' : '';
     const response = await fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}&offset=${offset}&limit=${limit}${suffix}`, { cache: 'no-store' });
@@ -1326,7 +1344,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
   more.onclick = async () => {
     if (!isCurrent()) return;
     if (loading) return;
-    if (visibleCount < matches.length) {
+    if (visibleCount < filterProfileMatches(matches).length) {
       visibleCount = Math.min(visibleCount + 20, matches.length);
       render();
       return;
@@ -2500,6 +2518,13 @@ function renderRealtimeStatus(states) {
     }
   }
   const list = [...identityMap.values()];
+  const jordanIndex = list.findIndex(state => String(state.identity || state.profileId) === '2858362');
+  const tatohIndex = list.findIndex(state => String(state.identity || state.profileId) === '197388');
+  if (jordanIndex >= 0 && tatohIndex >= 0) {
+    const [jordan] = list.splice(jordanIndex, 1);
+    const anchorIndex = list.findIndex(state => String(state.identity || state.profileId) === '197388');
+    list.splice(anchorIndex + 1, 0, jordan);
+  }
   if (!list.length) { target.innerHTML = '<tr><td colspan="6">暂无选手</td></tr>'; return; }
   target.innerHTML = list.map(state => {
     const player = state.player || {};

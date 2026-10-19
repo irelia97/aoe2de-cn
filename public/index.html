@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=replay-analysis-v81" />
+  <link rel="stylesheet" href="/styles.css?v=replay-analysis-v90" />
 </head>
 <body>
   <script>
@@ -56,7 +56,7 @@
         <div class="profile-details-heading"><div><div class="section-kicker">PLAYER PROFILE</div><h2>玩家资料</h2></div></div>
         <div class="profile-identity"><div id="profileLoadingAnimation" class="profile-loading-animation profile-card-loading" hidden role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div><div class="profile-identity-avatar-column"><span class="profile-overview-avatar" id="profileOverviewAvatar">?</span><span id="profileIdentityLastMatch"></span></div><div class="profile-identity-content"><div class="profile-name-row"><strong id="profileIdentityName">搜索并选择一名玩家</strong><button type="button" id="profileAliasesButton" hidden>查看别名</button></div><span id="profileIdentityMeta"></span><span id="profileIdentityLinks" class="profile-identity-links"></span></div><div class="profile-identity-mode-charts" aria-label="游戏模式占比"><figure><div id="profileAllModeChart" class="profile-mode-chart-content"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div><figcaption>全部排位对局</figcaption></figure><figure><div id="profileRecentModeChart" class="profile-mode-chart-content"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div><figcaption>近 100 场对局</figcaption></figure><ul id="profileModeLegend" class="profile-identity-mode-legend" aria-label="模式颜色说明"></ul></div></div>
         <div class="profile-subsection"><div class="profile-subsection-heading profile-ladder-section-heading"><h3 class="profile-ladder-heading">各模式天梯</h3><button type="button" id="profileLeaderboardToggle" hidden></button></div><div class="profile-leaderboard-grid" id="profileLeaderboardBody"><div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div></div></div>
-        <div class="profile-subsection"><div class="profile-subsection-heading"><h3 class="profile-matches-heading">最近 100 场对局</h3></div><div class="profile-matches-list" id="profileMatchesBody"><div class="profile-loading-animation" role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div></div><div class="profile-matches-footer"><button id="profileMatchesMore" class="profile-more-button" type="button" hidden>更多对局</button></div></div>
+        <div class="profile-subsection"><div class="profile-subsection-heading profile-matches-section-heading"><h3 class="profile-matches-heading">最近 100 场对局</h3><select id="profileMatchesFilter" class="profile-matches-filter" aria-label="筛选近期对局类型"><option value="all">全部对局</option><option value="rm_1v1">1v1随机地图</option><option value="rm_team">团队随机地图</option><option value="lobby">大厅局</option><option value="other">其它</option></select></div><div class="profile-matches-list" id="profileMatchesBody"><div class="profile-loading-animation" role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div></div><div class="profile-matches-footer"><button id="profileMatchesMore" class="profile-more-button" type="button" hidden>更多对局</button></div></div>
         <div class="profile-alias-modal" id="profileAccounts" hidden><div class="profile-alias-dialog" role="dialog" aria-modal="true" aria-labelledby="profileAccountsTitle"><div class="profile-alias-dialog-heading"><h3 id="profileAccountsTitle">账号与曾用名</h3><button type="button" id="profileAccountsClose" aria-label="关闭">×</button></div><table class="profile-details-table"><thead><tr><th>账号 ID</th><th>当前昵称</th><th>该账号曾用名</th><th>最后游戏时间</th></tr></thead><tbody id="profileDetailsBody"><tr><td colspan="4" class="profile-details-empty">请使用页面顶部的搜索框查找并选择玩家。</td></tr></tbody></table></div></div>
       </section>
       <section class="realtime-page" id="realtime-page" hidden>
@@ -136,7 +136,7 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=replay-analysis-v81" defer></script>
+  <script src="/app.js?v=replay-analysis-v90" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');
