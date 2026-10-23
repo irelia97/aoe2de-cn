@@ -1,0 +1,92 @@
+[
+  {
+    "id": 109,
+    "name": "城镇中心",
+    "icon": "/assets/replay-building-icons/town-center-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/028_town_center.DDS"
+  },
+  {
+    "id": 79,
+    "name": "瞭望箭塔",
+    "icon": "/assets/replay-building-icons/watch-tower-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/025_tower.DDS"
+  },
+  {
+    "id": 234,
+    "name": "警戒箭塔",
+    "icon": "/assets/replay-building-icons/guard-tower-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/027_tower_guard.DDS"
+  },
+  {
+    "id": 235,
+    "name": "大型箭塔",
+    "icon": "/assets/replay-building-icons/keep-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/026_tower_keep.DDS"
+  },
+  {
+    "id": 236,
+    "name": "炮塔",
+    "icon": "/assets/replay-building-icons/bombard-tower-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/042_bombard_tower.DDS"
+  },
+  {
+    "id": 1251,
+    "name": "营垒",
+    "icon": "/assets/replay-building-icons/krepost-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/055_krepost.DDS"
+  },
+  {
+    "id": 1806,
+    "name": "强化教堂",
+    "icon": "/assets/replay-building-icons/fortified-church-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/088_fortified_church.dds"
+  },
+  {
+    "id": 1665,
+    "name": "塔楼",
+    "icon": "/assets/replay-building-icons/donjon-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/084_donjon.DDS"
+  },
+  {
+    "id": 82,
+    "name": "城堡",
+    "icon": "/assets/replay-building-icons/castle-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/007_castle.DDS"
+  },
+  {
+    "id": 45,
+    "name": "船坞",
+    "icon": "/assets/replay-building-icons/dock-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/013_dock_1.DDS"
+  },
+  {
+    "id": 12,
+    "name": "兵营",
+    "icon": "/assets/replay-building-icons/barracks-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/002_barracks_1.DDS"
+  },
+  {
+    "id": 101,
+    "name": "马厩",
+    "icon": "/assets/replay-building-icons/stable-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/023_stable_1.DDS"
+  },
+  {
+    "id": 87,
+    "name": "靶场",
+    "icon": "/assets/replay-building-icons/archery-range-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/000_archery_range_1.DDS"
+  },
+  {
+    "id": 49,
+    "name": "攻城武器厂",
+    "icon": "/assets/replay-building-icons/siege-workshop-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/022_siege_workshop_2.DDS"
+  },
+  {
+    "id": 104,
+    "name": "修道院",
+    "icon": "/assets/replay-building-icons/monastery-de.png",
+    "source": "AoE2DE/widgetui/textures/ingame/buildings/010_monastery_1.DDS"
+  }
+]

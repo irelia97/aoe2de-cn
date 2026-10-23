@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import json
 import re
 import sys
 from pathlib import Path
@@ -173,7 +174,6 @@ async def wait_for_chat_input(page: Page, timeout_ms: int) -> Locator:
 
 
 async def fill_chat_input(locator: Locator, message: str) -> None:
-    await locator.click()
     # Playwright supports input, textarea and contenteditable elements.  Its
     # fill implementation emits the framework-visible input events that the
     # Douyu chat component requires.
@@ -294,14 +294,13 @@ async def command_check(args: argparse.Namespace) -> None:
 
 
 async def command_send(args: argparse.Namespace) -> None:
-    message = args.message.strip()
+    messages = [] if args.message_stdin else [args.message.strip()] + [text.strip() for text in (args.next_message or [])]
     max_length = args.max_length or PLATFORMS[args.platform]["max_length"]
-    if not message:
-        raise LiveDanmakuError("弹幕内容不能为空")
-    if len(message) > max_length:
-        raise LiveDanmakuError(
-            f"弹幕长度为 {len(message)}，超过{PLATFORMS[args.platform]['name']}限制 {max_length}。"
-        )
+    for message in messages:
+        if not message:
+            raise LiveDanmakuError("弹幕内容不能为空")
+        if len(message) > max_length:
+            raise LiveDanmakuError(f"弹幕长度为 {len(message)}，超过限制 {max_length}。")
 
     state_path = state_path_for(args)
     screenshot_path = screenshot_path_for(args.platform)
@@ -350,44 +349,48 @@ async def command_send(args: argparse.Namespace) -> None:
                 except TimeoutError as error:
                     raise LiveDanmakuError("斗鱼聊天连接未能及时建立") from error
                 await page.wait_for_timeout(1500)
-            await fill_chat_input(chat_input, message)
-            # Keep a before/after pair so we can verify that the text reached
-            # the actual chat editor and that the send action changed it.
-            await page.screenshot(
-                path=str(STATE_ROOT / f"{args.platform}_before_send.png"),
-                full_page=False,
-            )
-            if args.dry_run:
-                print("试运行成功：已找到输入框并填入文字，没有发送。")
-                return
+            if args.message_stdin:
+                payload = await asyncio.wait_for(asyncio.to_thread(sys.stdin.readline), timeout=args.message_wait)
+                messages = json.loads(payload)
+                if not isinstance(messages, list) or not messages or any(not isinstance(text, str) or not text.strip() or len(text) > max_length for text in messages):
+                    raise LiveDanmakuError("Invalid pending messages")
+            for message_index, message in enumerate(messages):
+                await fill_chat_input(chat_input, message)
+                if args.dry_run:
+                    print("试运行成功：已找到输入框并填入文字，没有发送。")
+                    return
 
-            send_button = await first_visible(page, SEND_BUTTON_SELECTORS)
-            if send_button is not None and await send_button.is_enabled():
-                await send_button.click()
-            else:
-                await chat_input.press("Enter")
+                if douyu_ack_event is not None:
+                    douyu_ack_event.clear()
+                    douyu_ack_result["res"] = None
+                send_button = await first_visible(page, SEND_BUTTON_SELECTORS)
+                if send_button is not None and await send_button.is_enabled():
+                    # The editor is already focused by fill(). Avoid waiting for
+                    # animated overlays to stop intercepting a pointer click.
+                    await send_button.evaluate("element => element.click()")
+                else:
+                    await chat_input.press("Enter")
 
-            await page.wait_for_timeout(600)
-            await page.screenshot(
-                path=str(STATE_ROOT / f"{args.platform}_after_send.png"),
-                full_page=False,
-            )
-            remaining = await chat_input_text(chat_input)
-            if remaining == message:
-                await chat_input.press("Enter")
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(600)
                 remaining = await chat_input_text(chat_input)
-            if remaining == message:
-                raise LiveDanmakuError("发送后输入框没有清空，页面未接受本次弹幕")
-            if douyu_ack_event is not None:
-                try:
-                    await asyncio.wait_for(douyu_ack_event.wait(), timeout=5)
-                except TimeoutError as error:
-                    raise LiveDanmakuError("未收到斗鱼弹幕服务器的发送确认") from error
-                if douyu_ack_result["res"] != 0:
-                    raise LiveDanmakuError(
-                        f"斗鱼弹幕服务器拒绝发送，返回码 {douyu_ack_result['res']}"
-                    )
+                if remaining == message:
+                    await chat_input.press("Enter")
+                    await page.wait_for_timeout(1000)
+                    remaining = await chat_input_text(chat_input)
+                if remaining == message:
+                    raise LiveDanmakuError("发送后输入框没有清空，页面未接受本次弹幕")
+                if douyu_ack_event is not None:
+                    try:
+                        await asyncio.wait_for(douyu_ack_event.wait(), timeout=5)
+                    except TimeoutError as error:
+                        raise LiveDanmakuError("未收到斗鱼弹幕服务器的发送确认") from error
+                    if douyu_ack_result["res"] != 0:
+                        raise LiveDanmakuError(
+                            f"斗鱼弹幕服务器拒绝发送，返回码 {douyu_ack_result['res']}"
+                        )
+                print("DANMAKU_SENT " + json.dumps({"index":message_index}, ensure_ascii=True), flush=True)
+                if message_index + 1 < len(messages):
+                    await page.wait_for_timeout(10000)
             await context.storage_state(path=str(state_path))
             ensure_private_file(state_path)
             print(f"弹幕发送操作已完成：{page.url}")
@@ -432,7 +435,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     send = subparsers.add_parser("send", help="向直播间发送一条弹幕")
     send.add_argument("--room", required=True, help="房间号或直播间网址")
-    send.add_argument("--message", required=True, help="弹幕正文")
+    message_source = send.add_mutually_exclusive_group(required=True)
+    message_source.add_argument("--message", help="弹幕正文")
+    message_source.add_argument("--message-stdin", action="store_true", help="打开直播间后等待标准输入提供弹幕")
+    send.add_argument("--message-wait", type=int, default=60, help="等待弹幕信息的秒数")
+    send.add_argument("--next-message", action="append", help="在同一页面继续发送的弹幕")
     send.add_argument("--timeout", type=int, default=30, help="等待页面的秒数")
     send.add_argument(
         "--max-length",

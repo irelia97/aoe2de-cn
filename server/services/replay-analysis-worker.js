@@ -3,6 +3,29 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inflateRawSync, gzipSync } from 'node:zlib';
+import { extractReplayMap } from '../../public/replay-map.js';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+async function initialObjects(bytes, summary) {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const python = process.platform === 'win32' ? join(root, '.venv-replay', 'Scripts', 'python.exe') : join(root, '.venv-replay', 'bin', 'python');
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, [join(root, 'tools', 'replay-initial-objects.py'), '--players', String(summary.header.replay.num_players), '--save-version', String(summary.header.version_major + summary.header.version_minor / 65536)], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    let output = '', error = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('初始物体解析超时')); }, 20000);
+    child.stdout.on('data', chunk => { output += chunk; if (output.length > 8 * 1024 * 1024) child.kill(); });
+    child.stderr.on('data', chunk => { if (error.length < 4000) error += chunk; });
+    child.stdin.on('error', () => {});
+    child.on('error', e => { clearTimeout(timer); reject(e); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      try { if (code !== 0) throw new Error(error || '初始物体解析失败'); resolve(JSON.parse(output)); }
+      catch (e) { reject(e); }
+    });
+    child.stdin.end(bytes);
+  });
+}
 
 const maxReplaySize = 128 * 1024 * 1024;
 
@@ -56,7 +79,7 @@ function plain(value) {
 }
 
 export function compactReplay(full) {
-  return { chapters: (full.chapters || []).map(chapter => {
+  return { mapData: extractReplayMap(full), chapters: (full.chapters || []).map(chapter => {
     const operations = [];
     let elapsed = 0;
     for (const operation of chapter.operations || []) {
@@ -85,10 +108,19 @@ if (parentPort) {
       const values = team.players.map(player => outcomes.get(String(player.profile_id)));
       team.winner = values.some(value => value === true) ? true : values.length && values.every(value => value === false) ? false : null;
     }
+    const fullData = compactReplay(glue.parse_rec(bytes));
+    if (fullData.mapData) {
+      try { fullData.mapData.initialObjects = await initialObjects(bytes, summaryData); }
+      catch (error) {
+        fullData.mapData.initialObjects = [];
+        fullData.mapData.initialObjectsUnavailable = true;
+        console.warn('[replay] initial objects unavailable:', error.message);
+      }
+    }
     const result = {
       ...workerData.metadata,
       summary: summaryData,
-      full: compactReplay(glue.parse_rec(bytes)),
+      full: fullData,
       file: { name: `AgeIIDE_Replay_${workerData.metadata.matchId}.aoe2record`, size: bytes.length },
     };
     summary.free?.();

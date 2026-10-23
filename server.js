@@ -1,4 +1,7 @@
+import { createAvatarCache } from './server/services/avatar-cache.js';
+import { createProfileSearchPool } from './server/services/profile-search-pool.js';
 import http from 'node:http';
+import { nextScheduledVideoRound } from './server/services/media-video-schedule.js';
 import { appendFile, readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +21,9 @@ import { createLeaderboardDumpSummary } from './server/services/leaderboard-dump
 import { createRealtimeService } from './server/services/realtime-service.js';
 import { createReplayAnalysisService } from './server/services/replay-analysis-service.js';
 import { recentFeedback } from './server/services/feedback-feed.js';
+import { createReplayEndedNotifier } from './server/services/replay-ended-notifier.js';
 import { createRealtimeDanmakuNotifier } from './server/services/realtime-danmaku-notifier.js';
+import { createDirectDanmakuClient } from './server/services/direct-danmaku-client.js';
 import { createMatchesService } from './server/services/matches-service.js';
 import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
 import { createProfileService } from './server/services/profile-service.js';
@@ -62,7 +67,31 @@ const port = Number(process.env.PORT || 3000);
 const api = 'https://aoe-api.worldsedgelink.com/community/leaderboard/getLeaderBoard2';
 const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争', 15: '赛事积分' };
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
-const avatarCache = new Map();
+const avatarCache = createAvatarCache({
+  directory: join(dataDir, 'avatars'),
+  resolveUrl: async key => {
+    const [kind, id] = key.split(':');
+    if (kind === 'profile') {
+      const fallback = await getAoE2RecsProfile(id);
+      return fallback?.profile?.avatar || '';
+    }
+    try {
+      const response = await fetch(`https://steamcommunity.com/profiles/${id}?xml=1`, { signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error(`Steam 返回 HTTP ${response.status}`);
+      const xml = await response.text();
+      const avatar = xml.match(/<avatarFull><!\[CDATA\[(.*?)\]\]><\/avatarFull>/)?.[1] || xml.match(/<avatarFull>(.*?)<\/avatarFull>/)?.[1] || '';
+      if (avatar) return avatar;
+      throw new Error('Steam 头像暂不可用');
+    } catch (error) {
+      const profileId = profileDb?.prepare('SELECT profile_id AS profileId FROM profiles WHERE steam_id = ? LIMIT 1').get(id)?.profileId;
+      if (profileId) {
+        const fallback = await getAoE2RecsProfile(String(profileId));
+        if (fallback?.profile?.avatar) return fallback.profile.avatar;
+      }
+      throw error;
+    }
+  }
+});
 const leaderboardCache = new Map();
 const leaderboardRefreshes = new Map();
 let tournamentEloPlayersCache = null;
@@ -134,13 +163,8 @@ let profileRefreshTimer = null;
 const profileRefreshState = { refreshing: false, stage: '等待启动', downloadedBytes: 0, totalBytes: 0, processedRows: 0, startedAt: null, error: null };
 const mediaVideoActiveRefreshMin = 30 * 60_000;
 const mediaVideoActiveRefreshMax = 60 * 60_000;
-const mediaVideoRequestGapMin = 2 * 60_000;
-const mediaVideoRequestGapMax = 3 * 60_000;
-const mediaVideoCycleDelayMin = 2.5 * 60 * 60_000;
-const mediaVideoCycleDelayMax = 3.5 * 60 * 60_000;
-function randomMediaCycleDelay() {
-  return randomMediaDelay(mediaVideoCycleDelayMin, mediaVideoCycleDelayMax);
-}
+const mediaVideoRequestGapMin = 90_000;
+const mediaVideoRequestGapMax = 120_000;
 const mediaVideoCircuitBaseDelay = 12 * 60 * 60_000;
 const mediaVideoCircuitMaxDelay = 24 * 60 * 60_000;
 const mediaLiveRefreshInterval = 2 * 60_000;
@@ -208,6 +232,7 @@ let mediaVideoRateLimitStrikes = 0;
 const mediaVideoSourceStates = new Map();
 const mediaVideoCycleSeen = new Set();
 let mediaVideoCycleOrder = [];
+let mediaVideoCycleActive = false;
 let mediaLiveRefreshPromise = null;
 let mediaPersistentVideosLoaded = false;
 let mediaPersistentLiveLoaded = false;
@@ -713,6 +738,8 @@ function mediaVideoItem(source, item) {
 async function fetchBilibiliVideos(source) {
   const python = process.platform === 'win32' ? join(root, '.venv-danmaku', 'Scripts', 'python.exe') : join(root, '.venv-danmaku', 'bin', 'python');
   const args = [join(root, 'tools', 'check-bilibili-updates-browser.py'), '--mid', String(source.id), '--limit', '12'];
+  if (source.baselineBvid) args.push('--baseline-bvid', source.baselineBvid);
+  if (source.baselinePublishedAt) args.push('--baseline-published-at', String(Math.floor(Date.parse(source.baselinePublishedAt) / 1000)));
   if (!mediaVideoWhitelist.some(name => String(source.name || '').trim() === name)) args.push('--check-tags');
   const command = process.platform === 'win32' ? python : 'xvfb-run';
   const commandArgs = process.platform === 'win32' ? args : ['-a', '-s', '-screen 0 1440x1000x24', python, ...args, '--headed'];
@@ -854,8 +881,17 @@ async function loadPersistentMediaVideoState() {
         idleSuccesses: Math.max(0, Number(value.idleSuccesses) || 0)
       });
     }
+    if (saved.scheduleVersion === 'fixed-beijing-v1') {
+      mediaVideoCycleActive = saved.cycleActive === true;
+    } else {
+      mediaVideoCycleSeen.clear();
+      mediaVideoCycleOrder = [];
+      mediaVideoNextRequestAt = nextScheduledVideoRound(Date.now());
+      for (const state of mediaVideoSourceStates.values()) state.nextCheckAt = 0;
+    }
   } catch {
     // The scheduler state is optional and will be created after the first check.
+    mediaVideoNextRequestAt = nextScheduledVideoRound(Date.now());
   }
 }
 
@@ -899,6 +935,8 @@ async function savePersistentMediaVideoState() {
     blockedUntil: mediaVideoBlockedUntil ? new Date(mediaVideoBlockedUntil).toISOString() : null,
     apiBlockedUntil: bilibiliApiBlockedUntil ? new Date(bilibiliApiBlockedUntil).toISOString() : null,
     videoFetchMode: 'browser-dynamic-v1',
+    scheduleVersion: 'fixed-beijing-v1',
+    cycleActive: mediaVideoCycleActive,
     rateLimitStrikes: mediaVideoRateLimitStrikes,
     cycleOrder: mediaVideoCycleOrder,
     cycleSeen: [...mediaVideoCycleSeen],
@@ -920,7 +958,8 @@ function isBilibiliRateLimit(error) {
 function mediaVideoNextDueAt() {
   const sources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
   if (!sources.length) return 0;
-  const due = sources.map(source => {
+  if (!mediaVideoCycleActive) return mediaVideoNextRequestAt || nextScheduledVideoRound(Date.now());
+  const due = sources.filter(source => !mediaVideoCycleSeen.has(mediaVideoSourceKey(source))).map(source => {
     const state = mediaVideoSourceStates.get(mediaVideoSourceKey(source));
     const sourceDue = state?.nextCheckAt || Date.now();
     return source.platform === 'bilibili' ? Math.max(sourceDue, mediaVideoBlockedUntil) : sourceDue;
@@ -1209,6 +1248,13 @@ function refreshMediaVideos() {
     }
 
     const videoSources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
+    if (!mediaVideoCycleActive) {
+      mediaVideoCycleActive = true;
+      mediaVideoCycleSeen.clear();
+      mediaVideoCycleOrder = shuffledMediaVideoKeys(videoSources.map(mediaVideoSourceKey));
+      for (const state of mediaVideoSourceStates.values()) state.nextCheckAt = now;
+      await savePersistentMediaVideoState();
+    }
     const candidates = videoSources
       .map(source => ({ source, state: mediaVideoSourceStates.get(mediaVideoSourceKey(source)) }))
       .filter(({ source, state }) => state && !mediaVideoCycleSeen.has(mediaVideoSourceKey(source)) && state.nextCheckAt <= now && (source.platform !== 'bilibili' || now >= mediaVideoBlockedUntil))
@@ -1266,8 +1312,8 @@ function refreshMediaVideos() {
     }
     const cycleComplete = videoSources.length > 0 && videoSources.every(videoSource => mediaVideoCycleSeen.has(mediaVideoSourceKey(videoSource)));
     if (cycleComplete) {
-      const cycleNextAt = Date.now() + randomMediaCycleDelay();
-      mediaVideoCycleOrder = shuffledMediaVideoKeys((mediaSources.videos || []).map(mediaVideoSourceKey));
+      const cycleNextAt = nextScheduledVideoRound(Date.now() + 1);
+      mediaVideoCycleActive = false;
       for (const videoSource of videoSources) {
         const videoState = mediaVideoSourceStates.get(mediaVideoSourceKey(videoSource));
         if (videoState) videoState.nextCheckAt = cycleNextAt;
@@ -1334,7 +1380,8 @@ async function startMediaVideoScheduler() {
   ensureMediaVideoSourceStates();
   if (process.env.MEDIA_VIDEO_RESET === '1') {
     const resetAt = Date.now();
-    mediaVideoNextRequestAt = 0;
+    mediaVideoNextRequestAt = nextScheduledVideoRound(resetAt);
+    mediaVideoCycleActive = false;
     mediaVideoBlockedUntil = 0;
     mediaVideoRateLimitStrikes = 0;
     mediaVideoCycleOrder = shuffledMediaVideoKeys((mediaSources.videos || []).map(mediaVideoSourceKey));
@@ -1353,6 +1400,7 @@ async function startMediaVideoScheduler() {
     console.log('[media] video scheduler reset; starting from the first configured source');
   }
   await refreshMediaVideos();
+  await savePersistentMediaVideoState();
   scheduleMediaVideoRefresh();
   return mediaCache.data;
 }
@@ -1706,18 +1754,10 @@ async function buildProfileCache() {
   let sourceDumpPath = dumpPath;
   let db;
   try {
-    try {
-      const localDump = await stat(profileLocalDumpPath);
-      if (!localDump.isFile() || localDump.size <= 0) throw new Error('本地 Profile dump 为空');
-      sourceDumpPath = profileLocalDumpPath;
-      profileRefreshState.stage = '读取本地 Parquet Profile dump';
-      profileRefreshState.downloadedBytes = localDump.size;
-      profileRefreshState.totalBytes = localDump.size;
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      await downloadProfileParquet(tempDumpPath);
-      await rename(tempDumpPath, dumpPath);
-    }
+    // Every scheduled refresh needs a fresh upstream snapshot. Keep the
+    // previous dump and active index intact while downloading and importing.
+    await downloadProfileParquet(tempDumpPath);
+    await rename(tempDumpPath, dumpPath);
     profileRefreshState.stage = '建立玩家资料索引';
     db = new DatabaseSync(tempPath);
     db.exec('PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; CREATE TABLE profiles(profile_id TEXT PRIMARY KEY, steam_id TEXT, name TEXT NOT NULL, clan TEXT, last_match_time TEXT, country TEXT); CREATE TABLE profile_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);');
@@ -1913,10 +1953,20 @@ const { localProfileDetails, profileLeaderboardSummary, fetchPersonalLeaderboard
 const matchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches });
 const { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce } = matchesService;
 
+const directDanmakuSender = createDirectDanmakuClient({
+  pythonExecutable: process.platform === 'win32'
+    ? join(root, '.venv-danmaku', 'Scripts', 'python.exe')
+    : join(root, '.venv-danmaku', 'bin', 'python'),
+  scriptPath: join(root, 'tools', 'douyu_auto_send.py'),
+  room: '753676',
+  statePath: join(dataDir, 'danmaku', 'douyu_storage_state.json')
+});
 const realtimeDanmakuNotifier = createRealtimeDanmakuNotifier({
+  residentSender: directDanmakuSender,
   statePath: join(dataDir, 'danmaku', 'realtime-match-added.json'),
   readFile,
   writeFile,
+  renameFile: rename,
   execFileAsync,
   pythonExecutable: process.platform === 'win32'
     ? join(root, '.venv-danmaku', 'Scripts', 'python.exe')
@@ -1924,9 +1974,16 @@ const realtimeDanmakuNotifier = createRealtimeDanmakuNotifier({
   scriptPath: join(root, 'tools', 'live_danmaku.py'),
   playwrightBrowsersPath: join(root, '.cache', 'ms-playwright'),
   watchers: [
-    { profileId: '197964', platform: 'douyu', room: '753676' },
-    { profileId: '226575', platform: 'douyu', room: '1029928' }
+    { profileId: '197964', platform: 'douyu', room: '753676' }
   ]
+});
+const replayEndedNotifier = createReplayEndedNotifier({
+  statePath: join(dataDir, 'danmaku', 'replay-ended.json'),
+  profileIds: ['197964'],
+  replayService: replayAnalysisService,
+  prepare: realtimeDanmakuNotifier.prepareMatchEnded,
+  cancelPreparation: realtimeDanmakuNotifier.cancelPreparedEnd,
+  send: realtimeDanmakuNotifier.handleMatchEnded
 });
 const realtimeService = createRealtimeService({
   realtimePayloadPath: join(dataDir, 'realtime-payload.json'),
@@ -1943,7 +2000,12 @@ const realtimeService = createRealtimeService({
   forceChinaCountry,
   getLiveTournamentForPlayer,
   WebSocket,
-  onMatchAdded: realtimeDanmakuNotifier.handleMatchAdded
+  notificationProfileIds: ['197964'],
+  onMatchPreparing: match => realtimeDanmakuNotifier.prepareMatch(match),
+  onMatchAdded: match => Promise.all([
+    replayEndedNotifier.observe(match),
+    realtimeDanmakuNotifier.handleMatchAdded(match)
+  ])
 });
 // End of server entrypoint.
 async function getWorldsEdgeMatches(profileId, page = 1) {
@@ -2180,15 +2242,9 @@ async function getAoE2RecsProfile(profileId) {
   return { profile: await refreshAoE2RecsProfile(profileId), cached: false, stale: false };
 }
 
-function searchProfiles(query, leaderboardId) {
+const profileSearchPool = createProfileSearchPool();
+async function searchProfiles(query, leaderboardId) {
   const normalized = query.trim();
-  const resultLimit = 500;
-  const normalizedLower = normalized.toLocaleLowerCase();
-  const prefix = `${normalizedLower}%`;
-  const statement = [...normalized].length >= 3
-    ? profileDb.prepare("SELECT p.profile_id AS profileId, p.steam_id AS steamId, p.name, p.clan, p.country, p.last_match_time AS lastMatchTime FROM profile_search f JOIN profiles p ON p.rowid = f.rowid WHERE profile_search MATCH ? ORDER BY CASE WHEN trim(coalesce(p.clan, '')) <> '' THEN 0 ELSE 1 END, CASE WHEN lower(p.name) = lower(?) THEN 0 WHEN lower(p.name) LIKE ? THEN 1 ELSE 2 END, p.name COLLATE NOCASE LIMIT ?")
-    : profileDb.prepare("SELECT profile_id AS profileId, steam_id AS steamId, name, clan, country, last_match_time AS lastMatchTime FROM profiles WHERE instr(lower(name), lower(?)) > 0 ORDER BY CASE WHEN trim(coalesce(clan, '')) <> '' THEN 0 ELSE 1 END, CASE WHEN lower(name) = lower(?) THEN 0 WHEN lower(name) LIKE ? THEN 1 ELSE 2 END, name COLLATE NOCASE LIMIT ?");
-  const match = [...normalized].length >= 3 ? `"${normalized.replaceAll('"', '""')}"` : normalized;
   const queryLower = normalized.toLocaleLowerCase();
   const ratings = new Map();
   const selectedRatings = new Map();
@@ -2205,7 +2261,8 @@ function searchProfiles(query, leaderboardId) {
     const rating = Number(row.rating);
     if (profileId && Number.isFinite(rating)) selectedRatings.set(profileId, rating);
   }
-  const candidates = new Map(statement.all(match, normalized, prefix, resultLimit).map(player => [String(player.profileId), { ...player, aliases: [] }]));
+  const matchingProfiles = await profileSearchPool.query(join(dataDir, profileCache.filename), normalized);
+  const candidates = new Map(matchingProfiles.map(player => [String(player.profileId), { ...player, aliases: [] }]));
   const profileById = profileDb.prepare('SELECT profile_id AS profileId, steam_id AS steamId, name, clan, country, last_match_time AS lastMatchTime FROM profiles WHERE profile_id = ?');
   for (const boardCache of leaderboardCache.values()) {
     for (const row of boardCache.data.rows) {
@@ -2947,7 +3004,7 @@ http.createServer(async (req, res) => {
     }
     try {
       const leaderboardId = Number(url.searchParams.get('leaderboardId') || 3);
-      const results = searchProfiles(query, types[leaderboardId] ? leaderboardId : 3);
+      const results = await searchProfiles(query, types[leaderboardId] ? leaderboardId : 3);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ query, results, updatedAt: profileCache?.updatedAt || null }));
     } catch (error) {
@@ -3184,9 +3241,21 @@ http.createServer(async (req, res) => {
 
   if (url.pathname === '/api/media') {
     try {
-      const data = await getMediaCache();
-      const maxAgeSeconds = Math.max(1, Math.ceil((Date.parse(data.nextRefreshAt || '') - Date.now()) / 1000));
-      return sendVersionedJson(req, res, data, `media-${data.updatedAt || 'snapshot'}`, maxAgeSeconds);
+      let data = await getMediaCache();
+      let promotionDeadline = Infinity;
+      try {
+        const promotions = JSON.parse(await readFile(join(dataDir, 'media-video-promotions.json'), 'utf8'));
+        const active = promotions.filter(item => item.id && item.url && Date.parse(item.expiresAt) > Date.now());
+        if (active.length) {
+          const ids = new Set(active.map(item => String(item.id)));
+          promotionDeadline = Math.min(...active.map(item => Date.parse(item.expiresAt)));
+          data = { ...data, videos: [...active, ...data.videos.filter(item => !ids.has(String(item.id)))] };
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      const maxAgeSeconds = Math.max(1, Math.min(60, Math.ceil((Math.min(promotionDeadline, Date.parse(data.nextRefreshAt || '')) - Date.now()) / 1000)));
+      return sendVersionedJson(req, res, data, `media-${data.updatedAt || 'snapshot'}-promotion-${Number.isFinite(promotionDeadline) ? promotionDeadline : 'none'}`, maxAgeSeconds);
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: error.message || '获取视频直播数据失败' }));
@@ -3215,68 +3284,30 @@ http.createServer(async (req, res) => {
     }
   }
 
+  if (url.pathname.startsWith('/api/avatar-image/')) {
+    const match = url.pathname.match(/^\/api\/avatar-image\/([a-f0-9]{64})\.(jpeg|png|webp|gif)$/);
+    const bytes = match ? await avatarCache.image(match[1]) : null;
+    if (!bytes) { res.writeHead(404, { 'cache-control': 'no-store' }); return res.end(); }
+    const etag = `"${match[1]}"`;
+    const headers = { 'content-type': `image/${match[2]}`, 'cache-control': 'public, max-age=86400', etag, 'x-content-type-options': 'nosniff' };
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
+    res.writeHead(200, { ...headers, 'content-length': bytes.length });
+    return res.end(bytes);
+  }
   if (url.pathname === '/api/avatar') {
     let steamId = url.searchParams.get('steamId') || '';
     const profileId = url.searchParams.get('profileId') || '';
-    const validProfileId = /^\d+$/.test(profileId);
-    const fetchAoE2RecsAvatar = async () => {
-      if (!validProfileId) return '';
-      const fallback = await getAoE2RecsProfile(profileId);
-      const avatar = fallback?.profile?.avatar || '';
-      const parsed = avatar ? new URL(avatar) : null;
-      return parsed?.protocol === 'https:' && parsed.hostname.endsWith('.steamstatic.com') ? avatar : '';
-    };
-    if (!/^\d{17}$/.test(steamId) && validProfileId && profileDb) {
+    if (!/^\d{17}$/.test(steamId) && /^\d+$/.test(profileId) && profileDb) {
       steamId = String(profileDb.prepare('SELECT steam_id AS steamId FROM profiles WHERE profile_id = ?').get(profileId)?.steamId || '');
     }
-    if (!/^\d{17}$/.test(steamId)) {
-      if (validProfileId) {
-        try {
-          const profileCacheKey = `profile:${profileId}`;
-          const cachedAvatar = avatarCache.get(profileCacheKey);
-          if (cachedAvatar?.expires > Date.now()) {
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
-            return res.end(JSON.stringify(cachedAvatar));
-          }
-          const avatar = await fetchAoE2RecsAvatar();
-          if (avatar) {
-            const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
-            avatarCache.set(profileCacheKey, cached);
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
-            return res.end(JSON.stringify(cached));
-          }
-        } catch {}
-      }
-      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ error: '找不到可用头像' }));
-    }
+    const key = /^\d{17}$/.test(steamId) ? `steam:${steamId}` : /^\d+$/.test(profileId) ? `profile:${profileId}` : '';
+    if (!key) { res.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify({ error: '找不到可用头像' })); }
     try {
-      let cached = avatarCache.get(steamId);
-      if (!cached || cached.expires <= Date.now()) {
-        const profile = await fetch(`https://steamcommunity.com/profiles/${steamId}?xml=1`, { signal: AbortSignal.timeout(10000) });
-        if (!profile.ok) throw new Error(`Steam 返回 HTTP ${profile.status}`);
-        const xml = await profile.text();
-        const avatar = xml.match(/<avatarFull><!\[CDATA\[(.*?)\]\]><\/avatarFull>/)?.[1] || xml.match(/<avatarFull>(.*?)<\/avatarFull>/)?.[1] || '';
-        const parsed = avatar ? new URL(avatar) : null;
-        const safeAvatar = parsed?.protocol === 'https:' && parsed.hostname.endsWith('.steamstatic.com') ? avatar : '';
-        cached = { avatar: safeAvatar, expires: Date.now() + 24 * 60 * 60_000 };
-        avatarCache.set(steamId, cached);
-      }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
-      return res.end(JSON.stringify(cached));
+      const entry = await avatarCache.get(key);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': entry.expires > Date.now() ? 'private, max-age=86400' : 'no-cache' });
+      return res.end(JSON.stringify({ avatar: `/api/avatar-image/${entry.hash}.${entry.type.split('/')[1]}`, expires: entry.expires }));
     } catch (error) {
-      if (validProfileId) {
-        try {
-          const avatar = await fetchAoE2RecsAvatar();
-          if (avatar) {
-            const cached = { avatar, expires: Date.now() + 24 * 60 * 60_000 };
-            avatarCache.set(steamId, cached);
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=86400, stale-while-revalidate=3600' });
-            return res.end(JSON.stringify(cached));
-          }
-        } catch {}
-      }
-      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '头像暂不可用' }));
     }
   }

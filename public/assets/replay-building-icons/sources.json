@@ -1,0 +1,86 @@
+[
+  {
+    "id": 109,
+    "name": "城镇中心",
+    "icon": "/assets/replay-building-icons/town-center.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/城镇中心.jpg"
+  },
+  {
+    "id": 79,
+    "name": "瞭望箭塔",
+    "icon": "/assets/replay-building-icons/watch-tower.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/瞭望箭塔.jpg"
+  },
+  {
+    "id": 234,
+    "name": "警戒箭塔",
+    "icon": "/assets/replay-building-icons/guard-tower.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/警戒箭塔.jpg"
+  },
+  {
+    "id": 235,
+    "name": "大型箭塔",
+    "icon": "/assets/replay-building-icons/keep.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/大型箭塔.jpg"
+  },
+  {
+    "id": 236,
+    "name": "炮塔",
+    "icon": "/assets/replay-building-icons/bombard-tower.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/炮塔.jpg"
+  },
+  {
+    "id": 1251,
+    "name": "营垒",
+    "icon": "/assets/replay-building-icons/krepost.png",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/architecture/EasternEurope/mini/营垒.png"
+  },
+  {
+    "id": 1806,
+    "name": "强化教堂",
+    "icon": "/assets/replay-building-icons/fortified-church.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/强化教堂.jpg"
+  },
+  {
+    "id": 1665,
+    "name": "塔楼",
+    "icon": "/assets/replay-building-icons/donjon.png",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/architecture/SouthernEurope/mini/塔楼.png"
+  },
+  {
+    "id": 82,
+    "name": "城堡",
+    "icon": "/assets/replay-building-icons/castle.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/城堡.jpg"
+  },
+  {
+    "id": 45,
+    "name": "船坞",
+    "icon": "/assets/replay-building-icons/dock.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/船坞.jpg"
+  },
+  {
+    "id": 12,
+    "name": "兵营",
+    "icon": "/assets/replay-building-icons/barracks.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/兵营.jpg"
+  },
+  {
+    "id": 101,
+    "name": "马厩",
+    "icon": "/assets/replay-building-icons/stable.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/马厩.jpg"
+  },
+  {
+    "id": 87,
+    "name": "靶场",
+    "icon": "/assets/replay-building-icons/archery-range.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/靶场.jpg"
+  },
+  {
+    "id": 49,
+    "name": "攻城武器厂",
+    "icon": "/assets/replay-building-icons/siege-workshop.jpg",
+    "source": "https://data.seicing.com/seicingdepot/3fatcatpool/techtree2/攻城武器厂.jpg"
+  }
+]

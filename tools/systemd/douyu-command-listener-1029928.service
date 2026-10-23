@@ -1,0 +1,15 @@
+[Unit]
+Description=Douyu command listener room 1029928 player 226575
+Wants=network-online.target
+After=network-online.target aoe2de.service
+
+[Service]
+Type=simple
+User=aoe2
+WorkingDirectory=/opt/aoe2de-cn
+ExecStart=/opt/aoe2de-cn/.venv-danmaku/bin/python /opt/aoe2de-cn/tools/douyu_command_listener.py --room 1029928 --cooldown 0 --profile-id 226575
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

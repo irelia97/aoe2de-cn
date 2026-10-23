@@ -191,7 +191,7 @@ async function loadRowDetails(row) {
   const avatar = row.querySelector('.avatar');
   const steamId = row.dataset.steam;
   if (steamId) {
-    fetchJsonWithRetries(`/api/avatar?steamId=${encodeURIComponent(steamId)}`, { cache: 'force-cache' }).then(data => {
+    fetchJsonWithRetries(`/api/avatar?v=2&steamId=${encodeURIComponent(steamId)}`, { cache: 'default' }).then(data => {
       if (!avatar?.isConnected) return;
       if (!data) {
         return;
@@ -585,7 +585,7 @@ function loadProfileAccountAvatars() {
       avatar.replaceChildren(image);
       continue;
     }
-    fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' }).then(response => response.ok ? response.json() : null).then(data => {
+    fetch(`/api/avatar?v=2&profileId=${encodeURIComponent(profileId)}`, { cache: 'default' }).then(response => response.ok ? response.json() : null).then(data => {
       if (!avatar.isConnected || !data?.avatar) return;
       const image = document.createElement('img');
       image.src = data.avatar;
@@ -1021,7 +1021,7 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
   }).join('') || '<div class="profile-leaderboard-empty">暂无天梯汇总数据</div>';
   body.querySelectorAll('.profile-ladder-opponent-avatar[data-profile-avatar-id]').forEach(avatar => {
     const profileId = avatar.dataset.profileAvatarId;
-    fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' })
+    fetch(`/api/avatar?v=2&profileId=${encodeURIComponent(profileId)}`, { cache: 'default' })
       .then(response => response.ok ? response.json() : null)
       .then(data => {
         if (!avatar.isConnected || !data?.avatar) return;
@@ -1285,6 +1285,32 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     if (!response.ok) throw new Error('近期对局请求失败');
     return response.json();
   };
+  if (more) more.onclick = async () => {
+    if (!isCurrent()) return;
+    if (loading) return;
+    if (visibleCount < filterProfileMatches(matches).length) {
+      visibleCount = Math.min(visibleCount + 20, filterProfileMatches(matches).length);
+      render();
+      return;
+    }
+    if (!hasMore) return;
+    loading = true;
+    render();
+    try {
+      const page = await fetchPage(matches.length, 100);
+      if (!isCurrent()) return;
+      const incoming = Array.isArray(page.matches) ? page.matches : [];
+      const known = new Set(matches.map(match => String(match.id)));
+      matches = matches.concat(incoming.filter(match => !known.has(String(match.id))));
+      hasMore = Boolean(page.hasMore);
+      visibleCount = Math.min(visibleCount + 20, filterProfileMatches(matches).length);
+    } catch {
+      hasMore = false;
+    } finally {
+      loading = false;
+      render();
+    }
+  };
   if (!localFresh) try {
     const first = await fetchPage(0, 100, true);
     if (!isCurrent()) return;
@@ -1342,33 +1368,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
         if (!known.has(String(latest.id))) saveProfileMatchesLocalCache(profileId, matches);
       }).catch(() => {});
   }
-  if (!more) return;
-  more.onclick = async () => {
-    if (!isCurrent()) return;
-    if (loading) return;
-    if (visibleCount < filterProfileMatches(matches).length) {
-      visibleCount = Math.min(visibleCount + 20, matches.length);
-      render();
-      return;
-    }
-    if (!hasMore) return;
-    loading = true;
-    render();
-    try {
-      const page = await fetchPage(matches.length, 100);
-      if (!isCurrent()) return;
-      const incoming = Array.isArray(page.matches) ? page.matches : [];
-      const known = new Set(matches.map(match => String(match.id)));
-      matches = matches.concat(incoming.filter(match => !known.has(String(match.id))));
-      hasMore = Boolean(page.hasMore);
-      visibleCount = Math.min(visibleCount + 20, matches.length);
-    } catch {
-      hasMore = false;
-    } finally {
-      loading = false;
-      render();
-    }
-  };
+
 }
 function loadProfileAccounts(profileId, requestId) {
   const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
@@ -1401,7 +1401,7 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
     };
     if (/^\d+$/.test(String(profileId))) {
       // 先走服务端头像缓存；缓存失效后由服务端查询 Steam，失败再回退 AoE2Recs 资料头像。
-      fetch(`/api/avatar?profileId=${encodeURIComponent(profileId)}`, { cache: 'force-cache' })
+      fetch(`/api/avatar?v=2&profileId=${encodeURIComponent(profileId)}`, { cache: 'default' })
         .then(response => response.ok ? response.json() : null)
         .then(data => {
           if (!avatar.isConnected) return;
@@ -1593,7 +1593,12 @@ function replayFindChat(root, playerNames = new Map()) {
       try { parsed = JSON.parse(parsed); } catch { parsed = { message: parsed }; }
     }
     if (!parsed || typeof parsed !== 'object') return;
-    const text = replayValue(parsed.message ?? parsed.text ?? parsed.contents ?? parsed.content).trim().replace(/<player_id,(\d+),\d+>/g, (_, id) => playerNames.get(String(id)) || `玩家 ${id}`);
+    let rawText = replayValue(parsed.message ?? parsed.text ?? parsed.contents ?? parsed.content).trim();
+    if (/^@#\d+<player_id,\d+,\d+>/.test(String(parsed.messageAGP || ''))) {
+      rawText = rawText.replace(/(?:has\s+advanced\s+to|advanced\s+to|has\s+reached|reached)\s+(?:the\s+)?(Dark|Feudal|Castle|Imperial)\s+Age[.!]?/gi,
+        (_, age) => `升级至${({dark:'黑暗时代',feudal:'封建时代',castle:'城堡时代',imperial:'帝王时代'})[age.toLowerCase()]}。`);
+    }
+    const text = rawText.replace(/<player_id,(\d+),\d+>/g, (_, id) => playerNames.get(String(id)) || `玩家 ${id}`);
     if (!text) return;
     const playerId = parsed.player ?? parsed.sender ?? fallbackPlayer;
     const player = playerNames.get(String(playerId)) || replayValue(playerId);
@@ -1743,6 +1748,13 @@ const replayTechInfoById = {};
 async function replayLoadUnitMap() {
   if (replayLoadUnitMap.loaded) return;
   replayLoadUnitMap.loaded = true;
+  try {
+    const { replayObjectNames } = await import('/replay-object-names.js?v=2');
+    for (const [id, name] of Object.entries(replayObjectNames)) {
+      if (!replayUnitInfoById[id]) replayUnitInfoById[id] = { name, icon: '' };
+    }
+  } catch (error) { console.warn('游戏对象中文映射加载失败', error); }
+
   try {
     const response = await fetch('/replay-unit-map.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`unit map ${response.status}`);
@@ -1936,10 +1948,17 @@ function replayDrawMap(points) {
   ctx.fillStyle = 'rgba(89,202,141,.55)';
   for (const point of points) { ctx.beginPath(); ctx.arc(18 + point.x / maxX * (width - 36), 18 + point.y / maxY * (height - 36), 1.5, 0, Math.PI * 2); ctx.fill(); }
 }
+function replayStartTimeZone(timestamp) {
+  const value = Number(timestamp);
+  const date = Number.isFinite(value) && value > 0 ? new Date(value * 1000) : new Date();
+  const offset = -date.getTimezoneOffset();
+  const minutes = Math.abs(offset);
+  return `UTC${offset >= 0 ? '+' : '-'}${Math.floor(minutes / 60)}${minutes % 60 ? `:${String(minutes % 60).padStart(2, '0')}` : ''}`;
+}
 function replayStartTime(timestamp) {
   const value = Number(timestamp);
   if (!Number.isFinite(value) || value <= 0) return '未记录';
-  return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(value * 1000));
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(value * 1000));
 }
 async function replayLoadMatchInfo(matchId, requestId, recordedStart) {
   try {
@@ -1950,7 +1969,7 @@ async function replayLoadMatchInfo(matchId, requestId, recordedStart) {
     if (recordedStart > 0 && info.started > 0 && Math.abs(recordedStart - info.started) > 300) return;
     const time = document.querySelector('[data-replay-summary-field="startedAt"] strong');
     const server = document.querySelector('[data-replay-summary-field="server"] strong');
-    if (time && info.started) time.textContent = replayStartTime(info.started);
+    if (time && info.started) { time.textContent = replayStartTime(info.started); time.title = time.textContent; time.closest('.replay-summary-item')?.querySelector('small')?.replaceChildren(`开始时间（${replayStartTimeZone(info.started)}）`); }
     if (server && info.server) { server.textContent = realtimeServerName(info.server); server.title = info.server; }
     replayApplyMatchResults(info);
   } catch { /* Optional match metadata must not interrupt local replay analysis. */ }
@@ -1990,7 +2009,7 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   const chat = replayFindChat(full, playerNames);
   const playerStats = replayPlayerStats(full, summary?.duration);
   const operations = Array.isArray(full?.operations) ? full.operations.length : 0;
-  document.querySelector('#replaySummary').innerHTML = [['版本号', replayBuild], ['游戏时长', replayFormatTime((Number(summary?.duration) || 0) / 1000)], ['地图', replayMapName(settings)], ['房间名', settings.lobby_name || '—'], ['玩家', players.length], ['开始时间（北京时间）', replayStartTime(matchInfo?.started || header.timestamp), 'startedAt'], ['服务器位置', matchInfo?.server ? realtimeServerName(matchInfo.server) : '未记录', 'server'], ['地图种子', header.replay?.random_seed != null && Number.isFinite(Number(header.replay.random_seed)) ? String(header.replay.random_seed) : '未记录', 'mapSeed']].map(([label, value, field]) => `<div class="replay-summary-item${field === 'startedAt' ? ' replay-summary-time' : ''}"${field ? ` data-replay-summary-field="${field}"` : ''}><small>${escapeHtml(label)}</small><strong title="${escapeHtml(String(value ?? '—'))}">${escapeHtml(String(value ?? '—'))}</strong></div>`).join('');
+  document.querySelector('#replaySummary').innerHTML = [['版本号', replayBuild], ['游戏时长', replayFormatTime((Number(summary?.duration) || 0) / 1000)], ['地图', replayMapName(settings)], ['房间名', settings.lobby_name || '—'], ['玩家', players.length], [`开始时间（${replayStartTimeZone(matchInfo?.started || header.timestamp)}）`, replayStartTime(matchInfo?.started || header.timestamp), 'startedAt'], ['服务器位置', matchInfo?.server ? realtimeServerName(matchInfo.server) : '未记录', 'server'], ['地图种子', header.replay?.random_seed != null && Number.isFinite(Number(header.replay.random_seed)) ? String(header.replay.random_seed) : '未记录', 'mapSeed']].map(([label, value, field]) => `<div class="replay-summary-item${field === 'startedAt' ? ' replay-summary-time' : ''}"${field ? ` data-replay-summary-field="${field}"` : ''}><small>${escapeHtml(label)}</small><strong title="${escapeHtml(String(value ?? '—'))}">${escapeHtml(String(value ?? '—'))}</strong></div>`).join('');
   const replayGameSettings = document.querySelector('#replayGameSettings');
   if (replayGameSettings) replayGameSettings.innerHTML = replayGameSettingMarkup(settings, summary);
   const teamGroups = [...new Map(players.map(player => [player.teamIndex, players.filter(candidate => candidate.teamIndex === player.teamIndex)])).entries()];
@@ -1998,6 +2017,14 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   document.querySelector('#replayPlayerCount').textContent = `${players.length} 人`;
   document.querySelector('#replayChatCount').textContent = `${chat.length} 条`;
   replayTimelineMarkup(full, players, summary?.duration);
+  const mapTarget = document.querySelector('#replayMap');
+  if (mapTarget) {
+    const mapRequest = replayAnalysisRequest;
+    import('/replay-map.js?v=23').then(module => {
+      const mapPlayers = players.map(player => ({...player,displayName:`${player.name} (${replayCivLabel(player)})`}));
+      if (mapRequest === replayAnalysisRequest) module.renderReplayMap(mapTarget, full, mapPlayers, summary?.duration, replayPlayerColor, { units:replayUnitInfoById, techs:replayTechInfoById, chat, settings });
+    }).catch(error => { if (mapRequest === replayAnalysisRequest) mapTarget.textContent = `地图读取失败：${error.message}`; });
+  }
   document.querySelector('#replayOperationCount')?.remove();
    document.querySelector('#replayChat').innerHTML = chat.length ? chat.map(message => { const sender = players.find(player => String(player.player_number) === message.playerId) || players.find(player => player.name === message.player); const colorId = Number(sender?.color_id); const chatColor = sender && Number.isInteger(colorId) && colorId >= 0 && colorId < 8 ? `var(--replay-chat-color-${colorId})` : 'var(--text)'; return `<div class="replay-chat-row" style="--chat-player-color:${chatColor}"><time>${message.time == null ? '—' : replayFormatTime(message.time / 1000)}</time><strong>${escapeHtml(message.player || '玩家')}</strong><span>${escapeHtml(message.text)}</span></div>`; }).join('') : '<div class="replay-empty">未发现可读取的聊天记录。</div>';
   document.querySelector('#replayResult').hidden = false;
@@ -2520,14 +2547,11 @@ function renderRealtimeStatus(states) {
       identityMap.set(key, state);
     }
   }
-  const list = [...identityMap.values()];
-  const jordanIndex = list.findIndex(state => String(state.identity || state.profileId) === '2858362');
-  const tatohIndex = list.findIndex(state => String(state.identity || state.profileId) === '197388');
-  if (jordanIndex >= 0 && tatohIndex >= 0) {
-    const [jordan] = list.splice(jordanIndex, 1);
-    const anchorIndex = list.findIndex(state => String(state.identity || state.profileId) === '197388');
-    list.splice(anchorIndex + 1, 0, jordan);
-  }
+  const ratingForSort = state => {
+    const rating = Number(state?.player?.rating);
+    return Number.isFinite(rating) && rating > 0 ? rating : -1;
+  };
+  const list = [...identityMap.values()].sort((a, b) => ratingForSort(b) - ratingForSort(a));
   if (!list.length) { target.innerHTML = '<tr><td colspan="6">暂无选手</td></tr>'; return; }
   target.innerHTML = list.map(state => {
     const player = state.player || {};
@@ -2547,7 +2571,7 @@ function renderRealtimeStatus(states) {
         : escapeHtml(tournamentName))
       : '';
     const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${realtimePlatformIconMarkup(state.live.platform)}${escapeHtml(state.live.title || '正在直播')}</a>` : '';
-    return `<tr><td>${rating}</td><td><a class="realtime-status-player" title="${name}" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${tournament || '—'}</td><td>${live}</td></tr>`;
+    return `<tr><td>${rating}</td><td><a class="realtime-status-player" title="${name}" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td><span class="realtime-status-tournament" title="${escapeHtml(tournamentName)}">${tournament || '—'}</span></td><td>${live}</td></tr>`;
   }).join('');
   alignRealtimeStatusActivity();
 }
@@ -3317,7 +3341,6 @@ function loadAoE2RecsProfile(profileId, fallbackName = '') {
   currentProfileRecentModeCounts = null;
   renderProfileModeCharts();
   setProfileLoadingAnimation(false);
-  loadWorldsEdgeMatches(profileId, { player: { id: profileId }, matches: [] }, requestId);
   loadProfileAccounts(profileId, requestId);
   const profileName = document.querySelector('#profileIdentityName');
   profileName.textContent = fallbackName || `玩家 ${profileId}`;
@@ -3326,6 +3349,7 @@ function loadAoE2RecsProfile(profileId, fallbackName = '') {
   const matchesMore = document.querySelector('#profileMatchesMore');
   if (matchesBody) matchesBody.innerHTML = profileLoadingMarkup();
   if (matchesMore) { matchesMore.hidden = true; matchesMore.disabled = false; matchesMore.onclick = null; }
+  loadWorldsEdgeMatches(profileId, { player: { id: profileId }, matches: [] }, requestId);
   const localProfile = readAoE2RecsProfileCache(profileId);
   if (localProfile) {
     renderAoE2RecsProfile(localProfile, profileId, fallbackName, requestId);
@@ -3376,7 +3400,7 @@ function renderProfileSuggestions(results, query) {
     });
   }
   for (const avatar of profileSearchSuggestions.querySelectorAll('.profile-suggestion[data-steam]:not([data-steam=""])')) {
-    fetch(`/api/avatar?steamId=${encodeURIComponent(avatar.dataset.steam)}`, { cache: 'force-cache' }).then(response => response.ok ? response.json() : null).then(data => {
+    fetch(`/api/avatar?v=2&steamId=${encodeURIComponent(avatar.dataset.steam)}`, { cache: 'default' }).then(response => response.ok ? response.json() : null).then(data => {
       if (!data?.avatar || !avatar.isConnected) return;
       const image = document.createElement('img');
       image.src = data.avatar;
@@ -3401,6 +3425,8 @@ async function loadProfileSuggestions() {
   if ([...query].length < 2) { hideProfileSuggestions(); return; }
   profileSuggestExpanded = false;
   profileSuggestController = new AbortController();
+  const controller = profileSuggestController;
+  const timeout = setTimeout(() => controller.abort(new DOMException('搜索超时，请稍后重试', 'TimeoutError')), 12000);
   profileSearchSuggestions.innerHTML = '<div class="profile-suggestions-message"><span class="loader"></span>正在查找玩家…</div>';
   profileSearchSuggestions.hidden = false;
   profileSearchInput.setAttribute('aria-expanded', 'true');
@@ -3414,7 +3440,7 @@ async function loadProfileSuggestions() {
     if (error.name === 'AbortError' || requestId !== profileSuggestRequestId) return;
     profileSearchSuggestions.innerHTML = `<div class="profile-suggestions-message profile-search-error">${escapeHtml(error.message || '暂时无法搜索玩家')}</div>`;
     profileSearchSuggestions.hidden = false;
-  }
+  } finally { clearTimeout(timeout); }
 }
 profileSearchInput.setAttribute('role', 'combobox');
 profileSearchInput.setAttribute('aria-autocomplete', 'list');

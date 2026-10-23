@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Check an UP's dynamic page with a saved browser session; no direct API crawl."""
-import argparse,asyncio,json,re,time
+import argparse,asyncio,calendar,json,re,time
 from pathlib import Path
 from urllib.parse import urlsplit
 from playwright.async_api import async_playwright,TimeoutError
@@ -21,6 +21,10 @@ def extract_own_videos(items,mid,limit=12):
   videos.append({'bvid':bvid,'title':archive.get('title') or '', 'url':'https://www.bilibili.com/video/'+bvid,'thumbnail':archive.get('cover') or '', 'publishedAt':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(stamp)) if isinstance(stamp,(int,float)) and stamp>0 else None})
   if len(videos)>=limit:break
  return videos
+
+def filter_baseline(videos,bvid,published_at):
+ if not bvid or not published_at:return videos
+ return [v for v in videos if v['bvid']==bvid or (v.get('publishedAt') and calendar.timegm(time.strptime(v['publishedAt'],'%Y-%m-%dT%H:%M:%SZ'))>published_at)]
 
 async def run(args):
  folder=ROOT/'.cache/bilibili-browser-check';folder.mkdir(parents=True,exist_ok=True);folder.chmod(0o700)
@@ -46,7 +50,7 @@ async def run(args):
    try:response=await asyncio.wait_for(asyncio.shield(future),timeout=args.timeout)
    except asyncio.TimeoutError:response={}
    payload=response.get('payload') or {};code=payload.get('code');data=payload.get('data') or {};items=data.get('items') or []
-   videos=extract_own_videos(items,args.mid,args.limit)
+   videos=filter_baseline(extract_own_videos(items,args.mid,args.limit),args.baseline_bvid,args.baseline_published_at)
    text=await page.locator('body').inner_text(timeout=5000)
    risk=response.get('http') in [403,412,429] or code in [-403,-352,-412] or any(t in text for t in ['安全验证','请完成验证','访问受限','请求被拦截'])
    if risk:status='verification_required'
@@ -71,7 +75,7 @@ async def run(args):
    await browser.close()
 
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--mid',required=True);p.add_argument('--limit',type=int,default=12);p.add_argument('--timeout',type=int,default=35);p.add_argument('--check-tags',action='store_true');p.add_argument('--headed',action='store_true');args=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--mid',required=True);p.add_argument('--limit',type=int,default=12);p.add_argument('--timeout',type=int,default=35);p.add_argument('--check-tags',action='store_true');p.add_argument('--headed',action='store_true');p.add_argument('--baseline-bvid',default='');p.add_argument('--baseline-published-at',type=int,default=0);args=p.parse_args()
  if not args.mid.isdigit() or not 1<=args.limit<=30:p.error('Invalid mid or limit')
  asyncio.run(run(args))
 if __name__=='__main__':main()

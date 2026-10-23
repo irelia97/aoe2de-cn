@@ -11,19 +11,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=replay-analysis-v94" />
+  <link rel="stylesheet" href="/styles.css?v=mobile-v130" />
 </head>
 <body>
   <script>
     const isReplayAnalysisRoute = /^\/replay-analysis\/?$/.test(location.pathname);
     if (/^\/realtime\/?$/.test(location.pathname)) document.body.classList.add("page-realtime");
     if (isReplayAnalysisRoute) document.body.classList.add("page-replay-analysis");
-    if (isReplayAnalysisRoute) document.addEventListener('DOMContentLoaded', () => {
-      const replayPage = document.querySelector('#replay-analysis-page');
-      const main = document.querySelector('#leaderboard');
-      if (replayPage) replayPage.hidden = false;
-      main?.querySelectorAll(':scope > :not(.topbar):not(#replay-analysis-page):not(footer)').forEach(element => { element.hidden = true; });
-    }, { once: true });
   </script>
   <div class="shell">
     <aside class="sidebar">
@@ -97,6 +91,7 @@
         <div class="replay-analysis-upload" id="replayUploadPanel"><label class="replay-dropzone" for="replayFile"><input id="replayFile" type="file" accept=".aoe2record,.mgz,application/octet-stream" /><span class="replay-drop-icon">↥</span><strong>选择录像文件</strong><small>支持 .aoe2record · 文件只在浏览器本地处理，不会上传服务器</small></label><p class="replay-analysis-status" id="replayStatus" aria-live="polite">等待选择录像。</p><button type="button" id="replayRemoteRetry" class="replay-remote-retry" hidden>重新分析</button></div>
         <div class="replay-analysis-result" id="replayResult" hidden>
           <div class="replay-summary-grid" id="replaySummary"></div>
+          <section class="replay-panel replay-map-panel"><div class="replay-panel-heading"><h3>地图与时间轴</h3></div><div id="replayMap" class="replay-map"><div class="replay-empty">等待读取地图。</div></div></section>
           <section class="replay-panel replay-settings-card"><div class="replay-panel-heading"><h3>游戏设置</h3><span>从录像头部读取</span></div><div class="replay-settings-grid" id="replayGameSettings"></div></section>
           <div class="replay-analysis-columns"><section class="replay-panel"><div class="replay-panel-heading"><h3>玩家与队伍</h3><span id="replayPlayerCount"></span></div><div id="replayPlayers" class="replay-players"></div></section><section class="replay-panel replay-chat-card"><div class="replay-panel-heading"><h3>游戏内对话</h3><span id="replayChatCount"></span></div><div id="replayChat" class="replay-chat"><div class="replay-empty">未发现可读取的聊天记录。</div></div></section></div>
           <section class="replay-panel replay-timeline-card"><div class="replay-panel-heading"><div><h3>单位与科技时间线</h3><p class="replay-timeline-note">根据录像中的生产和研究事件生成，不需要运行游戏本体。</p></div><span id="replayTimelineCount"></span></div><div id="replayTimeline" class="replay-timeline"><div class="replay-empty">等待读取录像事件。</div></div></section>
@@ -136,7 +131,7 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=replay-analysis-v94" defer></script>
+  <script src="/app.js?v=avatar-cache-v134" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');

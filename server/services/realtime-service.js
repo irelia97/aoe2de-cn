@@ -14,8 +14,41 @@ export function createRealtimeService(deps) {
     forceChinaCountry,
     getLiveTournamentForPlayer = () => null,
     WebSocket,
-    onMatchAdded = () => {}
+    onMatchAdded = () => {},
+    notificationProfileIds = [],
+    onMatchPreparing = () => {}
   } = deps;
+
+  const notificationTasks = new Map();
+  function notifyActiveMatch(rawMatch) {
+    const profileId = (rawMatch?.players || []).map(player => String(player.profileId ?? player.id))
+      .find(id => notificationProfileIds.includes(id));
+    if (!profileId) return;
+    const state = normalizeRealtimeLatestMatch(rawMatch, profileId);
+    const match = state.match;
+    if (state.status !== 'game' || !match?.players || match.players.length < 2) return;
+    if (!match.map || /^(unknown|未知地图)$/i.test(String(match.map).trim()) || !match.server) return;
+    const id = String(match.id);
+    if (notificationTasks.has(id)) return;
+    Promise.resolve(onMatchPreparing(match)).catch(error => console.warn('[danmaku] browser preparation failed:', error.message));
+    const task = Promise.resolve().then(async () => {
+      match.players = await Promise.all(match.players.map(async player => {
+        let rating = null;
+        try {
+          const rows = await fetchPersonalLeaderboardStats(String(player.profileId));
+          const row = Array.isArray(rows) ? rows.find(item => Number(item.id) === 3 && Number.isFinite(Number(item.rating))) : null;
+          if (row) rating = Number(row.rating);
+        } catch {}
+        return { ...player, rating, ratingMode: 'rm_1v1' };
+      }));
+      await onMatchAdded(match);
+    }).catch(error => {
+      notificationTasks.delete(id);
+      console.warn('[danmaku] direct match hook failed:', error.message);
+    });
+    notificationTasks.set(id, task);
+    if (notificationTasks.size > 2000) notificationTasks.delete(notificationTasks.keys().next().value);
+  }
 
   function normalizeRealtimeLatestMatch(match, profileId) {
     if (!match || typeof match !== 'object') return { profileId: String(profileId), status: 'offline', match: null };
@@ -224,6 +257,7 @@ export function createRealtimeService(deps) {
     }
     const previous = group.matches.get(id);
     group.matches.set(id, match);
+    notifyActiveMatch(match);
     if (!previous || JSON.stringify(previous) !== JSON.stringify(match)) changed = true;
     return changed;
   }
@@ -326,21 +360,13 @@ export function createRealtimeService(deps) {
     realtimeSocketPublishTimer = null;
     if (!realtimeSocketProfileIds.length) return;
     try {
+      for (const group of realtimeSocketGroups.values()) for (const match of group.matches.values()) notifyActiveMatch(match);
       const payload = await buildEnrichedPayload(realtimeSocketProfileIds, socketStates(), 'aoe2companion-websocket');
       const key = realtimeSocketProfileIds.join(',');
       realtimePayloadCache = { key, payload };
       await writeFile(realtimePayloadPath, JSON.stringify({ key, payload }), 'utf8');
       realtimeLastPublishAt = payload.checkedAt;
-      // Use normalized, enriched matches for every ingestion path (socket,
-      // reconciliation and warm restore). The notifier persists match deduplication.
-      const notifiedMatches = new Set();
-      for (const state of payload.states || []) {
-        if (state?.status !== 'game' || !state.match) continue;
-        const id = String(state.match.id ?? state.match.matchId ?? '');
-        if (!id || notifiedMatches.has(id)) continue;
-        notifiedMatches.add(id);
-        Promise.resolve(onMatchAdded(state.match)).catch(error => console.warn('[danmaku] normalized match hook failed:', error.message));
-      }
+      // Notifications run independently at ingestion; list enrichment must not delay them.
       console.log(`[realtime] websocket cache refreshed: ${payload.states.length} states`);
     } catch (error) { console.warn('[realtime] websocket cache publish failed:', error.message); }
   }
