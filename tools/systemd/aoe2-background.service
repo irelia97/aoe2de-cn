@@ -1,0 +1,25 @@
+[Unit]
+Description=AOE2 replay jobs, upstream gateway and automatic notifications
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aoe2
+Group=aoe2
+WorkingDirectory=/opt/aoe2de-cn
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/aoe2de-cn/server/background-worker.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aoe2de-cn/.cache
+MemoryHigh=1G
+MemoryMax=1536M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

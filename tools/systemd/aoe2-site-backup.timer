@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily AOE2 verified backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

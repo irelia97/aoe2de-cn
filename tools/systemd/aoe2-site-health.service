@@ -1,0 +1,10 @@
+[Unit]
+Description=Check AOE2 web and background service health
+OnFailure=aoe2-site-alert@%n.service
+
+[Service]
+Type=oneshot
+User=aoe2
+ExecStart=/usr/bin/python3 /usr/local/libexec/aoe2-health.py
+StandardOutput=journal
+StandardError=journal

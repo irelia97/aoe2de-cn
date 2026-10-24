@@ -31,7 +31,7 @@ export function createReplayEndedNotifier({ statePath, profileIds, replayService
       const playerNames = Object.fromEntries(match.players.map(player => [
         String(player.profileId ?? player.id), String(player.name || '未知玩家').trim()
       ]));
-      jobs[id] = {match:structuredClone(match), playerNames, watched, observedAt:now(), nextAt:now()+30000, sent:[]};
+      jobs[id] = {match:structuredClone(match), playerNames, watched, observedAt:now(), nextAt:now()+30000, sent:[], failures:0};
       await save();
     });
   }
@@ -40,6 +40,10 @@ export function createReplayEndedNotifier({ statePath, profileIds, replayService
       await ready;
       for (const [id,job] of Object.entries(jobs)) {
         if (job.done || job.nextAt > now()) continue;
+        if ((job.failures ?? (job.lastError ? 1 : 0)) >= 2) {
+          await mutate(async () => { job.done = true; await save(); });
+          continue;
+        }
         if (now()-job.observedAt > 12*3600000 || (job.endedAt && now()-job.endedAt > 30*60000)) {
           console.warn(`[danmaku] matchEnded ${id} expired without successful summary`);
           await mutate(async () => { job.done = true; await save(); });
@@ -88,13 +92,21 @@ export function createReplayEndedNotifier({ statePath, profileIds, replayService
             await mutate(async () => { job.done=true; job.lastError=error.message; await save(); });
             continue;
           }
-          console.warn(`[danmaku] matchEnded ${id} failed; retry in 2m: ${error.message}`);
-          await mutate(async () => { job.nextAt=now()+120000; job.lastError=error.message; await save(); });
+          const failures = (job.failures ?? (job.lastError ? 1 : 0)) + 1;
+          console.warn(`[danmaku] matchEnded ${id} failed; ${failures >= 2 ? 'retry exhausted; summary cancelled' : 'retry once in 10s'}: ${error.message}`);
+          await mutate(async () => {
+            job.failures = failures;
+            job.lastError = error.message;
+            if (failures >= 2) { job.done = true; job.failedAt = now(); }
+            else job.nextAt = now() + 10000;
+            await save();
+          });
         }
       }
       await mutate(async () => {
-        for (const [id,job] of Object.entries(jobs)) if (job.done && now()-job.observedAt>7*86400000) delete jobs[id];
-        await save();
+        let changed = false;
+        for (const [id,job] of Object.entries(jobs)) if (job.done && now()-job.observedAt>7*86400000) { delete jobs[id]; changed = true; }
+        if (changed) await save();
       });
     } catch(error) { console.warn('[danmaku] matchEnded monitor failed:',error.message); }
 
@@ -103,7 +115,7 @@ export function createReplayEndedNotifier({ statePath, profileIds, replayService
     if (!activeTask) activeTask=runTick().finally(() => { activeTask=null; });
     return activeTask;
   }
-  const timer = setInterval(tick,15000); timer.unref?.();
+  const timer = setInterval(tick,1000); timer.unref?.();
   ready.then(tick).catch(error => console.warn('[danmaku] matchEnded state unavailable:',error.message));
   return {observe,tick,stop:()=>clearInterval(timer)};
 }

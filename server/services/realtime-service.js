@@ -289,6 +289,7 @@ export function createRealtimeService(deps) {
         return;
       } catch (error) {
         lastError = error;
+        if (error.rateLimited) break;
       }
     }
     realtimeValidationStats.deferred += 1;

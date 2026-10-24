@@ -1962,7 +1962,7 @@ function replayStartTime(timestamp) {
 }
 async function replayLoadMatchInfo(matchId, requestId, recordedStart) {
   try {
-    const response = await fetch(`/api/replay-match-info?matchId=${encodeURIComponent(matchId)}`, { signal: AbortSignal.timeout(15000) });
+    const response = await fetch(`/api/replay-match-info?matchId=${encodeURIComponent(matchId)}`, { headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(15000) });
     if (!response.ok) return;
     const info = await response.json();
     if (requestId !== replayAnalysisRequest || String(info.matchId) !== String(matchId)) return;
@@ -2039,14 +2039,30 @@ async function loadServerReplay(matchId, profileId) {
   retry.hidden = true;
   status.textContent = '正在获取录像分析，请稍候……';
   try {
-    const response = await fetch(`/api/replay-analysis?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { signal: AbortSignal.timeout(180000) });
-    const data = await response.json();
+    let response = await fetch(`/api/replay-analysis?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(25000) });
+    let data = await response.json();
     if (!response.ok) throw new Error(data.error || '获取录像分析失败');
+    if (response.status === 202) {
+      const pollUrl = data.pollUrl;
+      if (typeof pollUrl !== 'string' || !pollUrl.startsWith('/api/replay-analysis/status?jobId=')) throw new Error('分析任务无效');
+      const deadline = Date.now() + 5 * 60000;
+      status.textContent = '录像正在分析，请稍候……';
+      while (response.status === 202) {
+        if (requestId !== replayAnalysisRequest) return;
+        if (Date.now() >= deadline) throw new Error('分析仍在处理中，请稍后重试');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        if (requestId !== replayAnalysisRequest) return;
+        response = await fetch(pollUrl, { headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(25000), cache: 'no-store' });
+        data = await response.json();
+        if (!response.ok) throw new Error(data.error || '获取录像分析失败');
+      }
+    }
     await Promise.all([replayLoadUnitMap(), replayLoadTechMap()]);
     if (requestId !== replayAnalysisRequest) return;
     replaySummaryMarkup(data.summary, data.full, data.file, data.matchInfo);
     if (!data.matchInfo?.server || !Array.isArray(data.matchInfo?.results)) replayLoadMatchInfo(matchId, requestId, Number(data.summary?.header?.timestamp) || 0);
-    status.textContent = response.headers.get('x-replay-cache') === 'HIT' ? '已读取缓存分析。分析结果缓存 30 分钟。' : '录像分析完成。分析结果缓存 30 分钟。';
+    const cacheDuration = Number(data.expiresAt) - Number(data.generatedAt) > 86400000 ? '7 天' : '30 分钟';
+    status.textContent = `${response.headers.get('x-replay-cache') === 'HIT' ? '已读取缓存分析' : '录像分析完成'}。分析结果缓存 ${cacheDuration}。`;
   } catch (error) {
     if (requestId !== replayAnalysisRequest) return;
     result.hidden = true;
@@ -2089,7 +2105,7 @@ function setupReplayAnalysis() {
   const matchId = params.get('matchId');
   const profileId = params.get('profileId');
   if (matchId && profileId) {
-    document.querySelector('.replay-analysis-heading p').textContent = `比赛 #${matchId} · 分析结果保留 30 分钟，也可以选择本地录像。`;
+    document.querySelector('.replay-analysis-heading p').textContent = `比赛 #${matchId} · 分析结果最多保留 7 天，也可以选择本地录像。`;
     document.querySelector('#replayRemoteRetry').onclick = () => loadServerReplay(matchId, profileId);
     loadServerReplay(matchId, profileId);
   }

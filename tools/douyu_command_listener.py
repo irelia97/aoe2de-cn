@@ -428,6 +428,89 @@ def handle_lastmatch_command(room, profile_id, api_base, state, last_cooldown, d
     return True
 
 
+def score_reply(profile_id, api_base):
+    current = latest_match(profile_id, api_base, one_vs_one_only=False)
+    if not current:
+        return []
+    target = profile_ladder(current)
+    labels = {'RM 1V1': '1v1', 'RM TG': '组排', 'LOBBY': '大厅局'}
+    if target not in labels:
+        return []
+    groups = {target: []}
+    seen = set()
+    for offset in range(0, 1000, 100):
+        history = api_json(api_base, f'/api/profile-matches?id={profile_id}&offset={offset}&limit=100')
+        matches = history.get('matches')
+        if not isinstance(matches, list):
+            raise ValueError('Missing score history')
+        added = 0
+        for match in sorted(matches, key=lambda game: float(game.get('finished') or 0), reverse=True):
+            identity = str(match.get('id') or '')
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            added += 1
+            mode = profile_ladder(match)
+            if (mode not in groups or len(groups[mode]) >= 10 or match.get('live') is True
+                    or not match.get('finished') or match.get('abandoned')):
+                continue
+            player = next((p for p in match.get('players', []) if str(p.get('id')) == str(profile_id)), None)
+            if player is not None:
+                groups[mode].append((match, player))
+        # The site's latest-100 cache can report hasMore=False even when older
+        # upstream pages exist. A full page still needs pagination per mode.
+        if (all(len(games) == 10 for games in groups.values())
+                or (not history.get('hasMore') and len(matches) < 100) or not added):
+            break
+
+    def format_mode(mode, label):
+        games = sorted(groups[mode], key=lambda item: float(item[0].get('finished') or 0), reverse=True)
+        wins = losses = unknown = 0
+        for match, player in games:
+            teams = match.get('teams') or []
+            own_team = next((team for team in teams
+                if str(player.get('number')) in [str(member) for member in team.get('members', [])]), {})
+            if player.get('winner') is True or own_team.get('winner') is True:
+                wins += 1
+            elif any(
+                    p.get('winner') is True for p in match.get('players', [])) or any(t.get('winner') is True for t in teams):
+                losses += 1
+            else:
+                unknown += 1
+        record = f'{wins}胜{losses}负' + (f'{unknown}未知' if unknown else '')
+        if not games:
+            return f'{label}, {record}, 暂无对局'
+        if mode == 'LOBBY':
+            return f'{label}, {record}'
+        oldest, newest = games[-1][1], games[0][1]
+        start, end, delta = oldest.get('rating'), newest.get('rating'), newest.get('ratingDelta')
+        valid_rating = lambda value: type(value) in (int, float) and 0 < value < 10000
+        start_text = str(int(start)) if valid_rating(start) else '未知'
+        end_text = str(int(end + delta)) if (valid_rating(end) and type(delta) in (int, float)
+                    and -10000 < delta < 10000 and valid_rating(end + delta)) else '未知'
+        return f'{label}, {record}, {start_text}->{end_text}'
+    replies = [format_mode(target, labels[target])]
+    if any(len(message) > MAX_MESSAGE_LENGTH for message in replies):
+        raise ValueError('Score summary exceeds message limit')
+    return replies
+
+
+def handle_score_command(room, profile_id, api_base, state, cooldown, dry_run=False):
+    if cooldown.blocked('score', time.monotonic()):
+        print(json.dumps({'stage': 'score_cooldown'}), flush=True)
+        return False
+    replies = score_reply(profile_id, api_base)
+    if not replies:
+        print(json.dumps({'stage': 'score_no_supported_live_match', 'profileId': profile_id}), flush=True)
+        return False
+    print(json.dumps({'stage': 'score_reply', 'profileId': profile_id,
+                      'messages': replies, 'dryRun': dry_run}, ensure_ascii=False), flush=True)
+    if not dry_run:
+        send_many(room, replies, state, interval=10)
+        cooldown.mark_sent('score', time.monotonic())
+    return True
+
+
 class Commands:
     def __init__(self, own_uid):
         self.own_uid = str(own_uid)
@@ -438,7 +521,7 @@ class Commands:
         if fields.get('type') != 'chatmsg' or str(fields.get('uid')) == self.own_uid:
             return None
         content = fields.get('txt', '').strip()
-        if content != '#match' and not re.fullmatch(r'#lastmatch(?:[1-9]|10)?|#p[1-8]', content):
+        if content not in ('#match', '#score') and not re.fullmatch(r'#lastmatch(?:[1-9]|10)?|#p[1-8]', content):
             return None
         if content == '#lastmatch1':
             content = '#lastmatch'
@@ -524,8 +607,12 @@ def listen(room, state, cooldown=0, duration=0, dry_run=False,
     match_cooldown = MatchCooldown(seconds=300)
     player_cooldown = MatchCooldown(seconds=300)
     last_cooldown = MatchCooldown(seconds=30)
+    score_cooldown = MatchCooldown(seconds=300)
     def process_command(triggered):
         print(json.dumps({'stage': 'command', 'room': room, 'command': triggered}), flush=True)
+        if triggered == '#score':
+            handle_score_command(room, profile_id, api_base, state, score_cooldown, dry_run)
+            return
         if triggered.startswith('#lastmatch'):
             position = int(triggered[len('#lastmatch'):] or '1')
             handle_lastmatch_command(room, profile_id, api_base, state, last_cooldown, dry_run, position)
@@ -568,7 +655,7 @@ def listen(room, state, cooldown=0, duration=0, dry_run=False,
                         if fields.get('type') == 'loginres' and not ready:
                             ready = True
                             print(json.dumps({'stage': 'listening', 'room': room,
-                                'commands': ['#match', '#lastmatch[1–10]', '#p1–#p8'], 'profileId': profile_id, 'dryRun': dry_run}, ensure_ascii=False), flush=True)
+                                'commands': ['#match', '#lastmatch[1–10]', '#p1–#p8', '#score'], 'profileId': profile_id, 'dryRun': dry_run}, ensure_ascii=False), flush=True)
                         if fields.get('type') == 'error':
                             raise RuntimeError('Chat server returned an error')
                         triggered = commands.reply(fields) if ready else None

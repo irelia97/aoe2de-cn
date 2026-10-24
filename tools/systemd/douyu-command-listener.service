@@ -1,0 +1,15 @@
+[Unit]
+Description=Douyu command listener room 753676 player 197964
+After=network-online.target aoe2de.service
+Wants=network-online.target
+
+[Service]
+User=aoe2
+WorkingDirectory=/opt/aoe2de-cn
+ExecStart=/opt/aoe2de-cn/.venv-danmaku/bin/python /opt/aoe2de-cn/tools/douyu_command_listener.py --room 753676 --cooldown 0 --profile-id 197964
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

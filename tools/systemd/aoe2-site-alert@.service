@@ -1,0 +1,7 @@
+[Unit]
+Description=AOE2 failure event for %i
+
+[Service]
+Type=oneshot
+User=aoe2
+ExecStart=/usr/bin/logger -p daemon.err -t aoe2-alert "AOE2 service failed: %i. Inspect journalctl -u %i"

@@ -1617,3 +1617,9 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
   textarea{font-size:16px}
   footer{overflow-wrap:anywhere;line-height:1.8}
 }
+
+.feedback-sponsor-header{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;width:100%}
+.feedback-sponsor-rent,.feedback-sponsor-count{color:var(--muted);font-size:14px;font-weight:700}
+.feedback-sponsor-rent{justify-self:start;text-align:left}
+.feedback-sponsor-count{justify-self:end;text-align:right}
+@media(max-width:600px){.feedback-sponsor-header{grid-template-columns:1fr 1fr;gap:16px 8px}.feedback-sponsor-header .feedback-sponsor-toggle{grid-column:1/-1;grid-row:1;justify-self:center}}

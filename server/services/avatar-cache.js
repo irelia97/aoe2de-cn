@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile, stat, rm, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -8,6 +8,8 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
   const entries = new Map();
   const pending = new Map();
   const retryAt = new Map();
+  const counters = { hits: 0, misses: 0, staleHits: 0, refreshes: 0, failures: 0, evictions: 0, diskBytes: 0 };
+  let maintenance = null;
   const ready = (async () => {
     await mkdir(directory, { recursive: true });
     for (const name of await readdir(directory)) {
@@ -16,7 +18,7 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
         const entry = JSON.parse(await readFile(join(directory, name), 'utf8'));
         if (/^(steam|profile):\d+$/.test(entry.key) && /^[a-f0-9]{64}$/.test(entry.hash)
           && Number.isFinite(entry.updatedAt) && Number.isFinite(entry.expires)) {
-          await readFile(join(directory, entry.hash));
+          await stat(join(directory, entry.hash));
           entries.set(entry.key, entry);
         }
       } catch {}
@@ -52,10 +54,14 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
         const metadata = join(directory, `${key.replace(':', '-')}.json`);
         await writeFile(`${metadata}.tmp`, JSON.stringify(entry));
         await rename(`${metadata}.tmp`, metadata);
+        const previous = entries.get(key);
+        if (previous && previous.hash !== hash) await utimes(join(directory, previous.hash), new Date(now()), new Date(now())).catch(() => {});
         entries.set(key, entry);
+        counters.refreshes++;
         retryAt.delete(key);
         return entry;
       } catch (error) {
+        counters.failures++;
         retryAt.set(key, now() + 5 * 60_000);
         if (entries.has(key)) return entries.get(key);
         throw error;
@@ -67,20 +73,45 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
   async function get(key) {
     await ready;
     const entry = entries.get(key);
-    if (entry?.expires > now() || (entry && retryAt.get(key) > now())) return entry;
+    if (entry?.expires > now()) { counters.hits++; return entry; }
+    if (entry) {
+      counters.staleHits++;
+      if (!(retryAt.get(key) > now())) refresh(key).catch(() => {});
+      return entry;
+    }
+    if (retryAt.get(key) > now()) throw new Error('头像暂时不可用，请稍后重试');
+    counters.misses++;
     return refresh(key);
   }
   async function refreshDue() {
-    await ready;
-    // Spread upstream requests rather than fetching every cached player at once.
-    for (const [key, entry] of entries) {
-      if (entry.expires <= now() && !(retryAt.get(key) > now())) await refresh(key).catch(() => {});
-    }
+    if (maintenance) return maintenance;
+    maintenance = (async () => {
+      await ready;
+      // Spread upstream requests rather than fetching every cached player at once.
+      for (const [key, entry] of entries) {
+        if (entry.expires <= now() && !(retryAt.get(key) > now())) await refresh(key).catch(() => {});
+      }
+      // A full day of grace keeps existing browser references valid after a refresh.
+      const referenced = new Set([...entries.values()].map(entry => entry.hash));
+      let bytes = 0;
+      for (const name of await readdir(directory)) {
+        if (!/^[a-f0-9]{64}$/.test(name)) continue;
+        const path = join(directory, name), info = await stat(path).catch(() => null);
+        if (!info) continue;
+        if (!referenced.has(name) && !pending.size && now() - info.mtimeMs > AVATAR_TTL) {
+          await rm(path, { force: true }); counters.evictions++;
+        } else bytes += info.size;
+      }
+      counters.diskBytes = bytes;
+      for (const [key, at] of retryAt) if (at <= now()) retryAt.delete(key);
+    })();
+    try { await maintenance; } finally { maintenance = null; }
   }
   const timer = setInterval(() => { refreshDue().catch(() => {}); }, 60_000);
   timer.unref();
   return {
     get, refreshDue, ready, close: () => clearInterval(timer),
+    stats: () => ({ ...counters, entries: entries.size, pending: pending.size, ttlHours: 24 }),
     async image(hash) {
       if (!/^[a-f0-9]{64}$/.test(hash)) return null;
       await ready;

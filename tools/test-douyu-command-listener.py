@@ -456,5 +456,106 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(send.call_count, 2)
 
 
+class ScoreTests(unittest.TestCase):
+    def setUp(self):
+        self.current = patch.object(m, 'latest_match', return_value={'leaderboard': 'RM 1v1'})
+        self.latest = self.current.start()
+        self.addCleanup(self.current.stop)
+
+    @staticmethod
+    def game(identity, mode='RM 1v1', won=True, rating=2800, delta=10):
+        return dict(id=str(identity), leaderboard=mode, started=identity, finished=identity + 1,
+                    players=[dict(id='1', number=0, winner=won, rating=rating, ratingDelta=delta),
+                             dict(id='2', number=1, winner=not won)])
+
+    def test_offline_or_other_ranked_modes_do_not_send_or_query_history(self):
+        for current in (None, {'leaderboard': 'EW TG'}, {'leaderboard': 'DM 1v1'}):
+            self.latest.return_value = current
+            with patch.object(m, 'api_json') as query, patch.object(m, 'send_many') as send:
+                self.assertFalse(m.handle_score_command(1, '1', 'unused', None, m.MatchCooldown(300)))
+                query.assert_not_called()
+                send.assert_not_called()
+
+    def test_no_history_for_current_mode(self):
+        self.latest.return_value = {'leaderboard': 'unranked'}
+        with patch.object(m, 'api_json', return_value={'matches': [self.game(1)]}):
+            self.assertEqual(m.score_reply('1', 'unused'), ['大厅局, 0胜0负, 暂无对局'])
+
+    def test_exact_command_only_and_dedup(self):
+        parser = m.Commands('self')
+        self.assertEqual(parser.reply(chat('score', ' #score ')), '#score')
+        self.assertIsNone(parser.reply(chat('score', '#score')))
+        for text in ('#score1', '#Score', '#score test', 'score'):
+            self.assertIsNone(parser.reply(chat(text, text)))
+        self.assertIsNone(parser.reply(chat('self-score', '#score', 'self')))
+
+    def test_each_mode_has_its_own_ten_game_window_and_pre_to_post_rating(self):
+        solo = [self.game(100 + i, won=i < 7) for i in range(10)]
+        team = [self.game(200 + i, 'RM TG', won=i < 4) for i in range(10)]
+        lobby = [self.game(300 + i, 'unranked', won=i < 3) for i in range(10)]
+        solo[0]['players'][0]['rating'] = 2918
+        solo[-1]['players'][0].update(rating=2800, ratingDelta=-12)
+        team[0]['players'][0]['rating'] = 2031
+        team[-1]['players'][0].update(rating=2010, ratingDelta=-7)
+        live = self.game(999); live.update(live=True, finished=0)
+        abandoned = self.game(998); abandoned['abandoned'] = True
+        with patch.object(m, 'api_json', return_value=dict(matches=[live, abandoned, self.game(997, 'EW 1v1'),
+                self.game(996, 'DM 1v1'), solo[0]] + solo + team + lobby + [self.game(1)], hasMore=True)) as query:
+            self.assertEqual(m.score_reply('1', 'unused'), ['1v1, 7胜3负, 2918->2788'])
+            query.assert_called_once()
+            self.latest.return_value = {'leaderboard': 'RM TG'}
+            self.assertEqual(m.score_reply('1', 'unused'), ['组排, 4胜6负, 2031->2003'])
+            self.latest.return_value = {'leaderboard': 'unranked'}
+            self.assertEqual(m.score_reply('1', 'unused'), ['大厅局, 3胜7负'])
+
+    def test_pagination_missing_scores_empty_mode_and_unknown_result(self):
+        first = self.game(100); first['players'][0].update(rating=None, ratingDelta=None)
+        first['players'][0].pop('winner'); first['players'][1].pop('winner')
+        second = self.game(99)
+        with patch.object(m, 'api_json', side_effect=[dict(matches=[first], hasMore=True),
+                                                    dict(matches=[first, second], hasMore=False)]) as query:
+            self.assertEqual(m.score_reply('1', 'unused'), ['1v1, 1胜0负1未知, 2800->未知'])
+            self.assertIn('offset=100', query.call_args.args[1])
+
+    def test_team_result_can_come_from_team_membership(self):
+        self.latest.return_value = {'leaderboard': 'RM TG'}
+        game = self.game(1, 'RM TG')
+        for player in game['players']:
+            player.pop('winner')
+        game['teams'] = [dict(members=[0], winner=True), dict(members=[1], winner=False)]
+        with patch.object(m, 'api_json', return_value=dict(matches=[game])):
+            self.assertIn('组排, 1胜0负, 2800->2810', m.score_reply('1', 'unused')[0])
+
+    def test_full_cached_page_does_not_hide_older_team_games(self):
+        self.latest.return_value = {'leaderboard': 'RM TG'}
+        solo = [self.game(100 + i) for i in range(100)]
+        team = [self.game(10 + i, 'RM TG') for i in range(10)]
+        with patch.object(m, 'api_json', side_effect=[dict(matches=solo, hasMore=False),
+                                                    dict(matches=team, hasMore=False)]) as query:
+            self.assertEqual(m.score_reply('1', 'unused'), ['组排, 10胜0负, 2800->2810'])
+            self.assertEqual(query.call_count, 2)
+
+    def test_dry_run_never_sends_and_success_has_independent_five_minute_cooldown(self):
+        guard = m.MatchCooldown(seconds=300)
+        with patch.object(m, 'score_reply', return_value=['solo']), patch.object(m, 'send_many') as send:
+            self.assertTrue(m.handle_score_command(1, '1', 'unused', None, guard, dry_run=True))
+            send.assert_not_called()
+            with patch.object(m.time, 'monotonic', return_value=100):
+                self.assertTrue(m.handle_score_command(1, '1', 'unused', None, guard))
+            send.assert_called_once_with(1, ['solo'], None, interval=10)
+            with patch.object(m.time, 'monotonic', return_value=399):
+                self.assertFalse(m.handle_score_command(1, '1', 'unused', None, guard))
+            with patch.object(m.time, 'monotonic', return_value=400):
+                self.assertTrue(m.handle_score_command(1, '1', 'unused', None, guard))
+
+    def test_failure_does_not_consume_cooldown(self):
+        guard = m.MatchCooldown(seconds=300)
+        with patch.object(m, 'score_reply', return_value=['solo']), \
+             patch.object(m, 'send_many', side_effect=RuntimeError('refused')):
+            with self.assertRaises(RuntimeError):
+                m.handle_score_command(1, '1', 'unused', None, guard)
+        self.assertFalse(guard.blocked('score', time.monotonic()))
+
+
 if __name__ == '__main__':
     unittest.main()

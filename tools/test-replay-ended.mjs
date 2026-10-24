@@ -83,7 +83,9 @@ test('poll only observed games; retry unavailable replay; persist completion acr
     clock+=60001;await service.tick();assert.equal(downloads,0);
     finished=true;clock+=60001;await service.tick();assert.equal(downloads,1);assert.equal(sends,0);
     assert.deepEqual(stages,['prepare','parse','cancel']);
-    clock+=120001;await service.tick();assert.equal(sends,1);
+    service.stop();service=createReplayEndedNotifier(deps);
+    clock+=9999;await service.tick();assert.equal(downloads,1);assert.equal(sends,0);
+    clock+=1;await service.tick();assert.equal(sends,1);
     assert.match(sentMessage,/^eAPM Yo\(1\.0\) vs Blve\(0\.5\)/);
     assert.ok(sentMessage.endsWith(', -21分'));
     assert.deepEqual(stages,['prepare','parse','cancel','prepare','parse']);
@@ -91,6 +93,41 @@ test('poll only observed games; retry unavailable replay; persist completion acr
     await service.tick();await service.observe(match);clock+=120001;await service.tick();assert.equal(sends,1);
   } finally {service.stop();await rm(directory,{recursive:true,force:true});}
 });
+test('second replay failure cancels the summary permanently, including across restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'replay-retry-limit-'));
+  let clock = 1000000, downloads = 0, sends = 0;
+  const deps = { statePath: join(directory, 'state.json'), profileIds: ['197964'], now: () => clock,
+    fetchImpl: async () => ({ ok: true, json: async () => ({ matchId: 123, finished: true }) }),
+    replayService: { get: async () => { downloads++; throw new Error('download timeout'); } },
+    send: async () => { sends++; } };
+  let service = createReplayEndedNotifier(deps);
+  try {
+    await service.tick();
+    await service.observe({ id: 123, players: [{ id: 197964 }, { id: 42 }] });
+    clock += 30000; await service.tick(); assert.equal(downloads, 1);
+    service.stop(); service = createReplayEndedNotifier(deps);
+    clock += 9999; await service.tick(); assert.equal(downloads, 1);
+    clock++; await service.tick(); assert.equal(downloads, 2);
+    service.stop(); service = createReplayEndedNotifier(deps);
+    clock += 120000; await service.tick(); assert.equal(downloads, 2); assert.equal(sends, 0);
+  } finally { service.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('end status query failures also stop after one retry without downloading or sending', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'replay-query-limit-'));
+  let clock = 1000000, queries = 0;
+  const service = createReplayEndedNotifier({ statePath: join(directory, 'state.json'), profileIds: ['197964'], now: () => clock,
+    fetchImpl: async () => { queries++; return { ok: false, status: 429 }; },
+    replayService: { get: async () => { assert.fail('must not download'); } },
+    send: async () => { assert.fail('must not send'); } });
+  try {
+    await service.tick();
+    await service.observe({ id: 123, players: [{ id: 197964 }, { id: 42 }] });
+    clock += 30000; await service.tick(); clock += 10000; await service.tick();
+    clock += 120000; await service.tick(); assert.equal(queries, 2);
+  } finally { service.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('end notification dedup is independent from start and survives later games',async()=>{
   let text='{}', calls=0;
   const notifier=createRealtimeDanmakuNotifier({statePath:'unused',readFile:async()=>text,writeFile:async(_,value)=>{text=value;},execFileAsync:async()=>{calls++;return {};},watchers:[{profileId:'197964',platform:'douyu',room:'753676'}]});

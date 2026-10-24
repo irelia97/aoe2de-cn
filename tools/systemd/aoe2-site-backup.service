@@ -1,0 +1,10 @@
+[Unit]
+Description=Private AOE2 application backup and restore verification
+OnFailure=aoe2-site-alert@%n.service
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/libexec/aoe2-backup.py
+Nice=10
+IOSchedulingClass=idle

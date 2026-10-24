@@ -1,3 +1,9 @@
+import { BoundedCache } from './server/services/bounded-cache.js';
+import { createBackgroundClient } from './server/services/background-client.js';
+import { queueDanmakuMatch } from './server/services/danmaku-outbox.js';
+import { streamResponse } from './server/services/response-stream.js';
+import { safeHttpHandler, staticFilePath } from './server/services/http-safety.js';
+import { createApiProtection } from './server/services/api-protection.js';
 import { createAvatarCache } from './server/services/avatar-cache.js';
 import { createProfileSearchPool } from './server/services/profile-search-pool.js';
 import http from 'node:http';
@@ -19,11 +25,7 @@ import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 import { createLeaderboardDumpSummary } from './server/services/leaderboard-dump-summary.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
-import { createReplayAnalysisService } from './server/services/replay-analysis-service.js';
 import { recentFeedback } from './server/services/feedback-feed.js';
-import { createReplayEndedNotifier } from './server/services/replay-ended-notifier.js';
-import { createRealtimeDanmakuNotifier } from './server/services/realtime-danmaku-notifier.js';
-import { createDirectDanmakuClient } from './server/services/direct-danmaku-client.js';
 import { createMatchesService } from './server/services/matches-service.js';
 import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
 import { createProfileService } from './server/services/profile-service.js';
@@ -33,11 +35,15 @@ const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
 if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
+const nativeFetch = globalThis.fetch;
+const background = createBackgroundClient({ fetchImpl: nativeFetch });
+globalThis.fetch = (input, options) => background.fetch(input, options);
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const dataDir = join(root, '.cache');
+const apiProtection = createApiProtection({ statePath: join(dataDir, 'api-limits.json') });
 const leaderboardDumpSummary = createLeaderboardDumpSummary({ cacheDir: dataDir, forceCountry: forceChinaCountry });
-const replayAnalysisService = createReplayAnalysisService({ cacheDir: join(dataDir, 'replay-analysis'), assetsDir: join(root, 'public', 'assets', 'aoe2rec') });
+const replayAnalysisService = background;
 const feedbackLogPath = join(dataDir, 'feedback-submissions.jsonl');
 const siteTrafficPath = join(dataDir, 'site-traffic.json');
 const siteDailyArchivePath = join(dataDir, 'site-daily-archive.jsonl');
@@ -66,7 +72,7 @@ const forceProfileRefresh = process.env.PROFILE_REFRESH_NOW === '1';
 const port = Number(process.env.PORT || 3000);
 const api = 'https://aoe-api.worldsedgelink.com/community/leaderboard/getLeaderBoard2';
 const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争', 15: '赛事积分' };
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+const mime = { '.txt': 'text/plain; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
 const avatarCache = createAvatarCache({
   directory: join(dataDir, 'avatars'),
   resolveUrl: async key => {
@@ -96,9 +102,9 @@ const leaderboardCache = new Map();
 const leaderboardRefreshes = new Map();
 let tournamentEloPlayersCache = null;
 let tournamentEloPlayersFetchedAt = 0;
-const personalStatsCache = new Map();
+const personalStatsCache = new BoundedCache(512);
 const personalStatsCacheTtl = 10 * 60_000;
-const livePlayerStatsCache = new Map();
+const livePlayerStatsCache = new BoundedCache(512);
 const livePlayerStatsRefreshes = new Map();
 const livePlayerStatsCacheTtl = 60 * 60_000;
 const upstreamRateLimitUntil = new Map();
@@ -148,13 +154,13 @@ const leaderboardSchedules = {
 };
 const ladderOrder = Object.keys(leaderboardSchedules).map(Number);
 const cacheWaiters = new Map();
-const aoe2RecsProfileCache = new Map();
+const aoe2RecsProfileCache = new BoundedCache(512);
 const aoe2RecsProfileRefreshes = new Map();
 const gameAssetRefreshes = new Map();
 const aoe2RecsProfileCacheTtl = 48 * 60 * 60_000;
 const worldsEdgeMatchCacheDir = join(dataDir, 'worldsedge-matches');
 const worldsEdgeMatchCacheTtl = 10 * 60_000;
-const worldsEdgeMatchCache = new Map();
+const worldsEdgeMatchCache = new BoundedCache(512);
 const worldsEdgeMatchRefreshes = new Map();
 let profileDb = null;
 let profileCache = null;
@@ -1953,38 +1959,6 @@ const { localProfileDetails, profileLeaderboardSummary, fetchPersonalLeaderboard
 const matchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches });
 const { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce } = matchesService;
 
-const directDanmakuSender = createDirectDanmakuClient({
-  pythonExecutable: process.platform === 'win32'
-    ? join(root, '.venv-danmaku', 'Scripts', 'python.exe')
-    : join(root, '.venv-danmaku', 'bin', 'python'),
-  scriptPath: join(root, 'tools', 'douyu_auto_send.py'),
-  room: '753676',
-  statePath: join(dataDir, 'danmaku', 'douyu_storage_state.json')
-});
-const realtimeDanmakuNotifier = createRealtimeDanmakuNotifier({
-  residentSender: directDanmakuSender,
-  statePath: join(dataDir, 'danmaku', 'realtime-match-added.json'),
-  readFile,
-  writeFile,
-  renameFile: rename,
-  execFileAsync,
-  pythonExecutable: process.platform === 'win32'
-    ? join(root, '.venv-danmaku', 'Scripts', 'python.exe')
-    : join(root, '.venv-danmaku', 'bin', 'python'),
-  scriptPath: join(root, 'tools', 'live_danmaku.py'),
-  playwrightBrowsersPath: join(root, '.cache', 'ms-playwright'),
-  watchers: [
-    { profileId: '197964', platform: 'douyu', room: '753676' }
-  ]
-});
-const replayEndedNotifier = createReplayEndedNotifier({
-  statePath: join(dataDir, 'danmaku', 'replay-ended.json'),
-  profileIds: ['197964'],
-  replayService: replayAnalysisService,
-  prepare: realtimeDanmakuNotifier.prepareMatchEnded,
-  cancelPreparation: realtimeDanmakuNotifier.cancelPreparedEnd,
-  send: realtimeDanmakuNotifier.handleMatchEnded
-});
 const realtimeService = createRealtimeService({
   realtimePayloadPath: join(dataDir, 'realtime-payload.json'),
   readFile,
@@ -2001,11 +1975,7 @@ const realtimeService = createRealtimeService({
   getLiveTournamentForPlayer,
   WebSocket,
   notificationProfileIds: ['197964'],
-  onMatchPreparing: match => realtimeDanmakuNotifier.prepareMatch(match),
-  onMatchAdded: match => Promise.all([
-    replayEndedNotifier.observe(match),
-    realtimeDanmakuNotifier.handleMatchAdded(match)
-  ])
+  onMatchAdded: match => queueDanmakuMatch(join(dataDir, 'danmaku/events'), match)
 });
 // End of server entrypoint.
 async function getWorldsEdgeMatches(profileId, page = 1) {
@@ -2466,7 +2436,11 @@ async function readJsonRequest(req, maxBytes = 4096) {
     req.on('data', chunk => {
       size += chunk.length;
       if (size > maxBytes) {
-        tooLarge = true;
+        if (!tooLarge) {
+          tooLarge = true;
+          reject(Object.assign(new Error('提交内容过长'), { statusCode: 413 }));
+          req.resume();
+        }
         return;
       }
       if (!tooLarge) chunks.push(chunk);
@@ -2888,8 +2862,27 @@ function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
   return res.end(JSON.stringify(data));
 }
 
-http.createServer(async (req, res) => {
+const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  const protectionIp = requestClientIp(req);
+  if (!apiProtection.allow(req, res, url.pathname, protectionIp, isInternalIp(protectionIp))) return;
+  if (url.pathname === '/replay-analysis' && url.search) res.setHeader('x-robots-tag', 'noindex, nofollow');
+  if (url.pathname === '/api/internal/health') {
+    if (!isInternalIp(protectionIp)) return sendNoStoreJson(res, 404, { error: 'Not found' });
+    const worker = await background.health();
+    return sendNoStoreJson(res, 200, { ok: true, uptime: process.uptime(), background: worker, caches: { avatars: avatarCache.stats(), personalStats: personalStatsCache.stats(), livePlayerStats: livePlayerStatsCache.stats(), profiles: aoe2RecsProfileCache.stats(), matches: worldsEdgeMatchCache.stats() } });
+  }
+  if (url.pathname === '/api/replay-analysis/status') {
+    const jobId = url.searchParams.get('jobId') || '';
+    if (!/^[a-f0-9-]{36}$/.test(jobId)) return sendNoStoreJson(res, 400, { error: '无效的任务 ID' });
+    const response = await background.poll(jobId);
+    return streamResponse(response, res, { limit: 128 * 1024 * 1024,
+      headers: { 'x-replay-cache': response.headers.get('x-replay-cache') || '' } });
+  }
+  if (url.pathname === '/api/protection/status') {
+    if (!isInternalIp(protectionIp)) return sendNoStoreJson(res, 404, { error: 'Not found' });
+    return sendNoStoreJson(res, 200, apiProtection.stats());
+  }
   if (url.pathname === '/api/site-stats') {
     if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
     try {
@@ -3127,12 +3120,11 @@ http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ error: '无效的比赛或玩家 ID' }));
     }
     try {
-      const result = await replayAnalysisService.get(matchId, profileId);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-encoding': 'gzip', 'content-length': String(result.data.length), 'cache-control': 'no-store', 'x-replay-cache': result.cached ? 'HIT' : 'MISS' });
-      return res.end(result.data);
+      const task = await background.submit(matchId, profileId);
+      return sendNoStoreJson(res, 202, { ...task, pollUrl: `/api/replay-analysis/status?jobId=${task.jobId}` });
     } catch (error) {
       console.error('录像分析失败:', matchId, profileId, error.message);
-      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.writeHead(error.statusCode || 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '录像分析失败，请稍后重试' }));
     }
   }
@@ -3144,21 +3136,10 @@ http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ error: '无效的比赛或玩家 ID' }));
     }
     try {
-      const endpoint = `https://api.ageofempires.com/api/GameStats/AgeII/GetMatchReplay/?matchId=${matchId}&profileId=${profileId}`;
-      const response = await fetch(endpoint, {
-        headers: { 'user-agent': 'Mozilla/5.0', accept: '*/*' },
-        signal: AbortSignal.timeout(60_000)
-      });
-      if (!response.ok) throw new Error(`录像接口请求失败（HTTP ${response.status}）`);
-      const data = Buffer.from(await response.arrayBuffer());
-      res.writeHead(200, {
-        'content-type': response.headers.get('content-type') || 'application/octet-stream',
-        'content-length': String(data.length),
-        'content-disposition': response.headers.get('content-disposition') || `attachment; filename="aoe2-match-${matchId}.zip"`,
-        'cache-control': 'no-store'
-      });
-      return res.end(data);
+      const response = await background.download(matchId, profileId);
+      return await streamResponse(response, res);
     } catch (error) {
+      if (res.headersSent) throw error;
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '录像下载失败' }));
     }
@@ -3312,11 +3293,8 @@ http.createServer(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events|feedback|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
-  const path = normalize(join(root, 'public', relative));
-  if (!path.startsWith(join(root, 'public'))) {
-    res.writeHead(403); return res.end('Forbidden');
-  }
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events|feedback|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : url.pathname.slice(1);
+  const path = await staticFilePath(join(root, 'public'), relative);
   try {
     const data = await readFile(path);
     const extension = extname(path).toLowerCase();
@@ -3329,7 +3307,12 @@ http.createServer(async (req, res) => {
   } catch {
     res.writeHead(404); res.end('Not found');
   }
-}).listen(port, () => {
+}));
+httpServer.requestTimeout = 30000;
+httpServer.headersTimeout = 15000;
+httpServer.keepAliveTimeout = 5000;
+httpServer.maxHeadersCount = 100;
+httpServer.listen(port, '127.0.0.1', () => {
   console.log(`AoE2DE Ladder running at http://localhost:${port}`);
   startLiquipediaMatchesLifecycle().catch(error => console.warn('[events] lifecycle startup failed:', error.message));
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
@@ -3357,3 +3340,8 @@ http.createServer(async (req, res) => {
   setInterval(refreshRealtimeOnServer, 60 * 1000).unref();
 });
 
+
+process.once('SIGTERM', () => {
+  httpServer.close();
+  apiProtection.flush().finally(() => process.exit(0));
+});

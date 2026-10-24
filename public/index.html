@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=mobile-v130" />
+  <link rel="stylesheet" href="/styles.css?v=sponsor-stats-v135" />
 </head>
 <body>
   <script>
@@ -122,7 +122,7 @@
             <p id="feedbackStatus" class="feedback-status" aria-live="polite"></p>
           </form>
         </div>
-        <div class="feedback-sponsor"><button id="feedbackSponsorToggle" class="feedback-sponsor-toggle" type="button" aria-expanded="false" aria-controls="feedbackSponsorQr">赞助网站运营</button><div id="feedbackSponsorQr" class="feedback-sponsor-qr" hidden>
+        <div class="feedback-sponsor"><div class="feedback-sponsor-header"><span class="feedback-sponsor-rent">服务器月租0/100元</span><button id="feedbackSponsorToggle" class="feedback-sponsor-toggle" type="button" aria-expanded="false" aria-controls="feedbackSponsorQr">赞助网站运营</button><span class="feedback-sponsor-count">已赞助0人</span></div><div id="feedbackSponsorQr" class="feedback-sponsor-qr" hidden>
           <img src="/assets/feedback-alipay.jpg?v=20261017" alt="支付宝赞助二维码" loading="lazy" />
           <p>喜欢的话就赞助杯奶茶吧~欢迎反馈您的意见或建议</p>
         </div></div>
@@ -131,7 +131,7 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=avatar-cache-v134" defer></script>
+  <script src="/app.js?v=cache-v138" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');
