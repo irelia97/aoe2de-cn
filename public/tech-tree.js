@@ -323,7 +323,15 @@ export async function mountTechTree(root) {
     const description=descriptionLines.filter(line=>line!==upgradeLine);
     const benefits=technologyBenefits(upgradeLine);
     const verifiedBenefits=verifiedBenefitGroups(entity);
-    const benefitGroups=(verifiedBenefits ?? benefits.map(group=>({...group,technologies:benefitTechnologies(entity,node,group,relations)}))).filter(group=>group.technologies.length);
+    const benefitGroups=(verifiedBenefits ?? benefits.map(group=>({...group,technologies:benefitTechnologies(entity,node,group,relations)})))
+      .map(group=>({
+        ...group,
+        technologies: group.technologies.filter(tech => !(entity.type === 'Unit'
+          && compactName(entity.name) === '村民'
+          && civilization.id !== 'incas'
+          && ['锻造','铸铁','鼓风炉','步兵鳞甲','步兵锁甲','步兵钢甲'].includes(compactName(tech.name))))
+      }))
+      .filter(group=>group.technologies.length);
     const benefitsMarkup=benefitGroups.length?`<section class="tt-detail-section"><h4>本民族科技收益</h4><div class="tt-tech-benefits">${benefitGroups.map(group=>`<div role="group" aria-label="${escape(group.source || group.effects.join('、'))}"><small>${escape(group.source || '其他')}</small><div>${group.technologies.map(tech=>`<span title="${escape(tech.name)}" aria-label="${escape(tech.name)}"><img src="${escape(tech.icon)}" alt=""></span>`).join('')}</div></div>`).join('')}</div></section>`:'';
     const timeField=entity.type==='Tech'?'ResearchTime':'TrainTime';
     const timeLabel=entity.type==='Tech'?'研究时间':entity.type==='Building'?'建造时间':'训练时间';
