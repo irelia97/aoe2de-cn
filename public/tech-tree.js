@@ -291,6 +291,14 @@ export async function mountTechTree(root) {
     if(!entry) return null;
     const grouped=new Map();
     for(const benefit of entry.benefits || []) {
+      // Seicing's generic Villager entry includes the Inca-only blacksmith
+      // effects. Keep those benefits scoped to Incas instead of showing them
+      // for every civilization that happens to research the same techs.
+      const incaVillagerBlacksmith = entity.type === 'Unit'
+        && compactName(entity.name) === '村民'
+        && civilization.id !== 'incas'
+        && ['锻造','铸铁','鼓风炉','步兵鳞甲','步兵锁甲','步兵钢甲'].includes(compactName(benefit.tech));
+      if (incaVillagerBlacksmith) continue;
       const wanted=benefitTechAliases[compactName(benefit.tech)] || compactName(benefit.tech);
       const matches=tree.nodes.filter(item=>item.available && item.entity.startsWith('Tech:') && compactName(entities[item.entity]?.name)===wanted);
       for(const match of matches) {
