@@ -1,0 +1,22 @@
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 103.42.182.205
+bantime = 1h
+findtime = 10m
+bantime.increment = true
+bantime.maxtime = 1d
+banaction = nftables-multiport
+
+[sshd]
+enabled = true
+backend = systemd
+maxretry = 5
+port = ssh
+
+[aoe2-scanner]
+enabled = true
+filter = aoe2-scanner
+backend = polling
+logpath = /var/log/nginx/access.log
+maxretry = 8
+findtime = 1m
+port = http,https

@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly civilization statistics on Monday 08:00 Beijing
+
+[Timer]
+OnCalendar=Mon *-*-* 08:00:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=aoe2-civilization-stats.service
+
+[Install]
+WantedBy=timers.target

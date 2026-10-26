@@ -21,6 +21,8 @@ const replayOptions = { cacheDir: join(cacheDir, 'replay-analysis'), assetsDir: 
 const replay = createReplayAnalysisService({ ...replayOptions, fetchImpl: gateway.fetch });
 const automaticReplay = createReplayAnalysisService({ ...replayOptions, fetchImpl: (url, options) => gateway.fetch(url, { ...options, priority: 10 }) });
 const jobs = createReplayJobs({ replayService: replay });
+const automaticPausedUntil = Number(process.env.AOE2_AUTO_DANMAKU_PAUSED_UNTIL) || 0;
+const automaticNotificationsPaused = () => Date.now() < automaticPausedUntil;
 const direct = createDirectDanmakuClient({ pythonExecutable: process.platform === 'win32'
   ? join(root, '.venv-danmaku/Scripts/python.exe') : join(root, '.venv-danmaku/bin/python'),
   scriptPath: join(root, 'tools/douyu_auto_send.py'), room: '753676', statePath: join(cacheDir, 'danmaku/douyu_storage_state.json') });
@@ -28,6 +30,7 @@ const notifier = createRealtimeDanmakuNotifier({ residentSender: direct,
   statePath: join(cacheDir, 'danmaku/realtime-match-added.json'), readFile, writeFile, renameFile: rename,
   watchers: [{ profileId: '197964', platform: 'douyu', room: '753676' }] });
 const ended = createReplayEndedNotifier({ statePath: join(cacheDir, 'danmaku/replay-ended.json'), profileIds: ['197964'],
+  isPaused: automaticNotificationsPaused,
   replayService: automaticReplay, prepare: notifier.prepareMatchEnded, cancelPreparation: notifier.cancelPreparedEnd,
   send: notifier.handleMatchEnded, fetchImpl: (url, options) => gateway.fetch(url, { ...options, priority: 10 }) });
 const outbox = join(cacheDir, 'danmaku/events');
@@ -40,9 +43,11 @@ async function scanOutbox() {
     for (const file of (await readdir(outbox)).filter(name => /^\d+\.json$/.test(name))) {
       const path = join(outbox, file);
       const match = JSON.parse(await readFile(path, 'utf8'));
-      await ended.observe(match);
-      // Skip delayed openings after downtime, but keep watching their endings.
-      if (Date.now() / 1000 - Number(match.started) < 120) await notifier.handleMatchAdded(match);
+      if (!automaticNotificationsPaused()) {
+        await ended.observe(match);
+        // Skip delayed openings after downtime, but keep watching their endings.
+        if (Date.now() / 1000 - Number(match.started) < 120) await notifier.handleMatchAdded(match);
+      }
       await rm(path, { force: true });
     }
   } catch (error) { console.error('[background] outbox:', error.message); }
@@ -52,7 +57,8 @@ async function scanOutbox() {
 const server = http.createServer(safeHttpHandler(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1:3001');
   const json = (status, data) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)); };
-  if (url.pathname === '/health') return json(200, { ok: true, uptime: process.uptime(), jobs: jobs.stats(), replayCache: replay.stats(), upstream: gateway.stats() });
+  if (url.pathname === '/health') return json(200, { ok: true, uptime: process.uptime(), jobs: jobs.stats(), replayCache: replay.stats(), upstream: gateway.stats(),
+    automaticNotifications: { paused:automaticNotificationsPaused(), pausedUntil:automaticPausedUntil ? new Date(automaticPausedUntil).toISOString() : null } });
   if (url.pathname === '/notifications' && req.method === 'POST') {
     let text = '';
     for await (const chunk of req) { text += chunk; if (text.length > 256 * 1024) return json(413, { error: '消息过大' }); }
@@ -68,6 +74,13 @@ const server = http.createServer(safeHttpHandler(async (req, res) => {
     return streamResponse(response, res);
   }
   if (url.pathname === '/replay/info') return json(200, await replay.getMatchInfo(url.searchParams.get('matchId')));
+  if (url.pathname === '/replay/cached') {
+    if (req.method !== 'GET') return json(405, { error: 'Method not allowed' });
+    const result = await replay.readCached(url.searchParams.get('matchId'), url.searchParams.get('profileId'));
+    if (!result) return json(404, { code: 'ANALYSIS_REQUIRED', error: '尚无缓存，请点击开始分析' });
+    res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip', 'cache-control': 'no-store', 'x-replay-cache': 'HIT' });
+    return res.end(result.data);
+  }
   if (url.pathname === '/replay/jobs' && req.method === 'POST') return json(202, jobs.submit(url.searchParams.get('matchId'), url.searchParams.get('profileId')));
   if (url.pathname.startsWith('/replay/jobs/')) {
     const job = jobs.get(url.pathname.slice('/replay/jobs/'.length));

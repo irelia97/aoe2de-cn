@@ -1,4 +1,4 @@
-import { collectEffectiveActionTimes, replayEapmStats } from '../../public/replay-eapm.js';
+import { collectEffectiveActionTimes, replayEapmStats, replayGameSpeed } from '../../public/replay-eapm.js';
 import { collectPlayerAgeEvents } from '../../public/replay-player-ages.js';
 
 export function formatResearchDelay(milliseconds) {
@@ -42,7 +42,7 @@ export function formatReplayDanmaku(replay, profileId, playerNames = {}, ratingC
   const researchText = `${timing(1,202,'封建','双刃斧')}，${timing(2,203,'城堡','弓锯')}${ratingChange ? `, ${ratingChange}` : ''}`;
   if (players.length > 2) return researchText;
   const opponent = players.find(p => p !== streamer);
-  const actions = collectEffectiveActionTimes(replay.full, players);
+  const actions = collectEffectiveActionTimes(replay.full, players, duration, replayGameSpeed(replay.summary));
   const playerText = player => `${String(playerNames[String(player.profile_id)] ?? player.name).replace(/[\r\n]/g,' ')}(${replayEapmStats(actions.get(String(player.player_number)) || [], duration).global.toFixed(1)})`;
   return `eAPM ${playerText(streamer)} vs ${playerText(opponent)}，${researchText}`;
 }

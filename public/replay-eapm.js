@@ -1,27 +1,73 @@
-const effectiveTypes = new Set(['Transform','DeQueue','Build','Move','Gatherpoint','Interact','Order','Stance','DeAttackMove','Patrol','Research','Delete','Wall','Sell','Formation','AttackGround','BackToWork','Buy']);
+// Player-issued game commands supported by aoe2rec ActionData. UI, AI,
+// unknown packets and resignation are deliberately excluded.
+const effectiveTypes = new Set(['Transform','DeQueue','Build','Move','Gatherpoint','Interact','Order','Stance','DeAttackMove','Patrol','Research','Delete','Wall','Sell','Formation','AttackGround','BackToWork','Buy',
+  'Stop','Waypoint','Guard','Follow','Queue','Multiqueue','Release','Repair','DropRelic','SwitchAttack','ToggleGate','TownBell','Tribute','Autoscout']);
+// Every command uses the same per-player, per-payload sliding repeat window.
+export const EAPM_REPEAT_REAL_MS = 500;
+export function replayGameSpeed(summary) {
+  for (const value of [summary?.header?.game_settings?.speed, summary?.header?.game_speed, summary?.header?.replay?.game_speed]) {
+    const speed = Number(value);
+    if (Number.isFinite(speed) && speed > 0 && speed <= 16) return speed;
+  }
+  return 1.7; // DE normal speed when the recording lacks speed metadata.
+}
+const maxRecentCommandsPerPlayer = 256;
 
-export function collectEffectiveActionTimes(full, players) {
-  const times = new Map(players.map(p=>[String(p.player_number),[]]));
-  const recent = new Map();
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+  return value;
+}
+
+// These arrays represent sets of executing units/buildings, not a sequence of
+// waypoints or raw bytes. Keep all other arrays in their original order.
+const actorIdFields = ['unit_ids', 'building_ids', 'object_ids'];
+function commandMeaning(value) {
+  const result = { ...value };
+  delete result.action_length; // Packet framing, not a game command parameter.
+  for (const field of actorIdFields) {
+    if (!Array.isArray(result[field])) continue;
+    result[field] = [...result[field]].sort((a,b) => Number(a)-Number(b));
+    // Only discard a redundant count when the complete explicit set is present.
+    // Negative selection sentinels reuse prior selection and must be preserved.
+    if (result[field].length && result.selected === result[field].length) delete result.selected;
+  }
+  // Undecoded data/unknown fields can contain targets, flags or coordinates.
+  // Preserve them until their meaning is known rather than merging real orders.
+  return canonical(result);
+}
+
+// Times and duration are game milliseconds. Only the repeat window converts
+// real milliseconds to game milliseconds; the eAPM denominator stays game time.
+export function collectEffectiveActionTimes(full, players, duration = Infinity, gameSpeed = 1.7) {
+  const times = new Map(players.map(p => [String(p.player_number), []]));
+  const recent = new Map(), events = [];
+  const speed = Number.isFinite(gameSpeed) && gameSpeed > 0 && gameSpeed <= 16 ? gameSpeed : 1.7;
+  const repeatWindow = EAPM_REPEAT_REAL_MS * speed;
+  const limit = typeof duration === 'number' && duration >= 0 ? duration : Infinity;
   for (const chapter of full?.chapters || []) for (const op of chapter.operations || []) {
-    const action=op.Action;
-    if (!action?.action_data) continue;
-    const time=Number(action.world_time);
-    if (!Number.isFinite(time) || time < 0) continue;
-    for (const [type,value] of Object.entries(action.action_data)) {
-      if (!effectiveTypes.has(type) || !value || !times.has(String(value.player_id))) continue;
-      const key=`${value.player_id}|${type}|${JSON.stringify(value)}`;
-      const previous=recent.get(key);
-      if (previous != null && time >= previous && time-previous <= 300) {
-        // Match the existing summary's villager auto-queue handling.
-        if(type==='DeQueue' && Number(value.unit_id)===83)recent.set(key,time);
-        continue;
-      }
-      recent.set(key,time);
-      times.get(String(value.player_id)).push(time);
+    const action = op.Action;
+    if (!action?.action_data || action.world_time == null) continue;
+    const time = Number(action.world_time);
+    if (!Number.isFinite(time) || time < 0 || time > limit) continue;
+    for (const [type, value] of Object.entries(action.action_data)) {
+      const player = String(value?.player_id);
+      if (!effectiveTypes.has(type) || !value || !times.has(player)) continue;
+      events.push({ time, player, key: `${type}|${JSON.stringify(commandMeaning(value))}` });
     }
   }
-  for (const actions of times.values()) actions.sort((a,b)=>a-b);
+  events.sort((a, b) => a.time - b.time);
+  for (const { time, player, key } of events) {
+    let commands = recent.get(player);
+    if (!commands) { commands = new Map(); recent.set(player, commands); }
+    const previous = commands.get(key);
+    // Update on every occurrence, including suppressed repeats. Tracking each
+    // payload independently also handles ABCABC and arbitrary mixed loops.
+    commands.delete(key); commands.set(key, time);
+    if (commands.size > maxRecentCommandsPerPlayer) commands.delete(commands.keys().next().value);
+    if (previous != null && time - previous <= repeatWindow) continue;
+    times.get(player).push(time);
+  }
   return times;
 }
 
@@ -32,28 +78,31 @@ function upperBound(times, value) {
 }
 
 export function rollingEapm(times, time) {
-  if (time <= 0) return 0;
+  if (!Number.isFinite(time) || time <= 0) return 0;
   const count=upperBound(times,time)-upperBound(times,Math.max(-1,time-60000));
   return count;
 }
 
 export function globalEapmAt(times, time) {
-  return time > 0 ? upperBound(times,time)*60000/Math.max(time,1000) : 0;
+  return Number.isFinite(time) && time > 0 ? (upperBound(times,time)-upperBound(times,-Number.EPSILON))*60000/time : 0;
 }
 
 export function replayEapmStats(times, duration) {
-  let left=0,peak=0;
-  for(let right=0;right<times.length;right++) {
-    while(left<=right && times[left]<=times[right]-60000)left++;
-    peak=Math.max(peak,right-left+1);
+  const valid = times.filter(time => Number.isFinite(time) && time >= 0).sort((a,b) => a-b);
+  const elapsed = Number.isFinite(duration) && duration >= 0 ? duration : (valid.at(-1) || 0);
+  const bounded = valid.filter(time => time <= elapsed);
+  if (!(elapsed > 0)) return { peak: 0, global: 0 };
+  let left = 0, peak = 0;
+  for (let right = 0; right < bounded.length; right++) {
+    while (left <= right && bounded[left] <= bounded[right] - 60000) left++;
+    peak = Math.max(peak, right - left + 1);
   }
-  const elapsed=Math.max(Number(duration)||times.at(-1)||0,1000);
-  return {peak,global:times.length*60000/elapsed};
+  return { peak, global: bounded.length * 60000 / elapsed };
 }
 
-export function createReplayEapm(target, full, players, duration, colors) {
-  const actions=collectEffectiveActionTimes(full,players);
-  const end=Math.max(Number(duration)||0,...[...actions.values()].map(a=>a.at(-1)||0),1000);
+export function createReplayEapm(target, full, players, duration, colors, gameSpeed = 1.7) {
+  const actions=collectEffectiveActionTimes(full,players,duration,gameSpeed);
+  const end=Number.isFinite(duration) && duration > 0 ? duration : Math.max(...[...actions.values()].map(a=>a.at(-1)||0),1000);
   const step=5000;
   const samples=players.map(player=>{
     const times=actions.get(String(player.player_number)) || [];
@@ -64,7 +113,7 @@ export function createReplayEapm(target, full, players, duration, colors) {
   });
   const maximum=Math.max(100,...samples.map(s=>s.stats.peak));
   const ceiling=Math.ceil(maximum/50)*50;
-  target.innerHTML='<h4>eAPM 变化</h4><p class="replay-eapm-note">每 5 秒采样，统计过去 60 秒有效操作。开局前 60 秒为累计操作数；曲线显示已播放区间。</p><svg viewBox="0 0 300 240" role="img" aria-label="玩家 eAPM 随时间变化曲线"></svg><div class="replay-eapm-values"></div>';
+  target.innerHTML=`<h4>eAPM 变化</h4><p class="replay-eapm-note">每 5 秒采样，统计过去 60 秒有效操作。开局前 60 秒为累计操作数；每种相同参数指令在现实 ${EAPM_REPEAT_REAL_MS} 毫秒内重复时合并（按录像游戏速度换算），连续点击及多指令循环均过滤。曲线显示已播放区间。</p><svg viewBox="0 0 300 240" role="img" aria-label="玩家 eAPM 随时间变化曲线"></svg><div class="replay-eapm-values"></div>`;
   const svg=target.querySelector('svg'), values=target.querySelector('.replay-eapm-values');
   const ns='http://www.w3.org/2000/svg';
   const node=(name,attrs={})=>{const n=document.createElementNS(ns,name);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,String(v));svg.append(n);return n;};

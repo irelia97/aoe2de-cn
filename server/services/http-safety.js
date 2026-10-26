@@ -10,6 +10,10 @@ export async function staticFilePath(root, pathname) {
   let decoded;
   try { decoded = decodeURIComponent(pathname); } catch { throw Object.assign(new Error('无效的网址编码'), { statusCode: 400 }); }
   if (decoded.includes('\0')) throw Object.assign(new Error('无效的文件路径'), { statusCode: 400 });
+  // Defense in depth if a hidden file is accidentally copied into public/.
+  if (decoded.split(/[\\/]/).some(part => part.startsWith('.') && !['.', '..', '.well-known'].includes(part))) {
+    throw Object.assign(new Error('Not found'), { statusCode: 404 });
+  }
   const target = resolve(root, `.${decoded.startsWith('/') ? decoded : `/${decoded}`}`);
   if (!withinDirectory(root, target)) throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
   // Check symlinks as well as lexical traversal. Missing files remain normal 404s.

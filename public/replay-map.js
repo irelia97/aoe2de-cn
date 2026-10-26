@@ -1,8 +1,8 @@
 import { createProductionPulses } from './replay-production-pulses.js?v=2';
-import { replayTerrainColors, replayFishObjectIds } from './replay-terrain-colors.js?v=2';
+import { replayTerrainColors, replayFishObjectIds } from './replay-terrain-colors.js?v=3';
 import { collectMapEvents, createMapEventFeed } from './replay-map-events.js?v=4';
 import { resolveBuildingLifecycle } from './replay-building-lifecycle.js?v=1';
-import { createReplayEapm } from './replay-eapm.js?v=4';
+import { createReplayEapm } from './replay-eapm.js?v=7';
 import { createMapPlayerLegend } from './replay-player-ages.js?v=3';
 export const replayBuildingIcons = {
   "109": {
@@ -144,7 +144,7 @@ export function renderReplayMap(root, full, players, duration, colors, eventLabe
   const build = root.querySelector('[data-build]'), initial = root.querySelector('[data-initial]');
   if (!data.initialObjects?.length) root.querySelector('.replay-map-note').append(' 此录像的初始物体未能读取；本地文件目前仅支持地形和指令。');
   const limit = [...data.events,...feedEvents].reduce((max, item) => Math.max(max, item.time), Math.max(Number(duration) || 0, 1000));
-  const updateEapm = createReplayEapm(eapm,full,players,Number(duration)||limit,colors);
+  const updateEapm = createReplayEapm(eapm,full,players,Number(duration)||limit,colors,eventLabels.gameSpeed);
   range.max = String(limit);
   const palette = new Map(players.map(p => [Number(p.player_number), colors(p.color_id)]));
   const legend = root.querySelector('.replay-map-legend');

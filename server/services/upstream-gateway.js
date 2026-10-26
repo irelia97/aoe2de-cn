@@ -16,12 +16,12 @@ export function upstreamCacheTtl(url, data) {
   return 10000;
 }
 
-export function createUpstreamGateway({ fetchImpl = fetch, now = Date.now, gapMs = 3000, maxQueue = 64 } = {}) {
+export function createUpstreamGateway({ fetchImpl = fetch, now = Date.now, gapMs = 3000, maxQueue = 64, requestTimeoutMs = 45000 } = {}) {
   const hosts = new Map(), pending = new Map(), cache = new Map();
   let cacheBytes = 0;
   function state(host) {
     if (!hosts.has(host)) hosts.set(host, { queue: [], active: 0, nextAt: 0, blockedUntil: 0, timer: null,
-      requests: 0, cacheHits: 0, merged: 0, limited: 0, failed: 0 });
+      requests: 0, cacheHits: 0, merged: 0, limited: 0, failed: 0, timedOut: 0, current: null, lastFailure: null });
     return hosts.get(host);
   }
   const limited = seconds => new Response(JSON.stringify({ error: '上游暂时限流，请稍后重试' }), {
@@ -66,18 +66,55 @@ export function createUpstreamGateway({ fetchImpl = fetch, now = Date.now, gapMs
     }
     item.active = 1; item.requests++;
     item.nextAt = now() + (host === 'data.aoe2companion.com' ? gapMs : 300);
-    let released = false;
-    const release = () => { if (released) return; released = true; item.active = 0; pump(host); };
+    let released = false, reader, streamController, deadline;
+    const current = { path: new URL(job.url).pathname, startedAt: now(), phase: 'headers' };
+    item.current = current;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, ...(job.signal ? [job.signal] : [])]);
+    const release = () => {
+      if (released) return;
+      released = true; clearTimeout(deadline); signal.removeEventListener('abort', onAbort);
+      item.active = 0; item.current = null; pump(host);
+    };
+    // Cancellation itself can stall. Never wait for it before releasing a host slot.
+    const cancel = reason => { try { Promise.resolve(reader?.cancel(reason)).catch(() => {}); } catch {} };
+    const fail = error => {
+      if (released) return;
+      item.failed++;
+      item.lastFailure = { path: current.path, phase: current.phase, at: now(), error: String(error.message || error).slice(0,160) };
+      try { streamController?.error(error); } catch {}
+      job.reject(error); cancel(error); release();
+    };
+    let rejectInterrupted;
+    const interrupted = new Promise((_, reject) => { rejectInterrupted = reject; });
+    interrupted.catch(() => {});
+    const onAbort = () => { const error = signal.reason || new Error('上游请求已取消'); fail(error); rejectInterrupted(error); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    deadline = setTimeout(() => {
+      item.timedOut++;
+      controller.abort(new Error('上游请求超过硬性时限'));
+    }, requestTimeoutMs);
+    if (signal.aborted) onAbort();
+    const guarded = operation => Promise.race([operation, interrupted]);
     (async () => {
       try {
-        const response = await fetchImpl(job.url, { ...job.options, redirect: 'error' });
+        if (released) return;
+        const fetching = Promise.resolve(fetchImpl(job.url, { ...job.options, signal, redirect: 'error' }));
+        fetching.then(response => { if (released) { try { response.body?.cancel().catch(() => {}); } catch {} } }, () => {});
+        const response = await guarded(fetching);
+        current.phase = 'body';
         if (response.status === 429) {
           item.limited++; item.blockedUntil = now() + retryMs(response);
-          await response.body?.cancel(); job.resolve(limited(Math.ceil((item.blockedUntil - now()) / 1000))); release(); return;
+          try { response.body?.cancel().catch(() => {}); } catch {}
+          job.resolve(limited(Math.ceil((item.blockedUntil - now()) / 1000))); release(); return;
         }
         if (jsonHosts.has(host)) {
           const chunks = []; let size = 0;
-          for await (const chunk of response.body || []) {
+          reader = response.body?.getReader();
+          while (reader) {
+            const { value: chunk, done } = await guarded(reader.read());
+            if (released) return;
+            if (done) break;
             size += chunk.length;
             if (size > 8 * 1024 * 1024) throw new Error('上游数据过大');
             chunks.push(chunk);
@@ -96,17 +133,18 @@ export function createUpstreamGateway({ fetchImpl = fetch, now = Date.now, gapMs
           job.resolve(new Response(data, result)); release();
         } else {
           if (!response.body) { job.resolve(response); release(); return; }
-          const reader = response.body.getReader();
+          reader = response.body.getReader();
           const body = new ReadableStream({
+            start(controller) { streamController = controller; },
             async pull(controller) {
-              try { const result = await reader.read(); if (result.done) { controller.close(); release(); } else controller.enqueue(result.value); }
-              catch (error) { controller.error(error); release(); }
+              try { const result = await guarded(reader.read()); if (released) return; if (result.done) { controller.close(); release(); } else controller.enqueue(result.value); }
+              catch (error) { fail(error); }
             },
-            async cancel(reason) { try { await reader.cancel(reason); } finally { release(); } }
+            cancel(reason) { cancel(reason); release(); }
           });
           job.resolve(new Response(body, { status: response.status, headers: response.headers }));
         }
-      } catch (error) { item.failed++; job.reject(error); release(); }
+      } catch (error) { fail(error); }
     })();
   }
   return {
@@ -114,7 +152,9 @@ export function createUpstreamGateway({ fetchImpl = fetch, now = Date.now, gapMs
       cacheEntries: [...cache.keys()].filter(key => new URL(key).hostname === host).length,
       cacheBytes: [...cache].reduce((sum, [key, value]) => sum + (new URL(key).hostname === host ? value.data.length : 0), 0),
       cacheHits: item.cacheHits, merged: item.merged, limited: item.limited, failed: item.failed,
-      queued: item.queue.length, active: item.active, blockedUntil: item.blockedUntil }])),
+      queued: item.queue.length, active: item.active, blockedUntil: item.blockedUntil,
+      timedOut: item.timedOut, current: item.current ? { ...item.current, ageMs: now()-item.current.startedAt } : null,
+      lastFailure: item.lastFailure }])),
     fetch(input, options = {}) {
       if (options.signal?.aborted) return Promise.reject(options.signal.reason || new Error('请求已取消'));
       const url = new URL(String(input));

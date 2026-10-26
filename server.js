@@ -1,4 +1,5 @@
 import { BoundedCache } from './server/services/bounded-cache.js';
+import { createCivilizationStats, parseCivilizationFilters } from './server/services/civilization-stats.js';
 import { createBackgroundClient } from './server/services/background-client.js';
 import { queueDanmakuMatch } from './server/services/danmaku-outbox.js';
 import { streamResponse } from './server/services/response-stream.js';
@@ -9,27 +10,28 @@ import { createProfileSearchPool } from './server/services/profile-search-pool.j
 import http from 'node:http';
 import { nextScheduledVideoRound } from './server/services/media-video-schedule.js';
 import { appendFile, readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, readFileSync, unlinkSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { ProxyAgent, WebSocket, setGlobalDispatcher } from 'undici';
-import { chromium } from 'playwright';
 import { createBilibiliRequestGate } from './server/services/bilibili-request-gate.js';
 import { asyncBufferFromFile, parquetMetadataAsync, parquetReadObjects } from 'hyparquet';
 import { compressors } from 'hyparquet-compressors';
 import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 import { createLeaderboardDumpSummary } from './server/services/leaderboard-dump-summary.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
+import { createRealtimeChat } from './server/services/realtime-chat.js';
 import { recentFeedback } from './server/services/feedback-feed.js';
+import { createFeedbackLikes } from './server/services/feedback-likes.js';
 import { createMatchesService } from './server/services/matches-service.js';
 import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/services/leaderboard-format.js';
 import { createProfileService } from './server/services/profile-service.js';
 import { createGameAssetService } from './server/services/game-assets.js';
+import { parseYoutubeWatchMetadata } from './server/services/youtube-live-metadata.js';
 import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 const execFileAsync = promisify(execFile);
 
@@ -41,10 +43,13 @@ globalThis.fetch = (input, options) => background.fetch(input, options);
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const dataDir = join(root, '.cache');
+const civilizationStats = createCivilizationStats({ path: process.env.AOE2_CIV_STATS_DB || '/var/lib/aoe2-match-data/stats/civilization-stats.sqlite' });
 const apiProtection = createApiProtection({ statePath: join(dataDir, 'api-limits.json') });
 const leaderboardDumpSummary = createLeaderboardDumpSummary({ cacheDir: dataDir, forceCountry: forceChinaCountry });
 const replayAnalysisService = background;
 const feedbackLogPath = join(dataDir, 'feedback-submissions.jsonl');
+const feedbackLikes = createFeedbackLikes(join(dataDir, 'feedback-likes.sqlite'));
+const realtimeChat = createRealtimeChat({ path: join(dataDir, 'realtime-chat.sqlite') });
 const siteTrafficPath = join(dataDir, 'site-traffic.json');
 const siteDailyArchivePath = join(dataDir, 'site-daily-archive.jsonl');
 const liquipediaMatchesCachePath = join(dataDir, 'liquipedia-matches.json');
@@ -72,7 +77,7 @@ const forceProfileRefresh = process.env.PROFILE_REFRESH_NOW === '1';
 const port = Number(process.env.PORT || 3000);
 const api = 'https://aoe-api.worldsedgelink.com/community/leaderboard/getLeaderBoard2';
 const types = { 1: '1v1 死亡竞赛', 2: '团队死亡竞赛', 3: '1v1 随机地图', 4: '团队随机地图', 13: '1v1 帝国战争', 14: '团队帝国战争', 15: '赛事积分' };
-const mime = { '.txt': 'text/plain; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
+const mime = { '.txt': 'text/plain; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp' };
 const avatarCache = createAvatarCache({
   directory: join(dataDir, 'avatars'),
   resolveUrl: async key => {
@@ -165,10 +170,7 @@ const worldsEdgeMatchRefreshes = new Map();
 let profileDb = null;
 let profileCache = null;
 let profileRefreshPromise = null;
-let profileRefreshTimer = null;
 const profileRefreshState = { refreshing: false, stage: '等待启动', downloadedBytes: 0, totalBytes: 0, processedRows: 0, startedAt: null, error: null };
-const mediaVideoActiveRefreshMin = 30 * 60_000;
-const mediaVideoActiveRefreshMax = 60 * 60_000;
 const mediaVideoRequestGapMin = 90_000;
 const mediaVideoRequestGapMax = 120_000;
 const mediaVideoCircuitBaseDelay = 12 * 60 * 60_000;
@@ -183,7 +185,6 @@ const bilibiliCookie = process.env.BILIBILI_COOKIE || process.env.BILI_COOKIE ||
   try { return readFileSync(bilibiliCookiePath, 'utf8').trim(); } catch { return ''; }
 })();
 console.log(`[media] bilibili browser cookie loaded: ${bilibiliCookie.length > 0 ? 'yes' : 'no'} (${bilibiliCookie.length} chars)`);
-let bilibiliBrowserPromise = null;
 const bilibiliUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36';
 const mediaVideoCachePath = join(dataDir, 'media-videos.json');
 const mediaLiveCachePath = join(dataDir, 'media-live.json');
@@ -384,23 +385,6 @@ function bilibiliUpdateTitleMatches(title) {
   return value.includes('帝国时代') && !/帝国时代[\p{N}〇零一二三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]/u.test(value);
 }
 
-function extractBalancedDiv(html, marker) {
-  const opening = String(html || '').indexOf(marker);
-  if (opening < 0) return '';
-  const start = String(html).lastIndexOf('<div', opening);
-  if (start < 0) return '';
-  const source = String(html);
-  const token = /<div\b[^>]*>|<\/div\s*>/gi;
-  token.lastIndex = start;
-  let depth = 0;
-  let match;
-  while ((match = token.exec(source))) {
-    if (/^<div\b/i.test(match[0])) depth += 1;
-    else depth -= 1;
-    if (depth === 0) return source.slice(start, token.lastIndex);
-  }
-  return source.slice(start);
-}
 
 function sanitizeBilibiliArticleHtml(html) {
   let value = String(html || '')
@@ -505,71 +489,7 @@ function renderBilibiliOpusContent(opus) {
   return output.join('');
 }
 
-function parseBilibiliArticlePage(html, fallback = {}) {
-  const source = String(html || '');
-  const body = sanitizeBilibiliArticleHtml(extractBalancedDiv(source, 'opus-module-content opus-paragraph-children'));
-  const stateMatch = source.match(/__INITIAL_STATE__=([\s\S]*?)<\/script>/i);
-  let state = null;
-  if (stateMatch) {
-    try { state = JSON.parse(stateMatch[1].replace(/;\s*$/, '')); } catch {}
-  }
-  const detail = state?.detail;
-  const basic = detail?.basic || {};
-  const authorModule = Array.isArray(detail?.modules) ? detail.modules.find(module => module.module_type === 'MODULE_TYPE_AUTHOR')?.module_author : null;
-  const title = basic.title ? String(basic.title).replace(/\s+-\s+哔哩哔哩\s*$/, '') : String(fallback.title || '');
-  return {
-    id: String(fallback.id || basic.comment_id_str || basic.rid_str || ''),
-    title,
-    author: authorModule?.name || fallback.author || '',
-    authorUid: String(authorModule?.mid || fallback.author_uid || ''),
-    publishedAt: fallback.publish_time ? new Date(Number(fallback.publish_time) * 1000).toISOString() : (authorModule?.pub_time || ''),
-    sourceUrl: `https://www.bilibili.com/read/cv${String(fallback.id || basic.comment_id_str || basic.rid_str || '')}`,
-    contentHtml: body
-  };
-}
 
-async function fetchBilibiliArticlePageViaBrowser(id) {
-  const articleUrl = `https://www.bilibili.com/read/cv${encodeURIComponent(id)}`;
-  try {
-    const headers = {
-      'user-agent': bilibiliUserAgent,
-      referer: bilibiliUpdatesReadlistUrl,
-      'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8'
-    };
-    if (bilibiliCookie) headers.cookie = bilibiliCookie;
-    const response = await fetchBilibiliRequest(articleUrl, { headers, timeoutMs: 60000 });
-    if (response.ok) {
-      const html = await response.text();
-      if (html.includes('opus-module-content')) return html;
-    }
-  } catch (error) { if (isBilibiliRateLimit(error)) throw error; }
-  // Keep the PowerShell path as a Windows-only fallback for existing installations.
-  if (process.platform === 'win32') {
-    try {
-      const command = `$ProgressPreference='SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing -Uri '${articleUrl}' -Headers @{ 'User-Agent'='Mozilla/5.0'; Referer='${bilibiliUpdatesReadlistUrl}' }).Content`;
-      const result = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', command], { timeout: 60_000, maxBuffer: 20 * 1024 * 1024, windowsHide: true });
-      if (result.stdout && result.stdout.includes('opus-module-content')) return result.stdout;
-    } catch {}
-  }
-  const browser = await getBilibiliBrowser();
-  const context = await browser.newContext({
-    userAgent: bilibiliUserAgent,
-    extraHTTPHeaders: { 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8', referer: 'https://www.bilibili.com/' }
-  });
-  if (bilibiliCookie) {
-    await context.addCookies(bilibiliCookie.split(';').map(pair => {
-      const separator = pair.indexOf('=');
-      return separator > 0 ? { name: pair.slice(0, separator).trim(), value: pair.slice(separator + 1).trim(), domain: '.bilibili.com', path: '/', secure: true } : null;
-    }).filter(Boolean));
-  }
-  const page = await context.newPage();
-  try {
-    await page.goto(articleUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    return await page.content();
-  } finally {
-    await context.close().catch(() => {});
-  }
-}
 
 async function fetchBilibiliArticleApi(id, fallback = {}) {
   const response = await fetchBilibiliRequest(`https://api.bilibili.com/x/article/view?id=${encodeURIComponent(id)}`, { headers: bilibiliHeaders(), signal: AbortSignal.timeout(30_000) });
@@ -763,26 +683,7 @@ async function fetchBilibiliVideos(source) {
   });
 }
 
-function bilibiliChromePath() {
-  const candidates = [
-    process.env.BILIBILI_CHROME_PATH,
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
-  ].filter(Boolean);
-  return candidates.find(path => existsSync(path)) || undefined;
-}
 
-async function getBilibiliBrowser() {
-  if (bilibiliBrowserPromise) return bilibiliBrowserPromise;
-  bilibiliBrowserPromise = chromium.launch({
-    headless: true,
-    executablePath: bilibiliChromePath(),
-    proxy: proxyUrl ? { server: proxyUrl } : undefined,
-    args: ['--disable-blink-features=AutomationControlled']
-  }).catch(error => { bilibiliBrowserPromise = null; throw error; });
-  return bilibiliBrowserPromise;
-}
 
 async function fetchRssVideos(source) {
   const xml = await fetchMediaText(source.feedUrl);
@@ -950,12 +851,6 @@ async function savePersistentMediaVideoState() {
   }, null, 2), 'utf8');
 }
 
-function mediaVideoSuccessDelay(idleSuccesses) {
-  if (idleSuccesses <= 1) return randomMediaDelay(mediaVideoActiveRefreshMin, mediaVideoActiveRefreshMax);
-  if (idleSuccesses === 2) return randomMediaDelay(60 * 60_000, 90 * 60_000);
-  if (idleSuccesses === 3) return randomMediaDelay(90 * 60_000, 180 * 60_000);
-  return randomMediaDelay(180 * 60_000, 360 * 60_000);
-}
 
 function isBilibiliRateLimit(error) {
   return error?.riskResponse === true || error?.cooldown === true || [403, 412, 429].includes(Number(error?.status)) || [-412, -352, -403].includes(Number(error?.bilibiliCode));
@@ -1066,13 +961,30 @@ async function fetchYoutubeLive(source) {
   const videoPos = videoId ? html.indexOf(videoId) : -1;
   const videoWindow = videoPos >= 0 ? html.slice(Math.max(0, videoPos - 1200), videoPos + 6000) : '';
   const channelLiveBadge = /"text":"LIVE"|"imageName":"LIVE"|"style":"LIVE"|"iconType":"LIVE"/i.test(videoWindow);
-  const online = !/"status"\s*:\s*"LIVE_STREAM_OFFLINE"/i.test(html)
+  let online = !/"status"\s*:\s*"LIVE_STREAM_OFFLINE"/i.test(html)
     && ( /"isLiveNow"\s*:\s*true|<meta itemprop=["']isLiveBroadcast["'] content=["']True|liveStreamabilityRenderer"\s*:\s*\{[^}]*"videoId"/i.test(html) || Boolean(liveVideoId) || channelLiveBadge );
-  const title = liveDetailsTitle
+  let title = liveDetailsTitle
     || mediaText(html.match(/<meta[^>]+(?:property|name)=["']og:title["'][^>]+content=["']([^"']+)/i)?.[1] || '')
     || mediaText(html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:title["']/i)?.[1] || '')
     || source.name;
-  const viewers = Number(html.match(/(?:concurrentViewers|viewCount|viewerCount)[^\d]{0,20}(\d+)/i)?.[1] || 0);
+  let viewers = Number(html.match(/(?:concurrentViewers|viewCount|viewerCount)[^\d]{0,20}(\d+)/i)?.[1] || 0);
+  if (online && videoId && (!liveDetailsTitle || !viewers)) {
+    try {
+      const watch = parseYoutubeWatchMetadata(await fetchMediaText(`https://www.youtube.com/watch?v=${videoId}`));
+      const expectedChannel = sourceUrl.match(/youtube\.com\/channel\/([^/?#]+)/i)?.[1] || source.channelId || '';
+      if (watch?.videoId === videoId && (!expectedChannel || watch.channelId === expectedChannel)) {
+        online = watch.live;
+        if (online) {
+          title = mediaText(watch.title) || title;
+          viewers = watch.viewers ?? viewers;
+        }
+      } else if (watch?.videoId === videoId && expectedChannel && watch.channelId !== expectedChannel) {
+        online = false;
+      }
+    } catch (error) {
+      console.warn(`[media] YouTube watch metadata failed: ${source.name || sourceUrl}`, error.message);
+    }
+  }
   return { id: `youtube:${source.channelId || sourceUrl}`, platform: 'youtube', name: source.name || '', url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : sourceUrl, live: online, title, thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '', viewers, checkedAt: new Date().toISOString() };
 }
 
@@ -1362,8 +1274,24 @@ function refreshMediaLive() {
       if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
       return a.isCN ? -1 : 1;
     });
+    const previousLive = Array.isArray(mediaCache.data.live) ? mediaCache.data.live : [];
+    const previousLiveProfiles = new Set(previousLive.flatMap(item => Array.isArray(item.profileIds) ? item.profileIds.map(String) : []));
+    const previousLiveSources = new Set(previousLive.map(item => `${item.platform || ''}|${item.url || ''}`));
     const now = Date.now();
     mediaCache.data.live = merged;
+    for (const item of merged) {
+      const ids = Array.isArray(item.profileIds) ? item.profileIds.map(String) : [];
+      const alreadyLive = ids.length ? ids.some(id => previousLiveProfiles.has(id)) : previousLiveSources.has(`${item.platform || ''}|${item.url || ''}`);
+      if (!alreadyLive) {
+        try { realtimeChat.announceLive(item); } catch (error) { console.warn('[realtime-chat] live notice failed:', error.message); }
+      }
+    }
+    for (const item of previousLive) {
+      const key = `${item.platform || ''}|${item.url || ''}`;
+      if (!mergedKeys.has(key) && !failedSourceKeys.has(key)) {
+        try { realtimeChat.announceLiveEnd(item); } catch (error) { console.warn('[realtime-chat] live end notice failed:', error.message); }
+      }
+    }
     mediaCache.data.liveUpdatedAt = new Date(now).toISOString();
     mediaCache.data.nextLiveRefreshAt = new Date(now + mediaLiveRefreshInterval).toISOString();
     mediaCache.data.updatedAt = new Date(now).toISOString();
@@ -1622,49 +1550,7 @@ async function downloadProfileParquet(tempPath) {
   }
 }
 
-function parseCsvLine(line) {
-  const fields = [];
-  let value = '';
-  let quoted = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const character = line[i];
-    if (character === '"') {
-      if (quoted && line[i + 1] === '"') { value += '"'; i += 1; }
-      else quoted = !quoted;
-    } else if (character === ',' && !quoted) { fields.push(value); value = ''; }
-    else value += character;
-  }
-  fields.push(value);
-  return fields;
-}
 
-async function importProfileCsv(db, csvPath) {
-  profileRefreshState.stage = '读取 CSV 并整理玩家资料';
-  const insert = db.prepare('INSERT OR REPLACE INTO profiles(profile_id, steam_id, name, clan, last_match_time, country) VALUES (?, ?, ?, ?, ?, ?)');
-  let batchRows = 0;
-  let headerMap = null;
-  db.exec('BEGIN');
-  const input = createReadStream(csvPath, { encoding: 'utf8' });
-  const lines = createInterface({ input, crlfDelay: Infinity });
-  for await (const line of lines) {
-    if (!headerMap) {
-      const headers = parseCsvLine(line).map(value => value.replace(/^\uFEFF/, '').trim());
-      headerMap = Object.fromEntries(headers.map((header, index) => [header, index]));
-      if (headerMap.profile_id == null || headerMap.name == null) throw new Error('Profile CSV 缺少必要字段');
-      continue;
-    }
-    const fields = parseCsvLine(line);
-    const profileId = String(fields[headerMap.profile_id] || '').trim();
-    const name = String(fields[headerMap.name] || '').trim();
-    if (!/^\d+$/.test(profileId) || !name) continue;
-    insert.run(profileId, String(fields[headerMap.steam_id] || '').trim(), name, String(fields[headerMap.clan] || '').trim(), String(fields[headerMap.last_match_time] || '').trim(), String(fields[headerMap.country] || '').trim());
-    profileRefreshState.processedRows += 1;
-    batchRows += 1;
-    if (batchRows >= 20_000) { db.exec('COMMIT; BEGIN'); batchRows = 0; }
-  }
-  db.exec('COMMIT');
-  if (!profileRefreshState.processedRows) throw new Error('Profile CSV 中没有读取到玩家资料');
-}
 
 async function importProfileParquet(db, parquetPath) {
   profileRefreshState.stage = '读取 Parquet 并整理玩家资料';
@@ -1834,11 +1720,11 @@ async function startProfileCacheLifecycle() {
   } catch {}
   const needsParquetMigration = profileCache?.format !== 'parquet';
   const delay = forceProfileRefresh || needsParquetMigration ? 0 : Math.max(0, nextProfileRefreshAt() - Date.now());
-  profileRefreshTimer = setTimeout(async function refreshAtInterval() {
+  setTimeout(async function refreshAtInterval() {
     try { await refreshProfileCache(); }
     catch (error) { console.error('玩家资料 dump 更新失败:', error.message); }
     const nextDelay = profileRefreshState.error ? profileRefreshRetryInterval : Math.max(1_000, nextProfileRefreshAt() - Date.now());
-    profileRefreshTimer = setTimeout(refreshAtInterval, nextDelay);
+    setTimeout(refreshAtInterval, nextDelay);
   }, delay);
 }
 
@@ -1866,13 +1752,6 @@ function sanitizeAoE2RecsProfile(data) {
   };
 }
 
-const worldsEdgeMatchTypes = new Map([
-  [2, 'DM 1v1'], [3, 'DM TG'], [4, 'DM TG'], [5, 'DM TG'],
-  [6, 'RM 1v1'], [7, 'RM TG'], [8, 'RM TG'], [9, 'RM TG'],
-  [10, 'RM FFA'], [26, 'EW 1v1'], [27, 'EW TG'], [28, 'EW TG'], [29, 'EW TG'],
-  [66, 'RM 1v1'], [67, 'RM TG'], [68, 'RM TG'], [69, 'RM TG']
-]);
-const worldsEdgeCivilizations = ['亚美尼亚', '阿兹特克', '孟加拉', '柏柏尔', '波希米亚', '不列颠', '保加利亚', '勃艮第', '缅甸', '拜占庭', '凯尔特', '中国', '库曼', '达罗毗荼', '埃塞俄比亚', '法兰克', '格鲁吉亚', '哥特', '瞿折罗', '匈奴', '印加', '印度斯坦', '意大利', '日本', '高棉', '朝鲜', '立陶宛', '马扎尔', '马来', '马里', '玛雅', '蒙古', '波斯', '波兰', '葡萄牙', '罗马', '撒拉逊', '西西里', '斯拉夫', '西班牙', '鞑靼', '条顿', '土耳其', '越南', '维京', '阿契美尼德', '雅典', '斯巴达', '蜀', '吴', '魏', '女真', '契丹'];
 
 function worldsEdgeMatchCachePath(profileId) {
   return join(worldsEdgeMatchCacheDir, `${profileId}.json`);
@@ -1954,10 +1833,14 @@ const profileService = createProfileService({
   forceChinaCountry,
   WebSocket
 });
-const { localProfileDetails, profileLeaderboardSummary, fetchPersonalLeaderboardStats } = profileService;
+const { localProfileDetails, fetchPersonalLeaderboardStats } = profileService;
 
 const matchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches });
 const { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce } = matchesService;
+// Visible profile refreshes get queue priority and one bounded attempt; the
+// realtime monitor retains its existing retry policy through matchesService.
+const profileMatchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches, attempts:1, requestTimeoutMs:10_000, priority:5 });
+const { fetchWorldsEdgeMatchesOnce:fetchProfileMatchesOnce, fetchLatestWorldsEdgeMatchOnce:fetchLatestProfileMatchOnce } = profileMatchesService;
 
 const realtimeService = createRealtimeService({
   realtimePayloadPath: join(dataDir, 'realtime-payload.json'),
@@ -1978,7 +1861,7 @@ const realtimeService = createRealtimeService({
   onMatchAdded: match => queueDanmakuMatch(join(dataDir, 'danmaku/events'), match)
 });
 // End of server entrypoint.
-async function getWorldsEdgeMatches(profileId, page = 1) {
+async function readWorldsEdgeMatchesCache(profileId) {
   const key = String(profileId);
   let current = worldsEdgeMatchCache.get(key);
   if (!current) {
@@ -1992,6 +1875,12 @@ async function getWorldsEdgeMatches(profileId, page = 1) {
       current = null;
     }
   }
+  return current;
+}
+
+async function getWorldsEdgeMatches(profileId, page = 1) {
+  const key = String(profileId);
+  const current = await readWorldsEdgeMatchesCache(key);
   const currentLooksLive = Boolean(current?.matches?.[0] && !current.matches[0].finished);
   // A profile page entry must always perform one lightweight latest-match check.
   // The match ID decides whether the cached 100-match history can be reused.
@@ -2006,7 +1895,7 @@ async function getWorldsEdgeMatches(profileId, page = 1) {
     let latestMatch = null;
     if (current && page === 1 && current.matches.length) {
       try {
-        latestMatch = await fetchLatestWorldsEdgeMatchOnce(profileId);
+        latestMatch = await fetchLatestProfileMatchOnce(profileId);
         if (latestMatch && String(latestMatch.id) === String(current.matches[0].id)) {
           // The newest ID can stay unchanged while an older cached match changes
           // from live to finished. Refresh the first upstream page whenever the
@@ -2020,8 +1909,8 @@ async function getWorldsEdgeMatches(profileId, page = 1) {
                 .filter(match => Number(match.started) > 0 && !Number(match.finished) && match.abandoned !== true)
                 .map(match => String(match.id)));
               let freshPage = { matches: [] };
-              for (const requestedCount of [10, 20, 40, 80, 100]) {
-                freshPage = await fetchWorldsEdgeMatchesOnce(profileId, 1, requestedCount);
+              for (const requestedCount of [10, 100]) {
+                freshPage = await fetchProfileMatchesOnce(profileId, 1, requestedCount);
                 const returnedIds = new Set(freshPage.matches.map(match => String(match.id)));
                 if ([...olderUnfinishedIds].every(id => returnedIds.has(id)) || freshPage.matches.length < requestedCount) break;
               }
@@ -2047,22 +1936,22 @@ async function getWorldsEdgeMatches(profileId, page = 1) {
         }
         latestChanged = Boolean(latestMatch && String(latestMatch.id) !== String(current.matches[0].id));
       } catch (error) {
-        if (stale.matches.length && stale.pages >= page) return stale;
+        if (stale.matches.length && stale.pages >= page) return { ...stale, stale:true };
         throw error;
       }
     }
     if (latestChanged && latestMatch && current && page === 1) {
-      // Expand cumulative upstream windows until the cached latest match is found.
+      // Find the cached latest match with at most two history requests.
       // This uses the cached match ID as a watermark and avoids estimating the
       // number of new matches from elapsed time.
       const anchorId = String(current.matches[0].id);
       let collected = [];
       let anchorIndex = -1;
       let pageCount = 0;
-      for (const requestedCount of [10, 20, 40, 80, 100]) {
-        // Request cumulative windows so each step is 10 -> 20 -> 40 -> 80 -> 100.
+      for (const requestedCount of [10, 100]) {
+        // Try a small incremental window, then fill the full range in one hop.
         // Always use page 1 because the page size changes between attempts.
-        const result = await fetchWorldsEdgeMatchesOnce(profileId, 1, requestedCount);
+        const result = await fetchProfileMatchesOnce(profileId, 1, requestedCount);
         pageCount += 1;
         collected = result.matches;
         anchorIndex = collected.findIndex(match => String(match.id) === anchorId);
@@ -2092,9 +1981,9 @@ async function getWorldsEdgeMatches(profileId, page = 1) {
     for (let nextPage = existing.pages + 1; nextPage <= page; nextPage += 1) {
       let result;
       try {
-        result = await fetchWorldsEdgeMatchesOnce(profileId, nextPage);
+        result = await fetchProfileMatchesOnce(profileId, nextPage);
       } catch (error) {
-        if (stale?.matches?.length && stale.pages >= page) return stale;
+        if (stale?.matches?.length && stale.pages >= page) return { ...stale, stale:true };
         throw error;
       }
       const known = new Set(entry.matches.map(match => String(match.id)));
@@ -2761,6 +2650,32 @@ function parseLiquipediaMatches(html) {
   return { upcoming, completed };
 }
 
+function normalizedTournamentTier(value) {
+  const match = String(value || '').trim().toUpperCase().match(/^([SAB])(?:[- ]?TIER)?$/);
+  return match?.[1] || '';
+}
+
+async function addMatchTiers(parsed) {
+  let tournaments = [];
+  try { tournaments = (await loadLiquipediaTournaments()).tournaments || []; } catch {}
+  const tiers = new Map(tournaments.map(item=>[normalizeEventPlayerName(item.name), normalizedTournamentTier(item.tier)]));
+  const apply = match => ({ ...match, tournament:{ ...match.tournament, tier:tiers.get(normalizeEventPlayerName(match.tournament?.name)) || '' } });
+  return { upcoming:parsed.upcoming.map(apply), completed:parsed.completed.map(apply) };
+}
+
+function announceMatchTransitions(previous, next) {
+  if (!previous) return;
+  const prior = new Map([...(previous.upcoming || []),...(previous.completed || [])].map(match=>[match.id,match]));
+  for (const match of next.upcoming || []) {
+    const tier=normalizedTournamentTier(match.tournament?.tier);
+    if (tier && match.status==='ongoing' && prior.get(match.id)?.status!=='ongoing') realtimeChat.announceMatch({phase:'start',match,tier});
+  }
+  for (const match of next.completed || []) {
+    const tier=normalizedTournamentTier(match.tournament?.tier);
+    if (tier && prior.get(match.id)?.status!=='completed') realtimeChat.announceMatch({phase:'end',match,tier});
+  }
+}
+
 async function loadLiquipediaMatchesCache() {
   if (liquipediaMatchesCacheLoaded) return liquipediaMatchesCache;
   liquipediaMatchesCacheLoaded = true;
@@ -2799,7 +2714,8 @@ async function refreshLiquipediaMatches() {
     const payload = await response.json();
     const html = String(payload?.parse?.text || '');
     if (!html.includes('match-info')) throw new Error('Liquipedia API 未返回比赛信息');
-    const parsed = parseLiquipediaMatches(html);
+    const previous = liquipediaMatchesCache;
+    const parsed = await addMatchTiers(parseLiquipediaMatches(html));
     const next = {
       fetchedAt: new Date().toISOString(),
       refreshIntervalMs: liquipediaMatchesRefreshInterval,
@@ -2818,6 +2734,7 @@ async function refreshLiquipediaMatches() {
     await rename(temporaryPath, liquipediaMatchesCachePath);
     liquipediaMatchesCache = next;
     rebuildLiquipediaLivePlayerCache(next);
+    announceMatchTransitions(previous, next);
     liquipediaMatchesLastError = null;
     return next;
   })().catch(error => {
@@ -2827,6 +2744,27 @@ async function refreshLiquipediaMatches() {
     liquipediaMatchesRefreshPromise = null;
   });
   return liquipediaMatchesRefreshPromise;
+}
+
+function nextBeijingHour(hour, now=Date.now()) {
+  const shifted=new Date(now+8*60*60_000);
+  let target=Date.UTC(shifted.getUTCFullYear(),shifted.getUTCMonth(),shifted.getUTCDate(),hour-8,0,0,0);
+  if (target<=now) target+=24*60*60_000;
+  return target;
+}
+
+function scheduleMatchPreview() {
+  const target=nextBeijingHour(18);
+  setTimeout(async()=>{
+    try {
+      const data=await refreshLiquipediaMatches();
+      const start=Date.now(), end=start+12*60*60_000;
+      const matches=(data?.upcoming || []).filter(match=>match.timestamp*1000>=start && match.timestamp*1000<end)
+        .map(match=>({...match,tier:normalizedTournamentTier(match.tournament?.tier)})).filter(match=>match.tier);
+      realtimeChat.announceSchedule({day:chinaDayKey(new Date()),matches});
+    } catch(error) { console.warn('[realtime-chat] match preview failed:',error.message); }
+    scheduleMatchPreview();
+  },Math.max(1000,target-Date.now())).unref();
 }
 
 async function startLiquipediaMatchesLifecycle() {
@@ -2839,6 +2777,7 @@ async function startLiquipediaMatchesLifecycle() {
   setInterval(() => {
     refreshLiquipediaMatches().catch(error => console.warn('[events] Liquipedia refresh failed:', error.message));
   }, liquipediaMatchesRefreshInterval).unref();
+  scheduleMatchPreview();
 }
 
 function sendNoStoreJson(res, statusCode, data) {
@@ -2866,6 +2805,18 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const protectionIp = requestClientIp(req);
   if (!apiProtection.allow(req, res, url.pathname, protectionIp, isInternalIp(protectionIp))) return;
+  if (['/api/civilization-stats', '/api/civilization-stats/meta', '/api/civilization-stats/winrates'].includes(url.pathname)) {
+    if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
+    try {
+      const kind = url.pathname.endsWith('/meta') ? 'meta' : url.pathname.endsWith('/winrates') ? 'winrates' : 'stats';
+      const filters = kind === 'stats' ? parseCivilizationFilters(url.searchParams) : {};
+      const result = await civilizationStats.query(kind, filters);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=60' });
+      return res.end(JSON.stringify(result));
+    } catch (error) {
+      return sendNoStoreJson(res, error.statusCode || 503, { error: error.statusCode === 400 ? error.message : '民族数据暂时无法读取，请稍后重试' });
+    }
+  }
   if (url.pathname === '/replay-analysis' && url.search) res.setHeader('x-robots-tag', 'noindex, nofollow');
   if (url.pathname === '/api/internal/health') {
     if (!isInternalIp(protectionIp)) return sendNoStoreJson(res, 404, { error: 'Not found' });
@@ -2920,9 +2871,27 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   if (url.pathname === '/api/feedback/recent') {
     if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
     try {
-      return sendNoStoreJson(res, 200, { items: await recentFeedback(feedbackLogPath) });
+      return sendNoStoreJson(res, 200, { items: feedbackLikes.decorate(await recentFeedback(feedbackLogPath), requestClientIp(req)) });
     } catch {
       return sendNoStoreJson(res, 500, { error: '暂时无法读取反馈列表' });
+    }
+  }
+  if (url.pathname === '/api/feedback/like') {
+    if (req.method !== 'POST') return sendNoStoreJson(res, 405, { error: '仅支持 POST 请求' });
+    let source;
+    try { source = new URL(req.headers.origin).host; } catch {}
+    if (source !== req.headers.host || (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+      return sendNoStoreJson(res, 403, { error: '请从本站反馈页面点赞' });
+    }
+    try {
+      const payload = await readJsonRequest(req);
+      const id = payload?.id;
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) return sendNoStoreJson(res, 400, { error: '反馈编号无效' });
+      const items = await recentFeedback(feedbackLogPath);
+      if (!items.some(item => item.id === id)) return sendNoStoreJson(res, 404, { error: '反馈已不在最新列表，请刷新后重试' });
+      return sendNoStoreJson(res, 200, { id, ...feedbackLikes.like(id, requestClientIp(req)) });
+    } catch (error) {
+      return sendNoStoreJson(res, error.statusCode || 500, { error: error.statusCode ? error.message : '点赞保存失败，请稍后重试' });
     }
   }
   if (url.pathname === '/api/feedback') {
@@ -2950,6 +2919,29 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   if (url.pathname === '/api/realtime/status') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(realtimeService.getRealtimeStatus()));
+  }
+  if (url.pathname === '/api/realtime/chat' || url.pathname === '/api/realtime/chat/nickname') {
+    const nicknameOnly = url.pathname.endsWith('/nickname');
+    if (req.method === 'GET' && !nicknameOnly) {
+      try { return sendNoStoreJson(res, 200, { messages: realtimeChat.list(), viewer: realtimeChat.viewer(requestClientIp(req)) }); }
+      catch { return sendNoStoreJson(res, 500, { error: '聊天记录暂时无法读取' }); }
+    }
+    if (req.method !== 'POST') return sendNoStoreJson(res, 405, { error: '仅支持 GET 或 POST 请求' });
+    let originHost = '';
+    try { originHost = new URL(req.headers.origin).host; } catch {}
+    if (originHost !== req.headers.host || (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+      return sendNoStoreJson(res, 403, { error: '请从本站实时对局页面发言' });
+    }
+    if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) return sendNoStoreJson(res, 415, { error: '请使用 JSON 格式提交' });
+    try {
+      const body = await readJsonRequest(req, 1024);
+      const ip = requestClientIp(req);
+      if (nicknameOnly) return sendNoStoreJson(res, 200, { viewer: realtimeChat.rename({ name: body?.name, ip }) });
+      const message = realtimeChat.post({ name: body?.name, message: body?.message, ip });
+      return sendNoStoreJson(res, 201, { message, viewer: realtimeChat.viewer(ip) });
+    } catch (error) {
+      return sendNoStoreJson(res, error.statusCode || 500, { error: error.statusCode ? error.message : '发言暂时无法发送' });
+    }
   }
   if (url.pathname === '/api/realtime/version') {
     let profileIds = [];
@@ -3047,12 +3039,13 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     }
     if (url.searchParams.get('latest') === '1') {
       try {
-        const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
+        const latest = await fetchLatestProfileMatchOnce(profileId);
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         return res.end(JSON.stringify({ matches: latest ? [latest] : [], latest: true }));
       } catch {
         try {
-          const fallback = await getWorldsEdgeMatches(profileId, 1);
+          const fallback = await readWorldsEdgeMatchesCache(profileId);
+          if (!fallback?.matches?.length) throw new Error('查询失败，暂无可用对局缓存');
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           return res.end(JSON.stringify({ matches: fallback.matches?.[0] ? [fallback.matches[0]] : [], latest: true, stale: true }));
         } catch (error) {
@@ -3066,13 +3059,15 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     const progressive = url.searchParams.get('progressive') === '1' && offset === 0;
     try {
       if (progressive) {
-        let initial;
-        try {
-          initial = await fetchWorldsEdgeMatchesOnce(profileId, 1, 20);
+        let initial = await readWorldsEdgeMatchesCache(profileId);
+        const cachedFirst = Boolean(initial?.matches?.length);
+        if (!cachedFirst) try {
+          initial = await fetchProfileMatchesOnce(profileId, 1, 20);
         } catch {
-          // If the lightweight request fails, let the regular cached path
-          // provide stale data instead of leaving the profile empty.
-          const fallback = await getWorldsEdgeMatches(profileId, 1);
+          // If the initial lookup fails, use an existing snapshot without
+          // starting another series of upstream retries.
+          const fallback = await readWorldsEdgeMatchesCache(profileId);
+          if (!fallback?.matches?.length) throw new Error('查询失败，暂无可用对局缓存');
           initial = { matches: fallback.matches.slice(0, 20), hasMore: false };
         }
         // Continue the cache refresh in the background. The first 20 matches
@@ -3080,14 +3075,15 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
         getWorldsEdgeMatches(profileId, 1).catch(error => console.error(`选手 ${profileId} 对局缓存更新失败:`, error.message));
         const page = initial.matches.slice(0, 20);
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-        return res.end(JSON.stringify({ matches: page, offset: 0, total: page.length, hasMore: true, progressive: true }));
+        return res.end(JSON.stringify({ matches: page, offset: 0, total: page.length, hasMore: true, progressive: true, cached:cachedFirst,
+          stale:cachedFirst && Date.now()-initial.savedAt >= worldsEdgeMatchCacheTtl }));
       }
       const pageNumber = Math.floor(offset / 100) + 1;
       const cached = await getWorldsEdgeMatches(profileId, pageNumber);
       const matches = cached.matches;
       const page = matches.slice(offset, offset + limit);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=60' });
-      return res.end(JSON.stringify({ matches: page, offset, total: matches.length, hasMore: offset + page.length < matches.length || cached.hasMore }));
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': cached.stale ? 'no-store' : 'public, max-age=60' });
+      return res.end(JSON.stringify({ matches: page, offset, total: matches.length, hasMore: offset + page.length < matches.length || cached.hasMore, stale:Boolean(cached.stale) }));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '获取近期对局失败' }));
@@ -3111,8 +3107,8 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   if (url.pathname === '/api/replay-analysis') {
     const matchId = url.searchParams.get('matchId') || '';
     const profileId = url.searchParams.get('profileId') || '';
-    if (req.method !== 'GET') {
-      res.writeHead(405, { allow: 'GET' });
+    if (!['GET', 'POST'].includes(req.method)) {
+      res.writeHead(405, { allow: 'GET, POST' });
       return res.end();
     }
     if (!/^[1-9]\d{0,15}$/.test(matchId) || !/^[1-9]\d{0,15}$/.test(profileId)) {
@@ -3120,6 +3116,12 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       return res.end(JSON.stringify({ error: '无效的比赛或玩家 ID' }));
     }
     try {
+      // Crawlers rendering a replay page may read a cached result, but a GET
+      // must never download or parse a recording. A button explicitly POSTs.
+      if (req.method === 'GET') {
+        const cached = await background.cached(matchId, profileId);
+        return streamResponse(cached, res, { limit: 128 * 1024 * 1024, headers: { 'x-replay-cache': cached.headers.get('x-replay-cache') || '' } });
+      }
       const task = await background.submit(matchId, profileId);
       return sendNoStoreJson(res, 202, { ...task, pollUrl: `/api/replay-analysis/status?jobId=${task.jobId}` });
     } catch (error) {
@@ -3151,8 +3153,8 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       return res.end(JSON.stringify({ error: '无效的选手 ID' }));
     }
     try {
-      const leaderboards = await fetchPersonalLeaderboardStats(profileId);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=600' });
+      const leaderboards = await fetchPersonalLeaderboardStats(profileId, { rankedOnly:url.searchParams.get('progressive') === '1' });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': leaderboards.some(row => row.pending || row.stale) ? 'no-store' : 'public, max-age=600' });
       return res.end(JSON.stringify({ leaderboards, source: 'getPersonalStat' }));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -3293,7 +3295,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events|feedback|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : url.pathname.slice(1);
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events|feedback|civilizations|tech-tree|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : url.pathname.slice(1);
   const path = await staticFilePath(join(root, 'public'), relative);
   try {
     const data = await readFile(path);
@@ -3342,6 +3344,7 @@ httpServer.listen(port, '127.0.0.1', () => {
 
 
 process.once('SIGTERM', () => {
+  feedbackLikes.close();
   httpServer.close();
-  apiProtection.flush().finally(() => process.exit(0));
+  Promise.all([apiProtection.flush(), civilizationStats.close()]).finally(() => process.exit(0));
 });

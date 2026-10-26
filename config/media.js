@@ -12,6 +12,7 @@
 // { platform: 'youtube', liveUrl: '直播频道或直播页', name: '显示名称', url: '直播频道或直播页' }
 export const mediaSources = {
   videos: [
+    { platform: 'bilibili', id: '3546852691544318', name: '韋恩_WayneChang', url: 'https://space.bilibili.com/3546852691544318/dynamic', baselineBvid: 'BV1XYHK68E75', baselinePublishedAt: '2026-10-25T11:00:00Z' },
     { platform: 'bilibili', id: '3546937825430338', name: '帝国2黑鸭HERA直播视频', url: 'https://space.bilibili.com/3546937825430338/dynamic', baselineBvid: 'BV1CQnF6FEEv', baselinePublishedAt: '2026-10-20T01:54:58Z' },
     { platform: 'bilibili', id: '34201013', name: 'nishuone123', url: 'https://space.bilibili.com/34201013' },
     { platform: 'bilibili', id: '1423184578', name: '悬崖6290', url: 'https://space.bilibili.com/1423184578' },

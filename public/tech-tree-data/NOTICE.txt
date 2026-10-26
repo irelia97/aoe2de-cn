@@ -1,0 +1,5 @@
+Data and icons derived from SiegeEngineers/aoe2techtree, revision 3bb43b1439eef88dfe7fe892d7f7dc41ac9dd76f.
+aoe2techtree code: MIT License, Copyright (c) 2018 HSZemi. See LICENSE-aoe2techtree.txt.
+Age of Empires II © Microsoft Corporation. Game content remains owned by its respective owners.
+Created under Microsoft Game Content Usage Rules: https://www.xbox.com/en-us/developers/rules
+Not endorsed by or affiliated with Microsoft.

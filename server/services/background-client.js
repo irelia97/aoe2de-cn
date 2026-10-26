@@ -16,6 +16,7 @@ export function createBackgroundClient({ baseUrl = 'http://127.0.0.1:3001', fetc
     matchAdded: match => json('/notifications', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(match) }),
     getMatchInfo: matchId => json(`/replay/info?matchId=${encodeURIComponent(matchId)}`),
     submit: (matchId, profileId) => json(`/replay/jobs?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { method: 'POST' }),
+    cached: (matchId, profileId) => call(`/replay/cached?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`),
     poll: jobId => call(`/replay/jobs/${encodeURIComponent(jobId)}`),
     download: (matchId, profileId, signal) => call(`/replay/download?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { signal: signal || AbortSignal.timeout(65000) }),
     fetch(input, options = {}) {

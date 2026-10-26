@@ -26,6 +26,15 @@ def filter_baseline(videos,bvid,published_at):
  if not bvid or not published_at:return videos
  return [v for v in videos if v['bvid']==bvid or (v.get('publishedAt') and calendar.timegm(time.strptime(v['publishedAt'],'%Y-%m-%dT%H:%M:%SZ'))>published_at)]
 
+def response_status(response,text):
+ payload=response.get('payload') or {};code=payload.get('code')
+ if response.get('http') in [403,412,429] or code in [-403,-352,-412] or any(t in text for t in ['安全验证','请完成验证','访问受限','请求被拦截']):return 'verification_required'
+ if response.get('http')!=200 or code!=0:return 'response_error'
+ # A successful transport with an empty feed does not prove that this UP has
+ # no updates. Do not overwrite the previous snapshot or record a success.
+ if not ((payload.get('data') or {}).get('items') or []):return 'empty_response'
+ return 'ok'
+
 async def run(args):
  folder=ROOT/'.cache/bilibili-browser-check';folder.mkdir(parents=True,exist_ok=True);folder.chmod(0o700)
  session=ROOT/'.cache/danmaku/bilibili_storage_state.json'
@@ -39,6 +48,9 @@ async def run(args):
   async def observe(response):
    u=urlsplit(response.url)
    if u.hostname!='api.bilibili.com' or u.path!='/x/polymer/web-dynamic/v1/feed/space':return
+   from urllib.parse import parse_qs
+   query=parse_qs(u.query)
+   if query.get('host_mid')!=[args.mid] or query.get('offset',[''])[0]:return
    try:
     result={'http':response.status,'path':u.path}
     if response.ok:result['payload']=await response.json()
@@ -47,15 +59,17 @@ async def run(args):
   page.on('response',lambda r:tasks.append(asyncio.create_task(observe(r))))
   try:
    await page.goto('https://space.bilibili.com/'+args.mid+'/dynamic',wait_until='domcontentloaded',timeout=args.timeout*1000)
-   try:response=await asyncio.wait_for(asyncio.shield(future),timeout=args.timeout)
-   except asyncio.TimeoutError:response={}
+   for attempt in range(2):
+    try:response=await asyncio.wait_for(asyncio.shield(future),timeout=args.timeout)
+    except asyncio.TimeoutError:response={}
+    text=await page.locator('body').inner_text(timeout=5000)
+    status=response_status(response,text)
+    if status!='empty_response' or attempt==1:break
+    await asyncio.sleep(10)
+    future=asyncio.get_running_loop().create_future()
+    await page.reload(wait_until='domcontentloaded',timeout=args.timeout*1000)
    payload=response.get('payload') or {};code=payload.get('code');data=payload.get('data') or {};items=data.get('items') or []
    videos=filter_baseline(extract_own_videos(items,args.mid,args.limit),args.baseline_bvid,args.baseline_published_at)
-   text=await page.locator('body').inner_text(timeout=5000)
-   risk=response.get('http') in [403,412,429] or code in [-403,-352,-412] or any(t in text for t in ['安全验证','请完成验证','访问受限','请求被拦截'])
-   if risk:status='verification_required'
-   elif response.get('http')!=200 or code!=0:status='response_error'
-   else:status='ok'
    result={'mid':args.mid,'pageUrl':page.url,'checkedAt':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'status':status,'videos':videos,'diagnostic':{'http':response.get('http'),'code':code,'message':payload.get('message'),'items':len(items)}}
    if status=='ok' and args.check_tags:
     cache=ROOT/'.cache/media-videos.json';known={str(v.get('id','')) for v in json.loads(cache.read_text()).get('videos',[])} if cache.exists() else set()

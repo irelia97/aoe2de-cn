@@ -465,10 +465,7 @@ let currentProfileLeaderboardRows = [];
 let currentProfileRecentResults = new Map();
 let currentProfileRecentStats = new Map();
 let currentProfileRecentModeCounts = null;
-let profileDetailsSocket = null;
 let profileDetailsTimeout = null;
-let profileDetailsRetryTimer = null;
-let profileDetailsRequestTimer = null;
 
 function formatBytes(bytes) {
   if (!Number(bytes)) return '';
@@ -512,9 +509,6 @@ function setProfileLoadingAnimation(visible) {
 }
 function profileSectionLoadingMarkup() {
   return '<div class="profile-section-loading" role="status" aria-label="正在加载"><span class="profile-section-spinner"></span></div>';
-}
-function profileTableLoadingMarkup(colspan) {
-  return `<tr><td colspan="${colspan}">${profileSectionLoadingMarkup()}</td></tr>`;
 }
 function profileSuggestionMarkup(player, index) {
   const country = player.country ? countryName(player.country) : '未知地区';
@@ -639,10 +633,6 @@ function readProfileMatchesLocalCache(profileId) {
 }
 function saveProfileMatchesLocalCache(profileId, matches) {
   try { localStorage.setItem(`${profileMatchesLocalCachePrefix}${profileId}`, JSON.stringify({ savedAt: Date.now(), matches: Array.isArray(matches) ? matches.slice(0, 100) : [] })); } catch { /* Storage may be disabled or full. */ }
-}
-function formatProfileDate(timestamp) {
-  const value = Number(timestamp);
-  return value > 0 ? new Date(value * 1000).toLocaleString('zh-CN') : '暂无数据';
 }
 function aoe2AssetSlug(value) {
   return String(value || '').trim().toLocaleLowerCase().replace(/[’']/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
@@ -1007,7 +997,7 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
       return `<span class="profile-recent-result ${result === true ? 'win' : result === false ? 'loss' : 'unknown'}" title="${result === true ? '胜利' : result === false ? '失败' : '暂无记录'}">${result === true ? '✓' : result === false ? '×' : '·'}</span>`;
     }).join('');
     const rankLabel = lobbyMode ? '累计胜场' : active ? '世界排名' : hasData ? '不活跃' : '未参与此模式';
-    const rankValue = lobbyMode ? (row.wins != null ? fmt.format(row.wins) : '—') : active ? '#' + fmt.format(row.rank) : hasData ? '无排名' : '—';
+    const rankValue = lobbyMode ? (row.pending ? '加载中…' : row.wins != null ? fmt.format(row.wins) : '—') : active ? '#' + fmt.format(row.rank) : hasData ? '无排名' : '—';
     const favoriteCiv = favorite.civilization ? `${favorite.civilization} · ${favorite.civilizationCount} 场` : '—';
     const favoriteMap = favorite.map ? `${favorite.map} · ${favorite.mapCount} 场` : '—';
     const favoriteOpponentRecord = favorite.opponent ? `${favorite.opponentWins}场/${favorite.opponentTotal}场` : '—';
@@ -1044,12 +1034,25 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
     };
   }
 }
+let profileLeaderboardsRequestId = 0;
 function loadProfileLeaderboards(profileId) {
+  const requestId = ++profileLeaderboardsRequestId;
+  const isCurrent = () => requestId === profileLeaderboardsRequestId && location.pathname === `/profile/${encodeURIComponent(profileId)}`;
   const initialBody = document.querySelector('#profileLeaderboardBody');
   if (initialBody) initialBody.innerHTML = profileSectionLoadingMarkup();
-  fetch(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}`, { cache: 'no-store' })
+  fetch(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}&progressive=1`, { cache: 'no-store' })
     .then(response => response.ok ? response.json() : null)
-    .then(data => { if (data?.leaderboards) renderProfileLeaderboards(data.leaderboards); })
+    .then(async data => {
+      if (!isCurrent() || !data?.leaderboards) return;
+      renderProfileLeaderboards(data.leaderboards);
+      if (!data.leaderboards.some(row => row.pending || row.stale)) return;
+      try {
+        const response = await fetch(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}`, { cache:'no-store' });
+        if (!response.ok) return;
+        const complete = await response.json();
+        if (isCurrent() && complete?.leaderboards) renderProfileLeaderboards(complete.leaderboards);
+      } catch { /* Ranked cards stay visible if the optional lobby lookup fails. */ }
+    })
     .catch(() => {});
 }
 function profileMatchCategory(match) {
@@ -1248,6 +1251,14 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
 async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDetailsRequestId) {
   const more = document.querySelector('#profileMatchesMore');
   const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
+  const refreshStatus = (phase, hasMatches = false) => {
+    if (!isCurrent()) return;
+    const text = phase === 'refreshing' ? '正在刷新…' : phase === 'updated' ? '' : phase === 'stale' ? '暂未刷新，显示旧数据' : hasMatches ? '刷新失败，保留旧数据' : '刷新失败，请稍后重试';
+    const target = document.querySelector('#profileMatchesRefreshStatus');
+    if (target) { target.hidden = phase === 'updated'; target.textContent = text; target.dataset.state = phase; }
+    for (const selector of ['#profileMatchesBody','#profileRecentModeChart']) document.querySelector(selector)?.setAttribute('aria-busy',String(phase === 'refreshing'));
+  };
+  refreshStatus('refreshing');
   // Match history is sourced exclusively from AoE2 Companion. AoE2Recs profile
   // payloads may contain a partial history without per-player ratingDiff.
   let matches = [];
@@ -1285,6 +1296,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     if (!response.ok) throw new Error('近期对局请求失败');
     return response.json();
   };
+  if (localMatches) render();
   if (more) more.onclick = async () => {
     if (!isCurrent()) return;
     if (loading) return;
@@ -1333,7 +1345,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
       const complete = await fetchPage(0, 100);
       if (!isCurrent()) return;
       matches = Array.isArray(complete.matches) ? complete.matches : matches;
-      saveProfileMatchesLocalCache(profileId, matches);
+      if (!complete.stale) saveProfileMatchesLocalCache(profileId, matches);
       currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
       currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
       currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
@@ -1342,31 +1354,49 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
       hasMore = false;
       renderProfileLastMatchFromMatch(matches[0]);
       render();
+      refreshStatus(complete.stale ? 'stale' : 'updated',matches.length > 0);
     } catch {
       // The initial 20 matches remain visible if the background refresh fails.
+      refreshStatus('failed',matches.length > 0);
     }
   } catch {
     // Do not fall back to AoE2Recs matches: they may omit per-player ratingDiff.
     if (isCurrent()) {
-      currentProfileRecentModeCounts = new Map();
-      renderProfileModeCharts();
-      const body = document.querySelector('#profileMatchesBody');
-      if (body) body.innerHTML = '';
+      if (matches.length) render();
+      else {
+        currentProfileRecentModeCounts = new Map();
+        renderProfileModeCharts();
+        const body = document.querySelector('#profileMatchesBody');
+        if (body) body.innerHTML = '';
+      }
+      refreshStatus('failed',matches.length > 0);
     }
   }
   if (localMatches && localFresh) {
     render();
-    fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}&latest=1`, { cache: 'no-store' })
-      .then(response => response.ok ? response.json() : null)
-      .then(data => {
+    await fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}&latest=1`, { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error('刷新对局失败')))
+      .then(async data => {
+        if (!isCurrent()) return;
+        if (!Array.isArray(data?.matches)) throw new Error('近期对局格式无效');
         const latest = Array.isArray(data?.matches) ? data.matches[0] : null;
-        if (!latest || !isCurrent()) return;
-        const known = new Set(matches.map(match => String(match.id)));
-        matches = [latest, ...matches.filter(match => String(match.id) !== String(latest.id))].slice(0, 100);
-        applyMatches();
-        render();
-        if (!known.has(String(latest.id))) saveProfileMatchesLocalCache(profileId, matches);
-      }).catch(() => {});
+        if (latest) {
+          const known = new Set(matches.map(match => String(match.id)));
+          matches = [latest, ...matches.filter(match => String(match.id) !== String(latest.id))].slice(0, 100);
+          applyMatches(); render();
+          if (!data.stale && !known.has(String(latest.id))) {
+            const complete = await fetchPage(0,100);
+            if (!isCurrent()) return;
+            matches = Array.isArray(complete.matches) ? complete.matches : matches;
+            applyMatches(); render();
+            if (!complete.stale) saveProfileMatchesLocalCache(profileId,matches);
+            refreshStatus(complete.stale ? 'stale' : 'updated',matches.length > 0);
+            return;
+          }
+          if (!data.stale) saveProfileMatchesLocalCache(profileId,matches);
+        }
+        refreshStatus(data.stale ? 'stale' : 'updated',matches.length > 0);
+      }).catch(() => refreshStatus('failed',matches.length > 0));
   }
 
 }
@@ -1640,20 +1670,6 @@ function replayFindChat(root, playerNames = new Map()) {
   }
   return unique.slice(0, 300);
 }
-function replayFindPoints(root) {
-  const points = [];
-  replayWalk(root, value => {
-    if (!value || Array.isArray(value)) return;
-    const keys = Object.keys(value).map(key => key.toLowerCase());
-    const xKey = keys.find(key => key === 'x' || key.endsWith('_x') || key === 'posx');
-    const yKey = keys.find(key => key === 'y' || key.endsWith('_y') || key === 'posy');
-    const x = xKey ? replayNumber(value[xKey]) : null;
-    const y = yKey ? replayNumber(value[yKey]) : null;
-    if (x == null || y == null || x < 0 || y < 0 || x > 100000 || y > 100000) return;
-    points.push({ x, y });
-  });
-  return points.slice(0, 20_000);
-}
 function replayFormatTime(value) {
   const seconds = Math.max(0, Number(value) || 0);
   const minutes = Math.floor(seconds / 60);
@@ -1671,60 +1687,36 @@ function replayCivIcon(player) {
   const slug = replayCivilizationSlugsById[Number(player?.civ_id)];
   return slug ? `https://backend.cdn.aoe2companion.com/public/aoe2/de/civilizations/${slug}.png` : '';
 }
-function replayPlayerIdFromAction(actionData) {
-  for (const value of Object.values(actionData || {})) {
-    if (value && typeof value === 'object' && Number.isFinite(Number(value.player_id))) return Number(value.player_id);
-  }
-  return null;
+let replayEapmModule = null;
+let replayEapmModulePromise = null;
+async function replayLoadEapm() {
+  replayEapmModule = await (replayEapmModulePromise ||= import('/replay-eapm.js?v=7'));
 }
-function replayPlayerStats(full, durationMs) {
-  const excludedQueueUnitIds = new Set([83, 13, 17, 128]); // 村民、渔船、贸易船、贸易马车
-  const stats = new Map();
-  const effectiveTypes = new Set(['Transform', 'DeQueue', 'Build', 'Move', 'Gatherpoint', 'Interact', 'Order', 'Stance', 'DeAttackMove', 'Patrol', 'Research', 'Delete', 'Wall', 'Sell', 'Formation', 'AttackGround', 'BackToWork', 'Buy']);
-  const ensure = playerId => {
-    const key = String(playerId);
-    if (!stats.has(key)) stats.set(key, { actions: 0, queue: new Map(), villagers: 0, recent: new Map() });
-    return stats.get(key);
-  };
-  for (const chapter of Array.isArray(full?.chapters) ? full.chapters : []) {
-    for (const operation of Array.isArray(chapter?.operations) ? chapter.operations : []) {
-      const action = operation?.Action;
-      if (!action?.action_data) continue;
-      const types = Object.keys(action.action_data).filter(type => effectiveTypes.has(type));
-      if (!types.length) continue;
-      const playerId = replayPlayerIdFromAction(action.action_data);
-      if (playerId == null) continue;
-      const entry = ensure(playerId);
-      const worldTime = Number(action.world_time) || 0;
-      for (const type of types) {
-        const value = action.action_data[type];
-        const fingerprint = `${type}|${JSON.stringify(value)}`;
-        const lastTime = entry.recent.get(fingerprint);
-        const unitId = type === 'DeQueue' ? Number(value?.unit_id) : null;
-        const duplicateAction = lastTime != null && worldTime - lastTime <= 300;
-        if (type === 'DeQueue' && unitId === 83) {
-          const amount = Math.max(1, Number(value?.amount) || 1);
-          entry.villagers += amount;
-          if (!duplicateAction) entry.actions += 1;
-          entry.recent.set(fingerprint, worldTime);
-        } else {
-          if (duplicateAction) continue;
-          entry.recent.set(fingerprint, worldTime);
-          entry.actions += 1;
-        }
-        if (type === 'DeQueue') {
-          const amount = Math.max(1, Number(value?.amount) || 1);
-          if (!excludedQueueUnitIds.has(unitId) && Number.isFinite(unitId)) entry.queue.set(unitId, (entry.queue.get(unitId) || 0) + amount);
-        }
-      }
-    }
+function replayPlayerStats(full, durationMs, players, gameSpeed) {
+  const excludedQueueUnitIds = new Set([83, 13, 17, 128]);
+  const stats = new Map(players.map(player => [String(player.player_number), { queue: new Map(), villagers: 0, recent: new Map() }]));
+  // Queue estimates are separate from the shared effective-action calculation.
+  for (const chapter of full?.chapters || []) for (const operation of chapter.operations || []) {
+    const action = operation.Action, value = action?.action_data?.DeQueue;
+    const time = action?.world_time;
+    if (!value || !Number.isFinite(time) || time < 0 || (Number.isFinite(durationMs) && time > durationMs)) continue;
+    const entry = stats.get(String(value.player_id));
+    if (!entry) continue;
+    const unitId = Number(value.unit_id), amount = Math.max(1, Number(value.amount) || 1);
+    const fingerprint = JSON.stringify(value), previous = entry.recent.get(fingerprint);
+    const duplicate = previous != null && time >= previous && time - previous <= 300;
+    if (unitId === 83) { entry.villagers += amount; entry.recent.set(fingerprint, time); }
+    else { if (duplicate) continue; entry.recent.set(fingerprint, time); }
+    if (!excludedQueueUnitIds.has(unitId) && Number.isFinite(unitId)) entry.queue.set(unitId, (entry.queue.get(unitId) || 0) + amount);
   }
-  const minutes = Math.max(Number(durationMs) / 60000, 1 / 60);
-  return new Map([...stats.entries()].map(([playerId, entry]) => {
-    const topQueues = [...entry.queue.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2);
-    return [playerId, { eapm: entry.actions / minutes, villagerCount: entry.villagers, queuedUnits: topQueues.map(([id, count]) => ({ id, count })) }];
-  }));
+  const actions = replayEapmModule.collectEffectiveActionTimes(full, players, durationMs, gameSpeed);
+  return new Map([...stats].map(([id, entry]) => [id, {
+    eapm: replayEapmModule.replayEapmStats(actions.get(id) || [], durationMs).global,
+    villagerCount: entry.villagers,
+    queuedUnits: [...entry.queue].sort((a,b) => b[1]-a[1]).slice(0,2).map(([id,count]) => ({ id,count }))
+  }]));
 }
+
 const replayUnitInfoById = {
   83: { name: '村民', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E6%9D%91%E6%B0%91%E7%94%B7.webp' },
   4: { name: '步弓手', icon: 'https://data.seicing.com/seicingdepot/3fatcatpool/aoe2/icon/%E6%AD%A5%E5%BC%93%E6%89%8B.webp' },
@@ -1930,24 +1922,6 @@ function replayMapName(settings) {
   if (!mapName) return mapNamesById[resolvedMapId] || '未知地图';
   return /^[A-Z0-9 _-]+$/.test(mapName) ? mapName.toLowerCase().replace(/(^|[ -])[a-z]/g, value => value.toUpperCase()).replace(/\bDe\b/g, 'DE') : mapName;
 }
-function replayDrawMap(points) {
-  const canvas = document.querySelector('#replayMapCanvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const width = canvas.clientWidth || 900;
-  const height = Math.max(260, Math.round(width * 0.46));
-  const ratio = window.devicePixelRatio || 1;
-  canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
-  ctx.scale(ratio, ratio);
-  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface-strong').trim() || '#172019';
-  ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
-  for (let i = 1; i < 8; i += 1) { ctx.beginPath(); ctx.moveTo(width * i / 8, 0); ctx.lineTo(width * i / 8, height); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, height * i / 8); ctx.lineTo(width, height * i / 8); ctx.stroke(); }
-  if (!points.length) { ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.font = '14px sans-serif'; ctx.fillText('当前录像未提供可直接绘制的坐标操作', 24, 34); return; }
-  const maxX = Math.max(...points.map(point => point.x), 1); const maxY = Math.max(...points.map(point => point.y), 1);
-  ctx.fillStyle = 'rgba(89,202,141,.55)';
-  for (const point of points) { ctx.beginPath(); ctx.arc(18 + point.x / maxX * (width - 36), 18 + point.y / maxY * (height - 36), 1.5, 0, Math.PI * 2); ctx.fill(); }
-}
 function replayStartTimeZone(timestamp) {
   const value = Number(timestamp);
   const date = Number.isFinite(value) && value > 0 ? new Date(value * 1000) : new Date();
@@ -2007,9 +1981,9 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   replayApplyMatchResults(matchInfo);
   const playerNames = new Map(players.map(player => [String(player.player_number), player.name]));
   const chat = replayFindChat(full, playerNames);
-  const playerStats = replayPlayerStats(full, summary?.duration);
+  const playerStats = replayPlayerStats(full, summary?.duration, players, replayEapmModule.replayGameSpeed(summary));
   const operations = Array.isArray(full?.operations) ? full.operations.length : 0;
-  document.querySelector('#replaySummary').innerHTML = [['版本号', replayBuild], ['游戏时长', replayFormatTime((Number(summary?.duration) || 0) / 1000)], ['地图', replayMapName(settings)], ['房间名', settings.lobby_name || '—'], ['玩家', players.length], [`开始时间（${replayStartTimeZone(matchInfo?.started || header.timestamp)}）`, replayStartTime(matchInfo?.started || header.timestamp), 'startedAt'], ['服务器位置', matchInfo?.server ? realtimeServerName(matchInfo.server) : '未记录', 'server'], ['地图种子', header.replay?.random_seed != null && Number.isFinite(Number(header.replay.random_seed)) ? String(header.replay.random_seed) : '未记录', 'mapSeed']].map(([label, value, field]) => `<div class="replay-summary-item${field === 'startedAt' ? ' replay-summary-time' : ''}"${field ? ` data-replay-summary-field="${field}"` : ''}><small>${escapeHtml(label)}</small><strong title="${escapeHtml(String(value ?? '—'))}">${escapeHtml(String(value ?? '—'))}</strong></div>`).join('');
+  document.querySelector('#replaySummary').innerHTML = [['版本号', replayBuild], ['游戏时长', replayFormatTime((Number(summary?.duration) || 0) / 1000)], ['地图', replayMapName(settings)], ['房间名', settings.lobby_name || '—'], ['玩家', players.length], [`开始时间（${replayStartTimeZone(matchInfo?.started || header.timestamp)}）`, replayStartTime(matchInfo?.started || header.timestamp), 'startedAt'], ['服务器位置', matchInfo?.server ? realtimeServerName(matchInfo.server) : '未记录', 'server'], ['地图种子', Number.isInteger(summary?.mapSeed) ? String(summary.mapSeed) : '未记录', 'mapSeed']].map(([label, value, field]) => `<div class="replay-summary-item${field === 'startedAt' ? ' replay-summary-time' : ''}"${field ? ` data-replay-summary-field="${field}"` : ''}><small>${escapeHtml(label)}</small><strong title="${escapeHtml(String(value ?? '—'))}">${escapeHtml(String(value ?? '—'))}</strong></div>`).join('');
   const replayGameSettings = document.querySelector('#replayGameSettings');
   if (replayGameSettings) replayGameSettings.innerHTML = replayGameSettingMarkup(settings, summary);
   const teamGroups = [...new Map(players.map(player => [player.teamIndex, players.filter(candidate => candidate.teamIndex === player.teamIndex)])).entries()];
@@ -2020,9 +1994,9 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   const mapTarget = document.querySelector('#replayMap');
   if (mapTarget) {
     const mapRequest = replayAnalysisRequest;
-    import('/replay-map.js?v=23').then(module => {
+    import('/replay-map.js?v=26').then(module => {
       const mapPlayers = players.map(player => ({...player,displayName:`${player.name} (${replayCivLabel(player)})`}));
-      if (mapRequest === replayAnalysisRequest) module.renderReplayMap(mapTarget, full, mapPlayers, summary?.duration, replayPlayerColor, { units:replayUnitInfoById, techs:replayTechInfoById, chat, settings });
+      if (mapRequest === replayAnalysisRequest) module.renderReplayMap(mapTarget, full, mapPlayers, summary?.duration, replayPlayerColor, { units:replayUnitInfoById, techs:replayTechInfoById, chat, settings, gameSpeed: replayEapmModule.replayGameSpeed(summary) });
     }).catch(error => { if (mapRequest === replayAnalysisRequest) mapTarget.textContent = `地图读取失败：${error.message}`; });
   }
   document.querySelector('#replayOperationCount')?.remove();
@@ -2030,7 +2004,7 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   document.querySelector('#replayResult').hidden = false;
 }
 let replayAnalysisRequest = 0;
-async function loadServerReplay(matchId, profileId) {
+async function loadServerReplay(matchId, profileId, startAnalysis = false) {
   const requestId = ++replayAnalysisRequest;
   const status = document.querySelector('#replayStatus');
   const result = document.querySelector('#replayResult');
@@ -2039,8 +2013,14 @@ async function loadServerReplay(matchId, profileId) {
   retry.hidden = true;
   status.textContent = '正在获取录像分析，请稍候……';
   try {
-    let response = await fetch(`/api/replay-analysis?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(25000) });
+    let response = await fetch(`/api/replay-analysis?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { method: startAnalysis ? 'POST' : 'GET', headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(25000) });
     let data = await response.json();
+    if (!startAnalysis && response.status === 404 && data.code === 'ANALYSIS_REQUIRED') {
+      if (requestId !== replayAnalysisRequest) return;
+      status.textContent = '该录像尚未分析，点击“开始分析”获取结果。';
+      retry.textContent = '开始分析'; retry.hidden = false;
+      return;
+    }
     if (!response.ok) throw new Error(data.error || '获取录像分析失败');
     if (response.status === 202) {
       const pollUrl = data.pollUrl;
@@ -2057,7 +2037,7 @@ async function loadServerReplay(matchId, profileId) {
         if (!response.ok) throw new Error(data.error || '获取录像分析失败');
       }
     }
-    await Promise.all([replayLoadUnitMap(), replayLoadTechMap()]);
+    await Promise.all([replayLoadUnitMap(), replayLoadTechMap(), replayLoadEapm()]);
     if (requestId !== replayAnalysisRequest) return;
     replaySummaryMarkup(data.summary, data.full, data.file, data.matchInfo);
     if (!data.matchInfo?.server || !Array.isArray(data.matchInfo?.results)) replayLoadMatchInfo(matchId, requestId, Number(data.summary?.header?.timestamp) || 0);
@@ -2067,6 +2047,7 @@ async function loadServerReplay(matchId, profileId) {
     if (requestId !== replayAnalysisRequest) return;
     result.hidden = true;
     status.textContent = `分析失败：${error?.message || '请稍后重试'}`;
+    retry.textContent = '重试分析';
     retry.hidden = false;
   }
 }
@@ -2078,10 +2059,12 @@ async function parseReplayFile(file) {
   result.hidden = true;
   status.textContent = '正在本地解析录像，请稍候……';
   try {
-    await Promise.all([replayLoadUnitMap(), replayLoadTechMap()]);
+    await Promise.all([replayLoadUnitMap(), replayLoadTechMap(), replayLoadEapm()]);
     replayParserModule ||= await import('/assets/aoe2rec/aoe2rec-browser.js');
     const buffer = await file.arrayBuffer();
     const summary = replayParserModule.parse_rec_summary(buffer);
+    const { extractReplayMapSeed } = await import('/replay-map-seed.js?v=1');
+    summary.mapSeed = await extractReplayMapSeed(buffer, summary);
     let full = null;
     try { full = replayParserModule.parse_rec(buffer); } catch (error) { console.warn('录像完整操作解析失败', error); }
     if (requestId !== replayAnalysisRequest) { summary?.free?.(); return; }
@@ -2106,7 +2089,7 @@ function setupReplayAnalysis() {
   const profileId = params.get('profileId');
   if (matchId && profileId) {
     document.querySelector('.replay-analysis-heading p').textContent = `比赛 #${matchId} · 分析结果最多保留 7 天，也可以选择本地录像。`;
-    document.querySelector('#replayRemoteRetry').onclick = () => loadServerReplay(matchId, profileId);
+    document.querySelector('#replayRemoteRetry').onclick = () => loadServerReplay(matchId, profileId, true);
     loadServerReplay(matchId, profileId);
   }
 
@@ -2211,7 +2194,7 @@ function renderUpdates(data) {
   if (select) {
     const current = String(data?.article?.id || '');
     select.innerHTML = items.length ? items.map(item => `<option value="${escapeHtml(item.id)}"${String(item.id) === current ? ' selected' : ''}>${escapeHtml(item.title || '未命名文章')}</option>`).join('') : '<option value="">暂无符合条件的文章</option>';
-    select.onchange = () => loadUpdates(select.value);
+    select.onchange = () => { const url=new URL(location.href); url.searchParams.set('articleId',select.value); history.replaceState(history.state,'',url); loadUpdates(select.value); };
   }
   const item = data?.article;
   if (item?.id) currentUpdatesArticleId = String(item.id);
@@ -2459,6 +2442,159 @@ let realtimeRequestId = 0;
 let realtimeLastPayload = null;
 let realtimeLastVersion = null;
 let realtimeLastEtag = null;
+let realtimeChatTimer = null;
+let realtimeChatBound = false;
+let realtimeChatLastKey = '';
+let realtimeChatRestorePromise = null;
+function realtimeChatStored(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function realtimeChatSave(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+function renderRealtimeChat(messages) {
+  const box = document.querySelector('#realtimeChatMessages');
+  if (!box) return;
+  const items = Array.isArray(messages) ? messages : [];
+  const key = JSON.stringify(items.map(item => [item.id, item.author, item.uid]));
+  if (key === realtimeChatLastKey) return;
+  const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 45;
+  realtimeChatLastKey = key;
+  box.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement('p');
+    empty.className = 'realtime-chat-empty';
+    empty.textContent = '暂无发言，欢迎开始交流。';
+    box.append(empty);
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = `realtime-chat-item${item.kind === 'system' ? ' is-system' : ''}`;
+    const time = document.createElement('time');
+    time.dateTime = new Date(item.createdAt).toISOString();
+    time.textContent = new Date(item.createdAt).toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
+    const author = document.createElement('strong');
+    author.textContent = item.kind === 'system' ? '系统' : `${item.author || '游客'}(#${item.uid || '?'})`;
+    const content = document.createElement('span');
+    content.textContent = String(item.content || '');
+    row.append(time, author, content);
+    if (item.kind === 'system' && item.url && !/已结束直播/.test(String(item.content || ''))) {
+      try {
+        const url = new URL(item.url);
+        if (url.protocol === 'https:' && /(^|\.)(bilibili\.com|douyu\.com|douyin\.com|twitch\.tv|youtube\.com|kick\.com)$/.test(url.hostname)) {
+          const link = document.createElement('a');
+          link.href = url.href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = '观看直播';
+          row.append(link);
+        }
+      } catch {}
+    }
+    box.append(row);
+  }
+  if (stickToBottom) box.scrollTop = box.scrollHeight;
+}
+function updateRealtimeChatViewer(viewer) {
+  if (!viewer) return;
+  const name = document.querySelector('#realtimeChatName');
+  const identity = document.querySelector('#realtimeChatIdentity');
+  const save = document.querySelector('#realtimeChatSaveName');
+  const canRename = !viewer.canRenameAt || Date.now() >= viewer.canRenameAt;
+  name.readOnly = !canRename;
+  if (!canRename || name.dataset.dirty !== '1') name.value = viewer.nickname;
+  if (!canRename) delete name.dataset.dirty;
+  identity.textContent = `${viewer.nickname}(#${viewer.uid})${canRename ? ' · 可修改昵称' : ` · 下次可修改：${new Date(viewer.canRenameAt).toLocaleString('zh-CN', { hour12: false })}`}`;
+  save.hidden = !canRename;
+}
+async function restoreRealtimeChatNickname(viewer) {
+  const stored = realtimeChatStored('aoe2-realtime-chat-name');
+  const name = document.querySelector('#realtimeChatName');
+  if (!viewer || viewer.canRenameAt || !stored || stored === viewer.nickname || name?.dataset.dirty === '1') return viewer;
+  if (realtimeChatRestorePromise) return realtimeChatRestorePromise;
+  realtimeChatRestorePromise = (async () => {
+    try {
+      const response = await fetch('/api/realtime/chat/nickname', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: stored }) });
+      if (!response.ok) return viewer;
+      const result = await response.json();
+      return result.viewer || viewer;
+    } catch { return viewer; }
+  })().finally(() => { realtimeChatRestorePromise = null; });
+  return realtimeChatRestorePromise;
+}
+async function loadRealtimeChat() {
+  if (!/^\/realtime\/?$/.test(location.pathname) || document.querySelector('#realtimeChatBody')?.hidden) return;
+  try {
+    const response = await fetch('/api/realtime/chat', { cache: 'no-store' });
+    if (!response.ok) throw new Error('聊天记录暂时无法读取');
+    const data = await response.json();
+    const viewer = await restoreRealtimeChatNickname(data.viewer);
+    updateRealtimeChatViewer(viewer);
+    if (viewer?.canRenameAt) realtimeChatSave('aoe2-realtime-chat-name', viewer.nickname);
+    renderRealtimeChat(data.messages);
+  } catch {
+    if (!realtimeChatLastKey) document.querySelector('#realtimeChatMessages').textContent = '聊天记录暂时无法读取，稍后自动重试。';
+  }
+}
+function startRealtimeChat() {
+  if (!realtimeChatBound) {
+    realtimeChatBound = true;
+    const toggle = document.querySelector('#realtimeChatToggle');
+    const body = document.querySelector('#realtimeChatBody');
+    const form = document.querySelector('#realtimeChatForm');
+    const name = document.querySelector('#realtimeChatName');
+    const message = document.querySelector('#realtimeChatMessage');
+    const status = document.querySelector('#realtimeChatStatus');
+    const saveName = document.querySelector('#realtimeChatSaveName');
+    name.value = realtimeChatStored('aoe2-realtime-chat-name') || `游客${Math.floor(1000 + Math.random() * 9000)}`;
+    body.hidden = realtimeChatStored('aoe2-realtime-chat-collapsed') === '1';
+    toggle.setAttribute('aria-expanded', String(!body.hidden));
+    toggle.addEventListener('click', () => {
+      body.hidden = !body.hidden;
+      toggle.setAttribute('aria-expanded', String(!body.hidden));
+      realtimeChatSave('aoe2-realtime-chat-collapsed', body.hidden ? '1' : '0');
+      if (!body.hidden) loadRealtimeChat();
+    });
+    name.addEventListener('input', () => { name.dataset.dirty = '1'; });
+    saveName.addEventListener('click', async () => {
+      saveName.disabled = true;
+      status.textContent = '正在保存昵称……';
+      try {
+        const response = await fetch('/api/realtime/chat/nickname', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name.value }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '保存失败');
+        delete name.dataset.dirty;
+        updateRealtimeChatViewer(result.viewer);
+        realtimeChatSave('aoe2-realtime-chat-name', result.viewer.nickname);
+        status.textContent = '昵称已保存';
+        await loadRealtimeChat();
+      } catch (error) { status.textContent = error.message || '保存失败，请稍后重试'; }
+      finally { saveName.disabled = false; }
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = document.querySelector('#realtimeChatSend');
+      button.disabled = true;
+      status.textContent = '正在发送……';
+      try {
+        const response = await fetch('/api/realtime/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name.value, message: message.value }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '发送失败');
+        delete name.dataset.dirty;
+        updateRealtimeChatViewer(result.viewer);
+        realtimeChatSave('aoe2-realtime-chat-name', result.viewer.nickname);
+        message.value = '';
+        status.textContent = '已发送';
+        await loadRealtimeChat();
+      } catch (error) { status.textContent = error.message || '发送失败，请稍后重试'; }
+      finally { button.disabled = false; }
+    });
+  }
+  clearInterval(realtimeChatTimer);
+  loadRealtimeChat();
+  realtimeChatTimer = setInterval(loadRealtimeChat, 5000);
+}
 function realtimeElapsed(started) {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(started || 0));
   if (!seconds) return '刚刚';
@@ -2470,7 +2606,7 @@ function realtimeElapsed(started) {
 }
 function realtimeServerName(value) {
   const text = String(value || '').trim().toLowerCase();
-  const names = { ukwest: '英国西部', uksouth: '英国南部', koreacentral: '韩国中部', centralindia: '印度中部', southcentralus: '美国中南部', eastus: '美国东部', eastus2: '美国东部 2', westus: '美国西部', westus2: '美国西部 2', westus3: '美国西部 3', japaneast: '日本东部', southeastasia: '东南亚', australiaeast: '澳大利亚东部', brazilsouth: '巴西南部', westeurope: '西欧', northeurope: '北欧' };
+  const names = { ukwest: '英国西部', uksouth: '英国南部', koreacentral: '韩国中部', centralindia: '印度中部', southcentralus: '美国中南部', eastus: '美国东部', eastus2: '美国东部 2', westus: '美国西部', westus2: '美国西部 2', westus3: '美国西部 3', japaneast: '日本东部', southeastasia: '东南亚', australiaeast: '澳大利亚东部', australiasoutheast: '澳大利亚东南部', brazilsouth: '巴西南部', westeurope: '西欧', northeurope: '北欧' };
   return names[text] || (text ? text : '未知服务器');
 }
 function realtimeLeaderboardName(value) {
@@ -2714,6 +2850,7 @@ function startRealtimePolling() {
   // refresh loop is the only path that calls the upstream match API.
   checkRealtimeVersion();
   realtimePollTimer = setInterval(checkRealtimeVersion, 5 * 1000);
+  startRealtimeChat();
 }
 
 let lastCountedPageView = '';
@@ -2775,12 +2912,28 @@ async function loadRecentFeedback() {
     target.innerHTML = items.length ? items.map(item => {
       const date = new Date(item.sentAt);
       const time = Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date) : '时间未记录';
-      return `<article class="feedback-entry"><div class="feedback-entry-ip">IP · ${escapeHtml(item.ip || '未知')}</div><p>${escapeHtml(item.content || '')}</p><time datetime="${escapeHtml(item.sentAt || '')}">${escapeHtml(time)} · 北京时间</time></article>`;
+      return `<article class="feedback-entry"><div class="feedback-entry-ip">IP · ${escapeHtml(item.ip || '未知')}</div><p>${escapeHtml(item.content || '')}</p><div class="feedback-entry-actions"><time datetime="${escapeHtml(item.sentAt || '')}">${escapeHtml(time)} · 北京时间</time><button type="button" class="feedback-like${item.liked ? ' is-liked' : ''}" data-feedback-id="${escapeHtml(item.id || '')}" aria-pressed="${Boolean(item.liked)}" title="每个IP对每条反馈最多点赞一次" ${item.liked ? 'disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10H3v10h4M7 10l5-7c1.5 0 2 1 2 2l-1 5h6a2 2 0 0 1 2 2l-2 7a2 2 0 0 1-2 1H7z"/></svg><span class="feedback-like-label">${item.liked ? '已点赞' : '点赞'}</span><span class="feedback-like-count">${Number(item.likes) || 0}</span></button><span class="feedback-like-status" role="status"></span></div></article>`;
     }).join('') : '<p class="feedback-feed-empty">暂时还没有反馈。</p>';
   } catch {
     target.innerHTML = '<p class="feedback-feed-empty">暂时无法读取反馈，请稍后刷新。</p>';
   }
 }
+document.querySelector('#feedbackRecent')?.addEventListener('click', async event => {
+  const button = event.target.closest('.feedback-like');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  const status = button.closest('.feedback-entry-actions').querySelector('.feedback-like-status');
+  status.textContent = '';
+  try {
+    const response = await fetch('/api/feedback/like', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: button.dataset.feedbackId }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '点赞失败，请稍后重试');
+    button.classList.add('is-liked'); button.setAttribute('aria-pressed','true');
+    button.querySelector('.feedback-like-label').textContent = '已点赞';
+    button.querySelector('.feedback-like-count').textContent = String(data.likes);
+    status.textContent = data.added ? '点赞成功' : '这个IP已为这条反馈点赞';
+  } catch (error) { button.disabled = false; status.textContent = error.message; }
+});
 async function loadFeedbackStatus() {
   try {
     const response = await fetch('/api/feedback', { cache: 'no-store' });
@@ -3123,6 +3276,8 @@ function renderCurrentRoute(selectedPlayer = null) {
   recordCurrentPageView();
   const match = location.pathname.match(/^\/profile(?:\/(\d+))?\/?$/);
   const isProfilePage = Boolean(match);
+  const isCivilizationsPage = /^\/civilizations\/?$/.test(location.pathname);
+  const isTechTreePage = /^\/tech-tree\/?$/.test(location.pathname);
   const isMediaVideosPage = /^\/media\/videos\/?$/.test(location.pathname);
   const isMediaPage = isMediaVideosPage || /^\/media\/?$/.test(location.pathname);
   const isReplayAnalysisPage = /^\/replay-analysis\/?$/.test(location.pathname);
@@ -3136,6 +3291,8 @@ function renderCurrentRoute(selectedPlayer = null) {
   const profileId = match?.[1] || '';
   syncUpdatesBackToTop();
   document.body.classList.toggle('page-profile', isProfilePage);
+  document.body.classList.toggle('page-civilizations', isCivilizationsPage);
+  document.body.classList.toggle('page-tech-tree', isTechTreePage);
   document.body.classList.toggle('page-media', isMediaPage);
   document.body.classList.toggle('page-replay-analysis', isReplayAnalysisPage);
   document.body.classList.toggle('page-updates', isUpdatesPage);
@@ -3152,13 +3309,13 @@ function renderCurrentRoute(selectedPlayer = null) {
     ...Array.from({ length: 6 }, (_, index) => `/assets/module-random/${index + 1}.webp`),
     ...Array.from({ length: 5 }, (_, index) => `/assets/module-${index + 1}.webp`)
   ];
-  const moduleName = isProfilePage ? 'profile' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
+  const moduleName = isTechTreePage ? 'tech-tree' : isCivilizationsPage ? 'civilizations' : isProfilePage ? 'profile' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(moduleArtworkKey) || '{}'); } catch {}
   const order = Array.isArray(saved.order) && saved.order.length === moduleArtworkFiles.length
     ? saved.order
     : moduleArtworkFiles.map((_, index) => index).sort(() => Math.random() - 0.5);
-  const moduleSlots = ['leaderboard', 'profile', 'realtime', 'events', 'media', 'replay-analysis', 'updates', 'build-orders', 'feedback'];
+  const moduleSlots = ['leaderboard', 'profile', 'realtime', 'events', 'media', 'replay-analysis', 'updates', 'build-orders', 'feedback', 'civilizations', 'tech-tree'];
   const slot = Math.max(0, moduleSlots.indexOf(moduleName));
   const selected = order[slot % moduleArtworkFiles.length];
   document.documentElement.style.setProperty('--module-art-image', `url("${moduleArtworkFiles[selected]}")`);
@@ -3172,12 +3329,14 @@ function renderCurrentRoute(selectedPlayer = null) {
     document.head.appendChild(moduleArtworkStyle);
   }
   const moduleSelector = moduleName === 'leaderboard'
-    ? 'body:not(.page-profile):not(.page-media):not(.page-replay-analysis):not(.page-updates):not(.page-realtime):not(.page-events):not(.page-build-orders):not(.page-feedback)'
+    ? 'body:not(.page-tech-tree):not(.page-civilizations):not(.page-profile):not(.page-media):not(.page-replay-analysis):not(.page-updates):not(.page-realtime):not(.page-events):not(.page-build-orders):not(.page-feedback)'
     : `body.page-${moduleName}`;
   moduleArtworkStyle.textContent = `${moduleSelector} #leaderboard:before{background-image:linear-gradient(90deg,var(--bg) 0%,rgba(16,19,16,.54) 30%,rgba(16,19,16,.08)),url("${moduleArtworkFiles[selected]}")!important}`;
   try { localStorage.setItem(moduleArtworkKey, JSON.stringify({ order })); } catch {}
   const image = new Image();
   image.src = moduleArtworkFiles[selected];
+  document.querySelector('#civilizations-page').hidden = !isCivilizationsPage;
+  document.querySelector('#tech-tree-page').hidden = !isTechTreePage;
   document.querySelector('#player-profile').hidden = !isProfilePage;
   document.querySelector('#media-page').hidden = !isMediaPage;
   const replayAnalysisSection = document.querySelector('#replay-analysis-page');
@@ -3188,30 +3347,37 @@ function renderCurrentRoute(selectedPlayer = null) {
   document.querySelector('#build-orders-page').hidden = !isBuildOrdersPage;
   document.querySelector('#feedback-page').hidden = !isFeedbackPage;
   document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => {
-    const activePage = isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
+    const activePage = isTechTreePage ? 'tech-tree' : isCivilizationsPage ? 'civilizations' : isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
     const active = link.dataset.page === activePage;
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isEventsPage ? '赛事信息' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isReplayAnalysisPage ? '录像解析' : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : isFeedbackPage ? '反馈区' : '天梯榜单';
-  if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; realtimeRequest?.abort?.(); realtimeVersionRequest?.abort?.(); }
+  document.querySelector('.breadcrumbs b').textContent = isTechTreePage ? '民族科技树' : isCivilizationsPage ? '民族统计' : isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isEventsPage ? '赛事信息' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isReplayAnalysisPage ? '录像解析' : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : isFeedbackPage ? '反馈区' : '天梯榜单';
+  if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; clearInterval(realtimeChatTimer); realtimeChatTimer = null; realtimeRequest?.abort?.(); realtimeVersionRequest?.abort?.(); }
   if (!isEventsPage) { clearInterval(eventsPollTimer); eventsPollTimer = null; }
+  if (isTechTreePage) {
+    profileDetailsRequestId++;
+    clearTimeout(profileDetailsTimeout);
+    import('/tech-tree.js?v=37').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
+      .catch(() => { document.querySelector('#tech-tree-page').textContent='科技树加载失败，请刷新页面重试。'; });
+    return;
+  }
+  if (isCivilizationsPage) {
+    profileDetailsRequestId++;
+    clearTimeout(profileDetailsTimeout);
+    import('/civilizations.js?v=18').then(module => module.mountCivilizations(document.querySelector('#civilizations-page'), {
+      civName: civilizationNameZh, mapName: mapDisplayName, civImage: aoe2CivilizationImageUrl
+    })).catch(() => { document.querySelector('#civilizations-page').textContent='民族统计加载失败，请刷新页面重试。'; });
+    return;
+  }
   if (isMediaPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     loadMedia(isMediaVideosPage);
     return;
   }
   if (isReplayAnalysisPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     setupReplayAnalysis();
     return;
   }
@@ -3220,50 +3386,30 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsRequestId++;
     startRealtimePolling();
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     return;
   }
   if (isEventsPage) {
     window.scrollTo({ top: 0, behavior: 'auto' });
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     startEventsPolling();
     return;
   }
   if (isUpdatesPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
-    loadUpdates();
+    loadUpdates(new URLSearchParams(location.search).get('articleId') || '');
     return;
   }
   if (isBuildOrdersPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     loadBuildOrders(buildOrderSlug);
     return;
   }
   if (isFeedbackPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     loadFeedbackStatus();
     loadRecentFeedback();
     return;
@@ -3292,10 +3438,6 @@ function renderCurrentRoute(selectedPlayer = null) {
     }
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     loadLeaderboard();
     updateCountdown();
     return;
@@ -3314,10 +3456,6 @@ function renderCurrentRoute(selectedPlayer = null) {
     setProfileLoadingAnimation(false);
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    clearTimeout(profileDetailsRetryTimer);
-    clearInterval(profileDetailsRequestTimer);
-    profileDetailsSocket?.close();
-    profileDetailsSocket = null;
     document.querySelector('#profileIdentityName').textContent = '搜索并选择一名玩家';
     document.querySelector('#profileIdentityMeta').textContent = '';
   document.querySelector('#profileIdentityLinks').innerHTML = '';
@@ -3345,9 +3483,6 @@ function renderCurrentRoute(selectedPlayer = null) {
 }
 function loadAoE2RecsProfile(profileId, fallbackName = '') {
   clearTimeout(profileDetailsTimeout);
-  clearTimeout(profileDetailsRetryTimer);
-  clearInterval(profileDetailsRequestTimer);
-  profileDetailsSocket?.close();
   const requestId = ++profileDetailsRequestId;
   profileMatchesRequestId = requestId;
   currentProfileAvatarUrl = '';
@@ -3494,9 +3629,14 @@ profileSearchForm.addEventListener('submit', async event => {
 });
 const replayNavLink = document.querySelector('.sidebar nav')?.insertBefore(Object.assign(document.createElement('a'), { className: 'nav-item', href: '/replay-analysis', textContent: '◈录像解析' }), document.querySelector('.sidebar nav [data-page="feedback"]'));
 if (replayNavLink) { replayNavLink.dataset.page = 'replay-analysis'; replayNavLink.innerHTML = '<span class="nav-icon">◈</span>录像解析<span class="nav-dot"></span>'; }
+const techTreeNavLink = document.querySelector('.sidebar nav')?.insertBefore(Object.assign(document.createElement('a'), { className:'nav-item', href:'/tech-tree' }), document.querySelector('.sidebar nav [data-page="civilizations"]')?.nextElementSibling || null);
+if (techTreeNavLink) {
+  techTreeNavLink.dataset.page='tech-tree';
+  techTreeNavLink.innerHTML='<span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v5H9zM2 16h6v5H2zM16 16h6v5h-6zM12 8v4M5 16v-4h14v4"/></svg></span>民族科技树<span class="nav-dot"></span>';
+}
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
-  const target = link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'events' ? '/events' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'replay-analysis' ? '/replay-analysis' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : link.dataset.page === 'feedback' ? '/feedback' : '/';
+  const target = link.dataset.page === 'tech-tree' ? '/tech-tree' : link.dataset.page === 'civilizations' ? '/civilizations' : link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'events' ? '/events' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'replay-analysis' ? '/replay-analysis' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : link.dataset.page === 'feedback' ? '/feedback' : '/';
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));

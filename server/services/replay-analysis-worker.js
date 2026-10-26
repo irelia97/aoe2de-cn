@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inflateRawSync, gzipSync } from 'node:zlib';
 import { extractReplayMap } from '../../public/replay-map.js';
+import { readLobbyMapSeed } from '../../public/replay-map-seed.js';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -103,6 +104,12 @@ if (parentPort) {
     if (bytes.length > maxReplaySize) throw new Error('录像文件过大');
     const summary = glue.parse_rec_summary(bytes);
     const summaryData = plain(summary);
+    summaryData.mapSeed = null;
+    try {
+      const headerSize = bytes.readUInt32LE(0);
+      if (headerSize > 8 && headerSize <= bytes.length) summaryData.mapSeed = readLobbyMapSeed(
+        inflateRawSync(bytes.subarray(8,headerSize), { maxOutputLength: 64 * 1024 * 1024 }), summaryData);
+    } catch { console.warn('[replay] lobby map seed unavailable'); }
     const outcomes = new Map((workerData.metadata.matchInfo?.results || []).map(player => [String(player.profileId), player.won]));
     for (const team of summaryData.teams) {
       const values = team.players.map(player => outcomes.get(String(player.profile_id)));

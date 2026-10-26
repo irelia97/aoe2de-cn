@@ -34,6 +34,10 @@ test('sibling directories and symlinks cannot escape the static root', async t =
     assert.equal(withinDirectory(root, other), false);
     await assert.rejects(staticFilePath(root, '/../public-backup/secret.txt'), { statusCode: 403 });
     await assert.rejects(staticFilePath(root, '/%00'), { statusCode: 400 });
+    await writeFile(join(root, '.env'), 'must not be exposed');
+    await assert.rejects(staticFilePath(root, '/.env'), { statusCode: 404 });
+    await assert.rejects(staticFilePath(root, '/%2egit/config'), { statusCode: 404 });
+    assert.equal(await staticFilePath(root, '/.well-known/acme-challenge/token'), join(root, '.well-known/acme-challenge/token'));
     if (process.platform === 'win32') t.diagnostic('Symlink check runs on deployment Linux host');
     else {
       await symlink(other, join(root, 'link'));

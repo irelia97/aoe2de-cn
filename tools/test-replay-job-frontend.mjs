@@ -18,13 +18,35 @@ test('web replay analysis polls a background job then renders the completed resu
   const context = vm.createContext({ document: { querySelector: key => elements[key] }, AbortSignal,
     setTimeout: fn => { fn(); },
     fetch: async (url, options) => { requests.push({ url, options }); return responses.shift(); },
-    replayLoadUnitMap: async () => {}, replayLoadTechMap: async () => {},
+    replayLoadEapm: async () => {}, replayLoadUnitMap: async () => {}, replayLoadTechMap: async () => {},
     replaySummaryMarkup: summary => rendered.push(summary), replayLoadMatchInfo: async () => {} });
-  await vm.runInContext(code + "\nloadServerReplay('123','456')", context);
+  await vm.runInContext(code + "\nloadServerReplay('123','456',true)", context);
   assert.equal(requests.length, 3); assert.equal(rendered.length, 1);
+  assert.equal(requests[0].options.method, 'POST');
   assert.equal(rendered[0].test, true);
   assert.ok(requests.every(req => req.options.headers['X-AOE2-Client'] === 'web'));
   assert.match(elements['#replayStatus'].textContent, /缓存/);
+});
+
+test('opening an uncached replay page only reads cache and waits for a start click', async () => {
+  const elements = { '#replayStatus': {}, '#replayResult': {}, '#replayRemoteRetry': {} };
+  const requests = [];
+  const context = vm.createContext({ document: { querySelector: key => elements[key] }, AbortSignal,
+    fetch: async (url,options) => { requests.push(options);return Response.json({ code: 'ANALYSIS_REQUIRED' },{status:404}); } });
+  await vm.runInContext(code + "\nloadServerReplay('123','456')", context);
+  assert.equal(requests.length,1);assert.equal(requests[0].method,'GET');
+  assert.equal(elements['#replayRemoteRetry'].textContent,'开始分析');
+  assert.equal(elements['#replayRemoteRetry'].hidden,false);
+});
+
+test('opening a cached replay page renders immediately without submitting a job', async () => {
+  const elements = { '#replayStatus': {}, '#replayResult': {}, '#replayRemoteRetry': {} };
+  let rendered=0, calls=0;
+  const context = vm.createContext({ document: { querySelector: key => elements[key] }, AbortSignal,
+    fetch: async (_url,options) => { calls++;assert.equal(options.method,'GET');return Response.json({summary:{},matchInfo:{server:'x',results:[]}},{headers:{'x-replay-cache':'HIT'}}); },
+    replayLoadEapm:async()=>{},replayLoadUnitMap:async()=>{},replayLoadTechMap:async()=>{},replaySummaryMarkup:()=>{rendered++;} });
+  await vm.runInContext(code + "\nloadServerReplay('123','456')", context);
+  assert.equal(calls,1);assert.equal(rendered,1);
 });
 
 test('rate-limit message is shown directly without polling or parsing a replay', async () => {

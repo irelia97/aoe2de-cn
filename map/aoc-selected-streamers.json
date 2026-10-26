@@ -1,5 +1,5 @@
 {
-  "playerCount": 74,
+  "playerCount": 80,
   "players": [
     {
       "name": "Yo",
@@ -147,6 +147,9 @@
       "live_links": {
         "bilibili": [
           "https://live.bilibili.com/1709467438"
+        ],
+        "douyin": [
+          "https://live.douyin.com/579136196080"
         ]
       },
       "isCN": true
@@ -1167,7 +1170,9 @@
     },
     {
       "name": "勇者三叶",
-      "rl": [],
+      "rl": [
+        "3051123"
+      ],
       "live_links": {
         "bilibili": [
           "https://live.bilibili.com/blanc/311754"
@@ -1188,6 +1193,30 @@
       "isCN": false
     },
     {
+      "name": "可恶又被你抓住啦",
+      "rl": [
+        "532184"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/24355302"
+        ]
+      },
+      "isCN": true
+    },
+    {
+      "name": "重冲王rayklin",
+      "rl": [
+        "20295268"
+      ],
+      "live_links": {
+        "bilibili": [
+          "https://live.bilibili.com/1714603863"
+        ]
+      },
+      "isCN": true
+    },
+    {
       "name": "白衣采桑",
       "rl": [],
       "live_links": {
@@ -1195,6 +1224,30 @@
           "https://live.bilibili.com/14434330"
         ]
       },
+      "isCN": true
+    },
+    {
+      "name": "雾架",
+      "rl": ["19076073"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/23995827"]},
+      "isCN": true
+    },
+    {
+      "name": "张献忠",
+      "rl": ["323219"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/31896390"]},
+      "isCN": true
+    },
+    {
+      "name": "风悠",
+      "rl": ["10841493"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/24489157"]},
+      "isCN": true
+    },
+    {
+      "name": "鸡小悠",
+      "rl": ["10516112"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/26401744"]},
       "isCN": true
     }
   ]

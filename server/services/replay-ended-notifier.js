@@ -4,7 +4,7 @@ import { gunzipSync } from 'node:zlib';
 import { formatReplayDanmaku, matchRatingChange } from './replay-danmaku-summary.js';
 
 // Track observed games only. Persist retries across service restarts; never backfill history.
-export function createReplayEndedNotifier({ statePath, profileIds, replayService, send, prepare = async () => {}, cancelPreparation = () => {}, fetchImpl = fetch, now = Date.now }) {
+export function createReplayEndedNotifier({ statePath, profileIds, replayService, send, prepare = async () => {}, cancelPreparation = () => {}, fetchImpl = fetch, now = Date.now, isPaused = () => false }) {
   let jobs, activeTask;
   let mutations = Promise.resolve();
   const ready = readFile(statePath,'utf8').then(text => { jobs = JSON.parse(text); }).catch(error => {
@@ -38,6 +38,7 @@ export function createReplayEndedNotifier({ statePath, profileIds, replayService
   async function runTick() {
     try {
       await ready;
+      if (isPaused()) return;
       for (const [id,job] of Object.entries(jobs)) {
         if (job.done || job.nextAt > now()) continue;
         if ((job.failures ?? (job.lastError ? 1 : 0)) >= 2) {

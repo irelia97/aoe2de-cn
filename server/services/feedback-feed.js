@@ -1,6 +1,11 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { isIP } from 'node:net';
+import { createHash } from 'node:crypto';
+
+export function feedbackId(record) {
+  return createHash('sha256').update(JSON.stringify([record.ip, record.sentAt, record.content])).digest('hex');
+}
 
 export function maskFeedbackIp(value) {
   const ip = String(value || '').replace(/^::ffff:/i, '');
@@ -17,7 +22,7 @@ export async function recentFeedback(path) {
       try {
         const record = JSON.parse(line);
         if (typeof record.content !== 'string' || !record.content.trim() || !Number.isFinite(Date.parse(record.sentAt))) continue;
-        items.unshift({ ip: maskFeedbackIp(record.ip), content: record.content, sentAt: record.sentAt });
+        items.unshift({ id: feedbackId(record), ip: maskFeedbackIp(record.ip), content: record.content, sentAt: record.sentAt });
         items.sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt));
         if (items.length > 15) items.length = 15;
       } catch { /* Skip interrupted or malformed log entries. */ }

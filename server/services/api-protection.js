@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const replayPaths = new Set(['/api/replay-analysis', '/api/replay-analysis/status', '/api/replay-match-info', '/api/match-replay']);
-const profilePaths = new Set(['/api/profile-matches', '/api/profile-details', '/api/profile-accounts', '/api/profile-leaderboards', '/api/avatar']);
+const profilePaths = new Set(['/api/feedback/like', '/api/profile-matches', '/api/profile-details', '/api/profile-accounts', '/api/profile-leaderboards', '/api/avatar', '/api/civilization-stats', '/api/civilization-stats/meta']);
 const automatedAgent = /bot\b|crawler|spider|slurp|bingpreview|headlesschrome|python-requests|python-urllib|curl\//i;
 
 export function createApiProtection({ now = Date.now, maxEntries = 10000, statePath = null } = {}) {
@@ -67,13 +67,18 @@ export function createApiProtection({ now = Date.now, maxEntries = 10000, stateP
           ? sameOrigin(req, req.headers.referer)
           : req.headers['x-aoe2-client'] === 'web';
         if (!validSource) return deny(res, 403, 'source', '请刷新本站页面后重试');
+        if (pathname === '/api/replay-analysis' && req.method === 'POST'
+          && (!sameOrigin(req, req.headers.origin) || !sameOrigin(req, req.headers.referer))) {
+          return deny(res, 403, 'source', '请从本站录像页面开始分析');
+        }
       }
       const timestamp = now();
       if (timestamp >= nextCleanup) {
         for (const [key, entry] of visitors) if (timestamp - entry.hourStart >= 3600000) visitors.delete(key);
         nextCleanup = timestamp + 60000;
       }
-      const bucket = pathname === '/api/replay-analysis/status' ? 'poll'
+      const bucket = pathname === '/api/replay-analysis' && req.method === 'GET' ? 'cache'
+        : pathname === '/api/replay-analysis/status' ? 'poll'
         : pathname === '/api/replay-match-info' ? 'metadata' : replayPaths.has(pathname) ? 'replay' : 'profile';
       const key = `${createHash('sha256').update(ip).digest('hex')}:${bucket}`;
       let entry = visitors.get(key);
@@ -84,7 +89,7 @@ export function createApiProtection({ now = Date.now, maxEntries = 10000, stateP
       }
       if (timestamp - entry.minuteStart >= 60000) { entry.minuteStart = timestamp; entry.minuteCount = 0; }
       if (timestamp - entry.hourStart >= 3600000) { entry.hourStart = timestamp; entry.hourCount = 0; }
-      const limits = bucket === 'replay' ? [2, 10] : bucket === 'metadata' ? [30, 120] : bucket === 'poll' ? [120, 3600] : [120, 600];
+      const limits = bucket === 'replay' ? [2, 10] : ['metadata','cache'].includes(bucket) ? [30, 120] : bucket === 'poll' ? [120, 3600] : [120, 600];
       const wait = entry.minuteCount >= limits[0] ? entry.minuteStart + 60000 - timestamp
         : entry.hourCount >= limits[1] ? entry.hourStart + 3600000 - timestamp : 0;
       if (wait > 0) {
@@ -107,7 +112,7 @@ export function createApiProtection({ now = Date.now, maxEntries = 10000, stateP
         global.minuteCount++; global.hourCount++;
       }
       persist();
-      const heavy = pathname === '/api/replay-analysis' || pathname === '/api/match-replay';
+      const heavy = (pathname === '/api/replay-analysis' && req.method !== 'GET') || pathname === '/api/match-replay';
       if (heavy) {
         const analysis = pathname === '/api/replay-analysis';
         // Keep one of the replay service's two worker slots for automatic summaries.

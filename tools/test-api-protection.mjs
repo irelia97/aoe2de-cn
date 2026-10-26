@@ -19,6 +19,20 @@ function response() {
 }
 const path = '/api/replay-analysis';
 
+test('cache reads neither reserve analysis slots nor consume the submission quota', () => {
+  const guard=createApiProtection();
+  for(let i=0;i<5;i++) {
+    const req={...request(),method:'GET'},res=response();
+    assert.equal(guard.allow(req,res,path,'browser'),true);
+    assert.equal(guard.stats().activeAnalysis,0);res.end('cached');
+  }
+  const req={...request({origin:'https://aoe2cn.cc',referer:'https://aoe2cn.cc/replay-analysis'}),method:'POST'};
+  for(let i=0;i<2;i++){const res=response();assert.equal(guard.allow(req,res,path,'browser'),true);res.end('queued');}
+  const denied=response();assert.equal(guard.allow(req,denied,path,'browser'),false);assert.equal(denied.status,429);
+  const missingOrigin={...request(),method:'POST'},bad=response();
+  assert.equal(guard.allow(missingOrigin,bad,path,'another-browser'),false);assert.equal(bad.status,403);
+});
+
 test('crawler, missing browser header and cross-origin calls never reach protected handlers', () => {
   const guard = createApiProtection();
   for (const headers of [

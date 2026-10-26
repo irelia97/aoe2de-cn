@@ -29,6 +29,33 @@ test('whole-game eAPM, streamer research delays, duplicates and missing upgrades
   assert.throws(()=>formatReplayDanmaku(replay,'999'),/玩家不匹配/);
 });
 
+test('end summary uses the shared 500 real ms sliding window',()=>{
+  const recording=structuredClone(replay);
+  recording.full.chapters[0].operations=[
+    action(0,{Move:{player_id:1,x:1,y:1}}),
+    action(850,{Move:{player_id:1,x:1,y:1}}),
+    action(1701,{Move:{player_id:1,x:1,y:1}}),
+    action(100,{Move:{player_id:2,x:2,y:2}}),
+  ];
+  assert.match(formatReplayDanmaku(recording,'197964'),/^eAPM 主播\(1\.0\) vs 对手\(0\.5\)/);
+});
+
+test('automatic pause skips queries and parsing, expires old jobs, and resumes new games at expiry',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'paused-ended-'));
+  let clock=1_000_000,requests=0,parses=0,sends=0;
+  const until=clock+2*86400000;
+  const notifier=createReplayEndedNotifier({statePath:join(directory,'state.json'),profileIds:['197964'],now:()=>clock,isPaused:()=>clock<until,
+    replayService:{get:async()=>{parses++;throw new Error('not expected');}},send:async()=>{sends++;},
+    fetchImpl:async url=>{requests++;return Response.json({matchId:url.split('/').at(-1),finished:null});}});
+  try {
+    await notifier.observe({id:123,players:[{profileId:197964},{profileId:42}]});
+    clock+=31000;await notifier.tick();assert.equal(requests,0);assert.equal(parses,0);assert.equal(sends,0);
+    clock=until;await notifier.tick();assert.equal(requests,0);
+    await notifier.observe({id:124,players:[{profileId:197964},{profileId:42}]});
+    clock+=31000;await notifier.tick();assert.equal(requests,1);assert.equal(parses,0);assert.equal(sends,0);
+  } finally {notifier.stop();await rm(directory,{recursive:true,force:true});}
+});
+
 test('end rating change uses the watched player and game mode, including missing and zero scores', () => {
   const match = { leaderboard: 'rm_1v1', teams: [{ players: [
     { profileId: 42, ratingDiff: 21 }, { profileId: 197964, ratingDiff: -21 }

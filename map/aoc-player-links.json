@@ -10546,6 +10546,9 @@
       "live_links": {
         "bilibili": [
           "https://live.bilibili.com/1709467438"
+        ],
+        "douyin": [
+          "https://live.douyin.com/579136196080"
         ]
       },
       "social_links": {}
@@ -10743,6 +10746,30 @@
           "https://live.bilibili.com/23195173"
         ]
       },
+      "social_links": {}
+    },
+    {
+      "name": "雾架",
+      "rl": ["19076073"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/23995827"]},
+      "social_links": {}
+    },
+    {
+      "name": "张献忠",
+      "rl": ["323219"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/31896390"]},
+      "social_links": {}
+    },
+    {
+      "name": "风悠",
+      "rl": ["10841493"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/24489157"]},
+      "social_links": {}
+    },
+    {
+      "name": "鸡小悠",
+      "rl": ["10516112"],
+      "live_links": {"bilibili": ["https://live.bilibili.com/26401744"]},
       "social_links": {}
     }
   ]
