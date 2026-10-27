@@ -78,9 +78,9 @@ body.page-civilizations #leaderboard{max-width:none}
 .civ-matchups #civ-matchup-intro{overflow-wrap:anywhere}
 
 .civ-overview .civ-panel-heading>div:first-child{min-width:0}
-.civ-overview-controls{display:flex;flex-direction:column;gap:6px;width:110px;flex-shrink:0}
+.civ-overview-controls{display:flex;flex-direction:column;gap:6px;width:170px;flex-shrink:0}
 .civ-overview-controls>span{font-size:11px;color:var(--muted);text-align:right}
-@media(max-width:620px){.civ-overview-controls{width:96px}}
+@media(max-width:620px){.civ-overview-controls{width:150px}}
 
 .civ-games-metric{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 10px}
 #civ-game-share{font:12px var(--mono);color:var(--muted);white-space:nowrap}
@@ -95,9 +95,9 @@ body.page-civilizations #leaderboard{max-width:none}
 
 @media(min-width:621px){.civ-matchup-labels,.civ-matchup-row{grid-template-columns:minmax(0,1fr) 90px 52px;gap:8px;padding-left:16px;padding-right:16px}.civ-matchup-row>.civ-number{font-size:11px}}
 
-.civ-matchups .civ-panel-heading{grid-template-columns:minmax(0,1fr) 110px}
+.civ-matchups .civ-panel-heading{grid-template-columns:minmax(0,1fr) 170px}
 .civ-matchups .civ-opponent-controls{grid-template-columns:1fr}
-@media(max-width:620px){.civ-matchups .civ-panel-heading{grid-template-columns:minmax(0,1fr) 96px}}
+@media(max-width:620px){.civ-matchups .civ-panel-heading{grid-template-columns:minmax(0,1fr) 150px}}
 
 .civ-overview .civ-rate,.civ-overview .civ-usage,.civ-matchup-rate{font-size:11px}
 .civ-overview .civ-delta{font-size:8px}
