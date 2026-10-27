@@ -251,3 +251,17 @@ test('requested civilization wording and Varangian upgrade lines are preserved',
   assert.equal(varangians.nodes.find(node=>node.entity==='Unit:2704').parent,'Unit_2703_12');
   assert.equal(varangians.nodes.find(node=>node.entity==='Unit:533').parent,'Unit_250_45');
 });
+
+test('October balance update keeps regular and elite unit changes distinct',()=>{
+  const champi=entities['Unit:2550'];
+  assert.equal(champi.stats.Attacks.find(attack=>attack.Class===8).Amount,2);
+  assert.equal(champi.stats.Attacks.find(attack=>attack.Class===30).Amount,2);
+
+  assert.deepEqual(entities['Unit:873'].stats.Cost,{Food:70,Gold:80});
+  assert.equal(entities['Unit:873'].stats.HP,220);
+  assert.deepEqual(entities['Unit:875'].stats.Cost,{Food:70,Gold:80});
+  assert.equal(entities['Unit:875'].stats.HP,270);
+
+  assert.equal(entities['Unit:2569'].stats.Speed,1.45);
+  assert.equal(entities['Unit:2571'].stats.Speed,1.5);
+});
