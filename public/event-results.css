@@ -43,7 +43,7 @@
 .event-result-person{margin:0;white-space:nowrap}
 .event-result-team-logo{width:24px;height:24px;object-fit:contain;flex:none}
 .event-results-placement{white-space:normal!important}
-.event-result-score{display:inline-block;margin-left:7px;padding:2px 6px;border-radius:3px;background:color-mix(in srgb,var(--green) 14%,transparent);color:var(--green);font:700 11px var(--mono)}
+.event-result-score{display:inline-block;padding:2px 6px;border-radius:3px;background:color-mix(in srgb,var(--green) 14%,transparent);color:var(--green);font:700 11px var(--mono)}
 .event-results-message{padding:38px;border:1px solid var(--line);border-radius:6px;background:var(--panel);text-align:center;color:var(--muted)}
 .event-results-top{position:fixed;right:28px;bottom:28px;z-index:20;display:flex;align-items:center;gap:5px;transform:translateY(18px);min-height:40px;padding:0 13px;border:1px solid #aa8048;border-radius:22px;background:#392d20;color:#f1d49d;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;font:700 11px var(--sans);box-shadow:0 7px 24px #0006}
 .event-results-top.visible{transform:none;opacity:1;pointer-events:auto}
