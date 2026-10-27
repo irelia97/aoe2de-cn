@@ -31,7 +31,7 @@ try {
   page.on('response',response=>{if(response.status()===404 && response.url().startsWith(base))missing.push(response.url());});
   await page.goto(`${base}/tech-tree?civ=chinese`,{waitUntil:'domcontentloaded'});
   await page.locator('[data-node="Unit_4_87"]').waitFor();
-  assert.match(await page.locator('.tt-version').innerText(),/^游戏版本\s+185872/);
+  assert.match(await page.locator('.tt-version').innerText(),/^游戏版本\s+188329/);
   assert.equal(await page.locator('.tt-bonuses').getAttribute('open'),'');
   await page.locator('[data-node="Unit_4_87"]').click();
   await page.locator('dialog[open]').waitFor();

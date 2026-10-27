@@ -111,9 +111,9 @@ def build(source):
         target = assets/relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source/'img'/relative,target)
-    manifest = {'schemaVersion':1, 'gameVersion':'185872', 'revision':REVISION, 'sourceDate':'2026-09-22',
+    manifest = {'schemaVersion':1, 'gameVersion':'188329', 'revision':REVISION, 'sourceDate':'2026-09-22',
         'sourceUrl':'https://github.com/SiegeEngineers/aoe2techtree',
-        'patchUrl':'https://www.ageofempires.com/news/age-of-empires-ii-definitive-edition-update-185872/',
+        'patchUrl':'https://www.ageofempires.com/news/age-of-empires-ii-definitive-edition-update-188329/',
         'ages':[strings[v] for v in data['age_names']['base']], 'civilizations':civs,
         'counts':{kind:sum(e['type']==kind for e in entities.values()) for kind in ['Unit','Building','Tech']}}
     (output/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,separators=(',',':')),encoding='utf-8')

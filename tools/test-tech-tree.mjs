@@ -12,6 +12,11 @@ import { civilizationMatches } from '../public/civilization-combobox.js';
 const load = path => JSON.parse(readFileSync(new URL(`../public/tech-tree-data/${path}`,import.meta.url),'utf8'));
 const manifest=load('manifest.json'),entities=load('entities.json'),overrides=load('description-overrides.json'),chinese=load('civs/chinese.json');
 
+test('technology tree identifies the current game version',()=>{
+  assert.equal(manifest.gameVersion,'188329');
+  assert.match(manifest.patchUrl,/update-188329\/$/);
+});
+
 test('every civilization supports full pinyin and initials search',()=>{
   assert.deepEqual(Object.keys(civilizationPinyin).sort(),manifest.civilizations.map(civ=>civ.id).sort());
   for(const civ of manifest.civilizations) {
