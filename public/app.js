@@ -3357,7 +3357,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   if (isTechTreePage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/tech-tree.js?v=39').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
+    import('/tech-tree.js?v=40').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
       .catch(() => { document.querySelector('#tech-tree-page').textContent='科技树加载失败，请刷新页面重试。'; });
     return;
   }
