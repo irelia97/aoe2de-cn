@@ -3401,7 +3401,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     window.scrollTo({top:0,behavior:'auto'});
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/event-results.js?v=12').then(module=>module.mountEventResults(document.querySelector('#event-results-page')))
+    import('/event-results.js?v=13').then(module=>module.mountEventResults(document.querySelector('#event-results-page')))
       .catch(()=>{document.querySelector('#event-results-page').textContent='赛事结果加载失败，请刷新页面重试。';});
     return;
   }
