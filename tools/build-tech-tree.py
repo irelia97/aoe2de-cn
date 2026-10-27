@@ -86,6 +86,9 @@ def build(source):
             parent = by_type_id.get((parent_kind, raw.get('link_id'), building_id))
             if not parent and parent_kind == 'Building':
                 parent = next((n['id'] for n in originals if n['use_type']=='Building' and n['node_id']==raw.get('link_id')), None)
+            # The export omits the Heavy Mounted Crossbowman's unit-upgrade link.
+            if not parent and kind == 'Unit' and ident == 2701:
+                parent = by_type_id.get(('Unit', 2700, building_id))
             if building_id in primary:
                 group_key = f'building-{building_id}'
                 group_name = text(strings.get(str(primary[building_id]['name_string_id']), primary[building_id]['name']))

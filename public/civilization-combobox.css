@@ -1,0 +1,18 @@
+.civ-combobox{display:block;position:relative;width:100%;min-width:0}
+.civ-combobox>select{display:block;width:100%;pointer-events:none}
+.civ-combobox>.civ-combobox-input{position:absolute;z-index:1;top:1px;left:1px;width:calc(100% - 34px)!important;height:calc(100% - 2px)!important;border:0!important;border-radius:4px 0 0 4px;padding:0 0 0 10px!important;box-shadow:none!important}
+.civ-combobox.has-icon>.civ-combobox-input{padding-left:36px!important}
+.civ-combobox-selected-icon{position:absolute;z-index:2;top:50%;left:9px;width:22px;height:22px;object-fit:contain;transform:translateY(-50%);pointer-events:none}
+.civ-combobox-selected-icon[hidden]{display:none}
+.civ-combobox-toggle{position:absolute;z-index:2;top:0;right:0;width:34px;height:100%;padding:0!important;border:0!important;background:transparent!important;cursor:pointer}
+.tech-tree-page .civ-combobox-input{background:var(--panel)!important}
+.civilizations-page .civ-combobox-input{background:var(--bg)!important}
+.civ-combobox-input::-webkit-search-cancel-button{display:none}
+.civ-combobox-options{position:absolute;z-index:30;top:calc(100% + 4px);left:0;width:100%;max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel);box-shadow:0 12px 28px #0005}
+.civilizations-page .civ-combobox-options{background:var(--bg)}
+.civ-combobox-options[hidden]{display:none}
+.civ-combobox-options button,.civ-combobox-empty{display:flex;align-items:center;gap:9px;width:100%;padding:7px 11px;border:0;border-radius:0;background:transparent;color:var(--text);text-align:left;font:12px var(--sans)}
+.civ-combobox-options button{cursor:pointer}
+.civ-combobox-options button img{width:22px;height:22px;flex:none;object-fit:contain}
+.civ-combobox-options button:hover,.civ-combobox-options button[aria-selected="true"]{background:color-mix(in srgb,var(--green) 13%,transparent)}
+.civ-combobox-empty{color:var(--muted)}

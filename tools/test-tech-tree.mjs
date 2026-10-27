@@ -1,14 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync,existsSync,readdirSync } from 'node:fs';
-import { filterTechTree,techTreeRelations,orderedCosts,layoutTechTree,uniqueUnitNodes,civilizationBonusSections } from '../public/tech-tree.js';
+import { filterTechTree,techTreeRelations,orderedCosts,layoutTechTree,uniqueUnitNodes,civilizationBonusSections,fullwidthChinesePunctuation } from '../public/tech-tree.js';
 import { armorClassNames } from '../public/tech-tree-classes.js';
 import { allowedPlayerColors,randomPlayerColor,colorPortrait } from '../public/tech-tree-player-colors.js';
 import { civilizationTechTreeUrl } from '../public/civilizations.js';
 import { portraitColors,portraitAssetUrl } from '../public/tech-tree-fixed-portraits.js';
+import { civilizationPinyin } from '../public/civilization-pinyin.js';
+import { civilizationMatches } from '../public/civilization-combobox.js';
 
 const load = path => JSON.parse(readFileSync(new URL(`../public/tech-tree-data/${path}`,import.meta.url),'utf8'));
-const manifest=load('manifest.json'),entities=load('entities.json'),chinese=load('civs/chinese.json');
+const manifest=load('manifest.json'),entities=load('entities.json'),overrides=load('description-overrides.json'),chinese=load('civs/chinese.json');
+
+test('every civilization supports full pinyin and initials search',()=>{
+  assert.deepEqual(Object.keys(civilizationPinyin).sort(),manifest.civilizations.map(civ=>civ.id).sort());
+  for(const civ of manifest.civilizations) {
+    const choice={value:civ.id,label:`${civ.name} · ${civ.englishName}`,search:civ.id};
+    const syllables=civilizationPinyin[civ.id].split(' ');
+    assert.ok(civilizationMatches(choice,syllables.join('')),`${civ.id}: full pinyin`);
+    assert.ok(civilizationMatches(choice,syllables.map(part=>part[0]).join('')),`${civ.id}: initials`);
+  }
+  assert.ok(civilizationMatches({value:'cumans',label:'库曼 · Cumans',search:'cumans'},'ku man'));
+  assert.ok(civilizationMatches({value:'jurchens',label:'女真',search:'Jurchens'},'nuzhen'));
+});
+
+test('Chinese descriptions use fullwidth punctuation while numeric values stay intact',()=>{
+  assert.equal(fullwidthChinesePunctuation('射程 +1, 伤害 +0.5; 移动速度 +25% (城堡)'),'射程 +1， 伤害 +0.5； 移动速度 +25% （城堡）');
+  assert.equal(fullwidthChinesePunctuation('己方&同盟方 [上限 5 个]。'),'己方＆同盟方 ［上限 5 个］。');
+  assert.equal(fullwidthChinesePunctuation('HP/min +0.5'),'HP/min +0.5');
+});
 
 test('wrapped civilization bonus text remains one bullet',()=>{
   const malians=manifest.civilizations.find(civ=>civ.id==='malians');
@@ -30,6 +50,12 @@ test('regional units called out as unique appear in the banner once',()=>{
   assert.equal(uniqueUnitNodes(chinese).some(node=>node.entity==='Unit:753'),false);
 });
 
+test('Cuman Mercenaries does not add a second Kipchak portrait',()=>{
+  const cumans=load('civs/cumans.json');
+  assert.deepEqual(uniqueUnitNodes(cumans,entities).map(node=>node.entity),['Unit:1231']);
+  assert.ok(cumans.nodes.some(node=>node.entity==='Unit:1260' && node.parent==='Tech_690_82'));
+});
+
 test('cross-building Chemistry unlocks survive upgrades without applying to every gunpowder unit',()=>{
   for(const civ of manifest.civilizations){
     const tree=load(`civs/${civ.id}.json`);
@@ -44,6 +70,20 @@ test('cross-building Chemistry unlocks survive upgrades without applying to ever
   assert.equal(techTreeRelations(bohemians,hand.key).prerequisites.find(n=>n.entity==='Tech:47').age,3);
   const turks=load('civs/turks.json'),janissary=turks.nodes.find(n=>n.entity==='Unit:46');
   assert.equal(techTreeRelations(turks,janissary.key).prerequisites.length,0);
+});
+
+test('Mounted Crossbowman upgrades to Heavy Mounted Crossbowman in every relevant tree',()=>{
+  let linked=0;
+  for(const civ of manifest.civilizations){
+    const tree=load(`civs/${civ.id}.json`);
+    const base=tree.nodes.find(node=>node.entity==='Unit:2700');
+    const heavy=tree.nodes.find(node=>node.entity==='Unit:2701');
+    if(!heavy)continue;
+    assert.ok(base,`${civ.id}: missing base unit`);
+    assert.equal(techTreeRelations(tree,heavy.key).parent?.key,base.key,`${civ.id}: missing upgrade link`);
+    linked++;
+  }
+  assert.equal(linked,15);
 });
 
 test('fixed portraits cover every displayed unique unit and China stays player 4 yellow',()=>{
@@ -190,4 +230,24 @@ test('special economy buildings are explicitly classified as economy',()=>{
     assert.ok(node,`${civ}: missing building ${id}`);
     assert.equal(tree.groups.find(group=>group.id===node.group).category,'economy');
   }
+});
+
+test('requested civilization wording and Varangian upgrade lines are preserved',()=>{
+  const required={
+    armenians:'骡车科技提供的效率 +40%',aztecs:'军事单位（僧侣除外）训练时间 -13%',
+    bengalis:'最小/最大招降时间 +3/+1',britons:'靶场生产和研究时间 -9.09%',
+    burgundians:'圣物每分钟生产 30 食物',jurchens:'重型火箭推车科技木材费用 -75%',
+    gurjaras:'15*ln(驻扎动物总食物量/200+1)',spanish:'炮舰弹道速度增加到 7',
+    varangians:'维京长船和大型投石战舰攻击间隔 -13%',wu:'军事建筑、城堡和码头建造完成后获得 55 食物',
+  };
+  for(const [id,text] of Object.entries(required)){
+    const description=overrides[`Civilization:${id}`]||manifest.civilizations.find(civ=>civ.id===id).description;
+    assert.ok(description.includes(text),`${id}: missing ${text}`);
+  }
+  assert.equal(entities['Unit:75'].name,'剑士');
+  assert.ok(overrides['Tech:513'].includes('溅射范围 +0.5，具有 5 溅射伤害'));
+  assert.equal(Object.values(entities).some(entity=>`${entity.name}\n${entity.description}`.includes('蝎式弩')),false);
+  const varangians=load('civs/varangians.json');
+  assert.equal(varangians.nodes.find(node=>node.entity==='Unit:2704').parent,'Unit_2703_12');
+  assert.equal(varangians.nodes.find(node=>node.entity==='Unit:533').parent,'Unit_250_45');
 });

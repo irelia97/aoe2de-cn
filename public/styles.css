@@ -762,7 +762,7 @@ html[data-resolved-theme="light"] .daily-usage b{color:#506537}
 @media(max-width:620px){.top-right{width:100%;justify-content:flex-end}.daily-usage{margin-right:auto}.daily-usage span{display:grid;gap:1px}.daily-usage b{font-size:9px}}
 
 /* Feedback */
-body.page-events #leaderboard> :not(#events-page):not(.topbar):not(footer){display:none!important}
+body.page-events #leaderboard> :not(#events-page):not(#event-results-page):not(.topbar):not(footer){display:none!important}
 body.page-events{overflow-x:hidden}
 body.page-events #leaderboard{width:100%;max-width:none;padding-right:0;overflow-x:clip}
 .page-events .topbar-search{display:none}

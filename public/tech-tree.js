@@ -1,8 +1,16 @@
 import { armorClassNames, armorClassNotes } from './tech-tree-classes.js?v=1';
 import { portraitColors,portraitAssetUrl } from './tech-tree-fixed-portraits.js?v=5';
+import { searchableCivilizationSelect } from './civilization-combobox.js?v=4';
 const mounted = new WeakMap();
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const compactName = value => String(value ?? '').replace(/\s+/g, '');
+export const fullwidthChinesePunctuation = value => {
+  const text = String(value ?? '');
+  if (!/[\u3400-\u9fff]/u.test(text)) return text;
+  const punctuation = {',':'，',';':'；',':':'：','!':'！','?':'？','(':'（',')':'）','[':'［',']':'］','&':'＆'};
+  return text.replace(/[,;:!?()\[\]&]/g, character => punctuation[character])
+    .replace(/\./g, (character, index) => /\d/.test(text[index-1] || '') && /\d/.test(text[index+1] || '') ? character : '。');
+};
 const types = {Unit:'单位', Building:'建筑', Tech:'科技'};
 const resourceNames = {Food:'食物', Wood:'木材', Gold:'黄金', Stone:'石料'};
 const statIcons = {HP:'hp', Attack:'damage', MeleeArmor:'armor', PierceArmor:'range-armor', Range:'range', MinRange:'range', LineOfSight:'vision', Speed:'movementSpeed', ReloadTime:'reloadTime', AttackDelaySeconds:'reloadTime', AccuracyPercent:'blastRadius', GarrisonCapacity:'garrison'};
@@ -30,7 +38,7 @@ export const benefitTechAliases = {
 };
 export const compactEnglish = value => String(value || '').toLocaleLowerCase().replace(/[^a-z0-9]/g,'');
 const categoryNames = {all:'全部', military:'军事', economy:'经济', defense:'城防与大学', naval:'海军'};
-const datasetVersion = '185872-2';
+const datasetVersion = '185872-3';
 const json = async path => {
   const response = await fetch(`${path}?v=${datasetVersion}`,{cache:'force-cache'});
   if (!response.ok) throw new Error(`读取失败（${response.status}）`);
@@ -79,15 +87,21 @@ export function techTreeRelations(tree, key) {
     children:tree.nodes.filter(item => item.parent===key)};
 }
 
-export function uniqueUnitNodes(tree) {
+export function uniqueUnitNodes(tree, entities={}) {
   const additionalUniqueUnits=new Set(['Unit:2703','Unit:753']);
   const units=tree.nodes.filter(node=>node.available && (node.unique || additionalUniqueUnits.has(node.entity)) && node.entity.startsWith('Unit:'))
     .sort((a,b)=>Number(b.group==='building-82')-Number(a.group==='building-82'));
   const keys=new Set(units.map(node=>node.key));
-  const seen=new Set();
+  const seenIcons=new Set(),seenNames=new Set();
   // Castle and Krepost/Barracks variants can have different game IDs while
   // referring to the same unique unit and portrait. Show its artwork once.
-  return units.filter(node=>!keys.has(node.parent) && !seen.has(node.icon) && seen.add(node.icon));
+  return units.filter(node=>{
+    const name=entities[node.entity]?.englishName?.replace(/^Elite\s+/i,'').toLocaleLowerCase();
+    if (keys.has(node.parent) || seenIcons.has(node.icon) || (name && seenNames.has(name))) return false;
+    seenIcons.add(node.icon);
+    if (name) seenNames.add(name);
+    return true;
+  });
 }
 
 export function civilizationBonusSections(description) {
@@ -138,14 +152,27 @@ export function layoutTechTree(tree, filtered) {
 export async function mountTechTree(root) {
   if (mounted.has(root)) return mounted.get(root).activate();
   root.innerHTML = '<div class="tt-loading" role="status"><span class="loader"></span>正在载入民族与科技树…</div>';
-  let manifest, entities, benefitData;
+  let manifest, entities, benefitData, descriptionOverrides;
   try {
-    [manifest,entities,benefitData] = await Promise.all([json('/tech-tree-data/manifest.json'),json('/tech-tree-data/entities.json'),json('/tech-tree-data/benefit-techs.json')]);
+    [manifest,entities,benefitData,descriptionOverrides] = await Promise.all([
+      json('/tech-tree-data/manifest.json'),
+      json('/tech-tree-data/entities.json'),
+      json('/tech-tree-data/benefit-techs.json'),
+      json('/tech-tree-data/description-overrides.json?v=21'),
+    ]);
   } catch {
     root.innerHTML = '<div class="tt-loading" role="alert">科技树加载失败。<button type="button" id="tt-retry">重新加载</button></div>';
     root.querySelector('#tt-retry').onclick = () => mountTechTree(root);
     return;
   }
+  for (const [key, description] of Object.entries(descriptionOverrides)) {
+    if (entities[key]?.type === 'Tech') entities[key].description = description;
+    if (key.startsWith('Civilization:')) {
+      const civilization = manifest.civilizations.find(item => item.id === key.slice('Civilization:'.length));
+      if (civilization) civilization.description = description;
+    }
+  }
+  if (entities['Tech:1404']) entities['Tech:1404'].name = '环球探险';
   let tree, civilization, loadSequence=0, searchTimer, frame, winrates=null;
   const techById=new Map(Object.values(entities).filter(entity=>entity.type==='Tech').map(entity=>[entity.id,entity]));
   const benefitByName=new Map();
@@ -155,12 +182,12 @@ export async function mountTechTree(root) {
     if(entry.englishName) benefitByEnglish.set(`${entry.kind}:${compactEnglish(entry.englishName)}`,entry);
   }
   const cache = new Map();
-  const state = {category:'military',age:0,query:'',unavailable:true};
-  const civs = [...manifest.civilizations].sort((a,b) => a.name.localeCompare(b.name,'zh-CN'));
+  const state = {category:'all',age:0,query:'',unavailable:true};
+  const civs = [...manifest.civilizations].sort((a,b) => a.englishName.localeCompare(b.englishName,'en',{sensitivity:'base'}));
   const ageLabel = age => manifest.ages[age-1] || '特殊条件';
     root.innerHTML = `
     <header class="tt-heading"><div><div class="section-kicker">CIVILIZATION FIELD GUIDE</div><h2 id="tt-title">民族<span>科技树</span></h2><p>从一个民族出发，查看它能建造、训练和研究的一切。</p></div><a class="tt-version" href="/updates?articleId=53155105">游戏版本 ${escape(manifest.gameVersion)} <span>↗</span></a></header>
-    <div class="tt-selector-bar"><label class="tt-civ-select">查看民族<select id="tt-civ" aria-label="查看民族">${civs.map(civ => `<option value="${civ.id}">${escape(civ.name)} · ${escape(civ.englishName)}</option>`).join('')}</select></label><label class="tt-search"><span class="sr-only">搜索单位、建筑或科技</span><span aria-hidden="true">⌕</span><input id="tt-search" type="search" placeholder="搜索单位、建筑、科技 / English" maxlength="80" autocomplete="off"></label><button id="tt-reset" class="tt-reset" type="button">重置筛选</button></div>
+    <div class="tt-selector-bar"><label class="tt-civ-select">查看民族<select id="tt-civ" aria-label="查看民族">${civs.map(civ => `<option value="${civ.id}" data-icon="${escape(civ.icon)}">${escape(civ.name)} · ${escape(civ.englishName)}</option>`).join('')}</select></label><label class="tt-search"><span class="sr-only">搜索单位、建筑或科技</span><span aria-hidden="true">⌕</span><input id="tt-search" type="search" placeholder="搜索单位、建筑、科技 / English" maxlength="80" autocomplete="off"></label><button id="tt-reset" class="tt-reset" type="button">重置筛选</button></div>
     <section id="tt-civ-info" class="tt-civ-info" aria-label="民族特色"></section>
     <section class="tt-workspace" aria-label="科技树"><div class="tt-toolbar"><div class="tt-categories" role="group" aria-label="建筑类别">${Object.entries(categoryNames).map(([id,label]) => `<button type="button" data-category="${id}" aria-pressed="${id===state.category}">${label}</button>`).join('')}</div><div class="tt-controls"><label><span class="sr-only">时代</span><select id="tt-age"><option value="0">全部时代</option>${manifest.ages.map((name,i) => `<option value="${i+1}">${escape(name)}</option>`).join('')}</select></label><label class="tt-checkbox"><input id="tt-unavailable" type="checkbox" checked>显示不可用</label></div></div><div class="tt-board-heading"><p id="tt-result" aria-live="polite"></p><div class="tt-legend"><span class="unit">单位</span><span class="building">建筑</span><span class="tech">科技</span><span class="unavailable">不可用</span></div></div><p class="tt-scroll-hint">按时代向下阅读 · 左右滚动查看更多建筑 · 按住鼠标左键拖动 · 点击节点查看详情</p><div id="tt-scroll" class="tt-scroll" tabindex="0" role="region" aria-label="可横向滚动的科技树"><div id="tt-board" class="tt-board"></div></div></section>
     <p class="tt-base-note">数值为基础数据，未叠加民族加成、已研究科技或游戏模式修正。节点中的时代表示解锁时代；连线表示数据中提供的前置或升级关系，已收录的额外解锁条件见详情。</p>
@@ -171,6 +198,7 @@ export async function mountTechTree(root) {
   const dialog = find('#tt-detail');
   const historyDialog = find('#tt-history');
   const civSelect = find('#tt-civ');
+  const civCombo = searchableCivilizationSelect(civSelect);
   const board = find('#tt-board');
   const scroll = find('#tt-scroll');
   const detailBody = find('#tt-detail-body');
@@ -223,22 +251,26 @@ export async function mountTechTree(root) {
         return `<div class="tt-era" style="height:${heights.get(age)}px;grid-template-columns:repeat(${group.columns},70px)" aria-label="${ageLabel(age)}">${nodes.map(card).join('')}</div>`;
       }).join('');
       const building=tree.nodes.find(node=>node.entity===group.building && node.group===group.id);
-      const groupName=compactName(group.name);
-      const title=building?`<button type="button" class="tt-building-title" data-node="${escape(building.key)}"><span>${escape(groupName)}</span><img src="${escape(building.icon)}" alt=""><small>${ageLabel(building.age)}</small></button>`:`<span>${escape(groupName)}</span>`;
+      const groupName=civilization.id==='khitans' && group.building==='Building:68' ? '牧场' : compactName(group.name);
+      const buildingIcon=civilization.id==='khitans' && group.building==='Building:68' ? '/assets/build-orders/icons/farm.webp' : building?.icon;
+      const title=building?`<button type="button" class="tt-building-title" data-node="${escape(building.key)}"><span>${escape(groupName)}</span><img src="${escape(buildingIcon)}" alt=""><small>${ageLabel(building.age)}</small></button>`:`<span>${escape(groupName)}</span>`;
       return `<section class="tt-lane" style="width:${group.columns*79+10}px;flex-basis:${group.columns*79+10}px" aria-label="${escape(groupName)}"><h3>${title}</h3><svg class="tt-links" aria-hidden="true"></svg>${rows}</section>`;
     }).join('');
     board.innerHTML = filtered.groups.length ? ageRail+lanes : '<div class="tt-empty" role="status">没有符合条件的项目。试试其他关键词，或点击“重置筛选”。</div>';
     cancelAnimationFrame(frame); frame=requestAnimationFrame(drawLinks);
   }
   function renderCivilization() {
-    const {heading,sections}=civilizationBonusSections(civilization.description);
+    const civDescription = civilization.id === 'slavs'
+      ? civilization.description.replace('• 农民工作速度 +15%', '• 农夫耕田效率 +23%；农田生产效率 +15%')
+      : civilization.description;
+    const {heading,sections}=civilizationBonusSections(civDescription);
     const playerColor=portraitColors[civilization.id];
     const rate=winrates?.civilizations?.[civilization.id];
     const formatRate=value=>Number.isFinite(value)?`${(value*100).toFixed(1)}%`:'—';
     const rateLine=(mode,cutoff)=>`<div class="tt-civ-winrate-line"><span>${mode==='rm_1v1'?'1v1':'TG'}(&lt;&gt;${cutoff})</span><span>${formatRate(rate?.[mode]?.low?.winRate)}</span><span aria-hidden="true">|</span><span>${formatRate(rate?.[mode]?.high?.winRate)}</span></div>`;
     const rateMarkup=`<div class="tt-civ-winrates" aria-label="整体胜率，竖线左侧为低于分界线，右侧为达到或高于分界线">${rateLine('rm_1v1',1950)}${rateLine('rm_team',1650)}</div>`;
-    const uniqueIcons=uniqueUnitNodes(tree).map(node=>`<button type="button" class="tt-unique-unit" data-node="${escape(node.key)}" title="${escape(entities[node.entity].name.replace(/\n/g,''))}" aria-label="${escape(entities[node.entity].name.replace(/\n/g,''))}，独特单位，查看详情"><img decoding="async" fetchpriority="high" data-color-ready="true" data-player-color="${playerColor}" data-portrait="${escape(portraitAssetUrl(node.icon,civilization.id))}" src="${escape(portraitAssetUrl(node.icon,civilization.id))}" alt=""></button>`).join('');
-    find('#tt-civ-info').innerHTML = `<div class="tt-civ-banner"><div class="tt-civ-profile"><img class="tt-civ-emblem" src="${escape(civilization.icon)}" alt=""><div class="tt-civ-name"><span>${escape(civilization.englishName.toUpperCase())}</span><h3>${escape(civilization.name)}</h3><p>${escape(heading)}</p></div>${rateMarkup}<button type="button" class="tt-history-button" data-history="${escape(civilization.id)}">查看历史</button></div><div class="tt-unique-units" role="group" aria-label="独特单位">${uniqueIcons}</div><div class="tt-civ-count"><b>${tree.nodes.filter(node=>node.available).length}</b><span>可用项目</span></div></div><details class="tt-bonuses" open><summary>民族特色与团队加成<span>展开 / 收起</span></summary><div class="tt-bonus-grid">${sections.filter(section=>section.lines.length).map(section=>`<section><h4>${escape(section.title)}</h4>${section.lines.map(line=>`<p>${escape(line.replace(/^•\s*/,''))}</p>`).join('')}</section>`).join('')}</div></details>`;
+    const uniqueIcons=uniqueUnitNodes(tree,entities).map(node=>`<button type="button" class="tt-unique-unit" data-node="${escape(node.key)}" title="${escape(entities[node.entity].name.replace(/\n/g,''))}" aria-label="${escape(entities[node.entity].name.replace(/\n/g,''))}，独特单位，查看详情"><img decoding="async" fetchpriority="high" data-color-ready="true" data-player-color="${playerColor}" data-portrait="${escape(portraitAssetUrl(node.icon,civilization.id))}" src="${escape(portraitAssetUrl(node.icon,civilization.id))}" alt=""></button>`).join('');
+    find('#tt-civ-info').innerHTML = `<div class="tt-civ-banner"><div class="tt-civ-profile"><img class="tt-civ-emblem" src="${escape(civilization.icon)}" alt=""><div class="tt-civ-name"><span>${escape(civilization.englishName.toUpperCase())}</span><h3>${escape(civilization.name)}</h3><p>${escape(fullwidthChinesePunctuation(heading))}</p></div>${rateMarkup}<button type="button" class="tt-history-button" data-history="${escape(civilization.id)}">查看历史</button></div><div class="tt-unique-units" role="group" aria-label="独特单位">${uniqueIcons}</div><div class="tt-civ-count"><b>${tree.nodes.filter(node=>node.available).length}</b><span>可用项目</span></div></div><details class="tt-bonuses" open><summary>民族特色与团队加成<span>展开 / 收起</span></summary><div class="tt-bonus-grid">${sections.filter(section=>section.lines.length).map(section=>`<section><h4>${escape(section.title)}</h4>${section.lines.map(line=>`<p>${escape(fullwidthChinesePunctuation(line.replace(/^•\s*/,'')))}</p>`).join('')}</section>`).join('')}</div></details>`;
   }
   async function showHistory() {
     if (!civilization) return;
@@ -246,7 +278,7 @@ export async function mountTechTree(root) {
     try { history = parseHistory(await historyText(civilization.id), civilization); }
     catch { history = {period:'游戏内历史资料', summary:'暂时无法读取本地游戏历史资料。', paragraphs:[], image:civilization.icon, source:'AoE2DE resources/zh/strings/history'}; }
     detailBody.scrollTop = 0;
-    historyDialog.querySelector('#tt-history-body').innerHTML = `<article class="tt-history-card"><div class="tt-history-art"><img src="${escape(history.image || civilization.icon)}" alt="${escape(civilization.name)}历史配图"></div><div class="tt-history-copy"><span class="tt-history-kicker">${escape(civilization.englishName.toUpperCase())} · ${escape(history.period)}</span><h2 id="tt-history-title">${escape(civilization.name)}的历史</h2><p class="tt-history-summary">${escape(history.summary)}</p>${history.paragraphs.map(paragraph => `<p>${escape(paragraph)}</p>`).join('')}<small class="tt-history-source">资料参考：${escape(history.source)}</small></div></article>`;
+    historyDialog.querySelector('#tt-history-body').innerHTML = `<article class="tt-history-card"><div class="tt-history-art"><img src="${escape(history.image || civilization.icon)}" alt="${escape(civilization.name)}历史配图"></div><div class="tt-history-copy"><span class="tt-history-kicker">${escape(civilization.englishName.toUpperCase())} · ${escape(history.period)}</span><h2 id="tt-history-title">${escape(civilization.name)}的历史</h2><p class="tt-history-summary">${escape(fullwidthChinesePunctuation(history.summary))}</p>${history.paragraphs.map(paragraph => `<p>${escape(fullwidthChinesePunctuation(paragraph))}</p>`).join('')}<small class="tt-history-source">资料参考：${escape(history.source)}</small></div></article>`;
     if (!historyDialog.open) historyDialog.showModal();
   }
   function relationButton(node) {
@@ -338,11 +370,11 @@ export async function mountTechTree(root) {
     const timeMarkup=Number.isFinite(stats[timeField])?`<p class="tt-cost-time">${timeLabel} <b>${stats[timeField]}</b> 秒</p>`:'';
 
     const advanced=Object.entries({Attacks:'攻击加成',Armours:'护甲标签'}).map(([field,label])=>{
-      const values=(stats[field] || []).filter(value=>field!=='Attacks' || ![3,4].includes(Number(value.Class)));
+      const values=(stats[field] || []).filter(value=>![3,4].includes(Number(value.Class)));
       return values.length?`<section class="tt-detail-section"><h4>${label}</h4><div class="tt-class-values">${values.map(value=>`<span title="${escape(armorClassNotes[value.Class] || '')}">${escape(armorClassNames[value.Class] || '待核对的攻防类型')}<b>${field==='Attacks' && value.Amount>0?'+':''}${escape(value.Amount)}</b></span>`).join('')}</div></section>`:'';
     }).join('');
     const advancedMarkup=`<details class="tt-advanced" open><summary>攻击加成与护甲标签（进阶）</summary>${advanced || '<p>此项目没有攻击加成或护甲标签。</p>'}<p class="tt-detail-note">类别数值不等于对所有目标的最终伤害，还需结合目标对应护甲及其他规则。</p></details>`;
-    detailBody.innerHTML = `<div class="tt-detail-hero"><img src="${escape(node.icon)}" alt=""><div><span>${types[entity.type]} · ${ageLabel(node.age)}</span><h3 id="tt-detail-title">${escape(compactName(entity.name))}</h3><small>${escape(entity.englishName)}</small></div></div><p class="tt-availability${node.available?'':' unavailable'}">${escape(civilization.name)}${node.available?'可用':'不可用'}${node.unique?' · 特色项目':''}${node.status==='ResearchRequired'?' · 需研究解锁':''}</p>${entity.upgrade?`<section class="tt-detail-section"><h4>升级至该单位</h4><div class="tt-cost-row"><div class="tt-costs">${costs(entity.upgrade.Cost)}</div><p class="tt-cost-time">研究时间 <b>${entity.upgrade.ResearchTime}</b> 秒</p></div></section>`:''}<section class="tt-detail-section"><h4>${entity.type==='Tech'?'研究费用':entity.type==='Building'?'建造费用':'训练费用'}</h4><div class="tt-cost-row"><div class="tt-costs">${costs(stats.Cost)}</div>${timeMarkup}</div></section><section class="tt-detail-section tt-description"><h4>说明与用途</h4>${description.length?description.map(line=>`<p>${escape(line)}</p>`).join(''):'<p>当前数据未提供详细说明。</p>'}</section>${fields.length?`<section class="tt-detail-section"><h4>基础属性</h4><div class="tt-stats">${fields.map(([field,label,unit=''])=>`<div><span>${label}</span><b>${escape(stats[field])}<small>${unit}</small></b></div>`).join('')}</div><p class="tt-detail-note">未叠加民族加成与科技；时间以游戏内秒为单位。</p></section>`:''}${advancedMarkup}${benefitsMarkup}<section class="tt-detail-section"><h4>前置 / 升级路线</h4><div class="tt-relations">${relations.prerequisites.length?`<small>解锁所需科技（含升级路线继承）</small>${relations.prerequisites.map(relationButton).join('')}${tree.id==='turks' && relations.prerequisites.some(n=>n.entity==='Tech:47')?'<p class="tt-detail-note">土耳其的化学由民族加成免费获得。</p>':''}`:''}${relations.parent?`<small>前置 / 升级起点</small>${relationButton(relations.parent)}`:relations.prerequisites.length?'':'<span class="tt-muted">当前未收录额外前置条件，解锁时代及民族限制见上方。</span>'}${relations.children.length?`<small>后续项目</small>${relations.children.map(relationButton).join('')}`:''}</div></section>`;
+    detailBody.innerHTML = `<div class="tt-detail-hero"><img src="${escape(node.icon)}" alt=""><div><span>${types[entity.type]} · ${ageLabel(node.age)}</span><h3 id="tt-detail-title">${escape(compactName(entity.name))}</h3><small>${escape(entity.englishName)}</small></div></div><p class="tt-availability${node.available?'':' unavailable'}">${escape(civilization.name)}${node.available?'可用':'不可用'}${node.unique?' · 特色项目':''}${node.status==='ResearchRequired'?' · 需研究解锁':''}</p>${entity.upgrade?`<section class="tt-detail-section"><h4>升级至该单位</h4><div class="tt-cost-row"><div class="tt-costs">${costs(entity.upgrade.Cost)}</div><p class="tt-cost-time">研究时间 <b>${entity.upgrade.ResearchTime}</b> 秒</p></div></section>`:''}<section class="tt-detail-section"><h4>${entity.type==='Tech'?'研究费用':entity.type==='Building'?'建造费用':'训练费用'}</h4><div class="tt-cost-row"><div class="tt-costs">${costs(stats.Cost)}</div>${timeMarkup}</div></section><section class="tt-detail-section tt-description"><h4>说明与用途</h4>${description.length?description.map(line=>`<p>${escape(fullwidthChinesePunctuation(line))}</p>`).join(''):'<p>当前数据未提供详细说明。</p>'}</section>${fields.length?`<section class="tt-detail-section"><h4>基础属性</h4><div class="tt-stats">${fields.map(([field,label,unit=''])=>`<div><span>${label}</span><b>${escape(stats[field])}<small>${unit}</small></b></div>`).join('')}</div><p class="tt-detail-note">未叠加民族加成与科技；时间以游戏内秒为单位。</p></section>`:''}${advancedMarkup}${benefitsMarkup}<section class="tt-detail-section"><h4>前置 / 升级路线</h4><div class="tt-relations">${relations.prerequisites.length?`<small>解锁所需科技（含升级路线继承）</small>${relations.prerequisites.map(relationButton).join('')}${tree.id==='turks' && relations.prerequisites.some(n=>n.entity==='Tech:47')?'<p class="tt-detail-note">土耳其的化学由民族加成免费获得。</p>':''}`:''}${relations.parent?`<small>前置 / 升级起点</small>${relationButton(relations.parent)}`:relations.prerequisites.length?'':'<span class="tt-muted">当前未收录额外前置条件，解锁时代及民族限制见上方。</span>'}${relations.children.length?`<small>后续项目</small>${relations.children.map(relationButton).join('')}`:''}</div></section>`;
     detailBody.querySelectorAll('.tt-stats>div>span').forEach((label,index) => {
       const icon = statIcons[fields[index][0]];
       if (!icon) return;
@@ -365,6 +397,7 @@ export async function mountTechTree(root) {
     closeDetail();
     if (historyDialog.open) historyDialog.close();
     civSelect.value=selected.id;
+    civCombo.sync();
     scroll.setAttribute('aria-busy','true');
     find('#tt-result').textContent=`正在读取${selected.name}科技树…`;
     board.inert=true;
@@ -378,7 +411,7 @@ export async function mountTechTree(root) {
     } catch {
       if (sequence!==loadSequence) return;
       find('#tt-result').textContent='科技树读取失败，请重新选择民族重试。';
-      if (civilization) civSelect.value=civilization.id;
+      if (civilization) {civSelect.value=civilization.id;civCombo.sync();}
       else board.innerHTML='<div class="tt-empty">加载失败，请重新选择民族重试。</div>';
     } finally {
       if (sequence===loadSequence) {scroll.removeAttribute('aria-busy');board.inert=false;}

@@ -13,9 +13,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.onload=null;this.media='all'" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=realtime-events-v1" />
+  <link rel="stylesheet" href="/styles.css?v=event-results-v2" />
   <link rel="stylesheet" href="/civilizations.css?v=17" />
+  <link rel="stylesheet" href="/civilization-combobox.css?v=3" />
   <link rel="stylesheet" href="/tech-tree.css?v=25" />
+  <link rel="stylesheet" href="/event-results.css?v=9" />
 </head>
 <body>
   <script>
@@ -80,6 +82,7 @@
           <div class="events-tabs" role="tablist" aria-label="赛事状态">
             <button type="button" class="selected" data-events-tab="upcoming" role="tab" aria-selected="true">即将开始与进行中 <b id="eventsUpcomingCount">—</b></button>
             <button type="button" data-events-tab="completed" role="tab" aria-selected="false">最近结束 <b id="eventsCompletedCount">—</b></button>
+            <a class="events-results-link" href="/events/results" data-events-route>赛事结果</a>
           </div>
         </div>
         <div class="events-filters" aria-label="赛事筛选">
@@ -90,6 +93,7 @@
         <div class="events-content-layout"><div class="events-main-column"><div class="events-list" id="eventsList"><div class="events-empty"><span class="loader"></span>正在加载赛事信息…</div></div></div><aside class="events-tournaments-panel"><div class="events-section-heading"><h3>赛事列表</h3></div><div class="events-tournaments-list" id="eventsTournamentsList"><div class="events-empty"><span class="loader"></span>正在加载赛事列表…</div></div></aside></div>
         <div class="events-attribution">数据来源：<a href="https://liquipedia.net/ageofempires/Liquipedia:Upcoming_and_ongoing_matches" target="_blank" rel="noopener noreferrer">Liquipedia</a>，依据 <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener noreferrer">CC BY-SA 3.0</a> 使用。赛事信息以 Liquipedia 实际录入为准。</div>
       </section>
+      <section class="event-results-page" id="event-results-page" hidden></section>
       <section class="media-page" id="media-page" hidden>
         <div class="media-heading"><div><div class="section-kicker">VIDEO &amp; LIVE</div><h2 id="mediaTitle">视频直播</h2><p id="mediaSubtitle">开发者精选的帝国时代 II 视频与直播</p></div></div>
         <section class="media-section"><div class="media-section-heading"><div class="media-section-title"><h3>视频区</h3><a class="media-more-link media-more-button" id="mediaVideosMore" href="/media/videos">查看更多视频</a><a class="media-more-link media-more-button" id="mediaVideosBack" href="/media" hidden>返回视频直播</a></div><span id="mediaVideosHint">最新 10 个</span></div><div class="media-grid" id="mediaVideos"><div class="media-empty">暂无已配置的视频源</div></div></section>
@@ -140,7 +144,7 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=civ-benefit-title-v4" defer></script>
+  <script src="/app.js?v=event-results-v40" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');

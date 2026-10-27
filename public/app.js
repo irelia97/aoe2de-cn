@@ -3284,6 +3284,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   const isUpdatesPage = /^\/updates\/?$/.test(location.pathname);
   const isRealtimePage = /^\/realtime\/?$/.test(location.pathname);
   const isEventsPage = /^\/events\/?$/.test(location.pathname);
+  const isEventResultsPage = /^\/events\/results\/?$/.test(location.pathname);
   const isFeedbackPage = /^\/feedback\/?$/.test(location.pathname);
   const buildOrderMatch = location.pathname.match(/^\/build-orders(?:\/([a-z0-9-]+))?\/?$/i);
   const isBuildOrdersPage = Boolean(buildOrderMatch);
@@ -3297,7 +3298,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   document.body.classList.toggle('page-replay-analysis', isReplayAnalysisPage);
   document.body.classList.toggle('page-updates', isUpdatesPage);
   document.body.classList.toggle('page-realtime', isRealtimePage);
-  document.body.classList.toggle('page-events', isEventsPage);
+  document.body.classList.toggle('page-events', isEventsPage || isEventResultsPage);
   document.body.classList.toggle('page-build-orders', isBuildOrdersPage);
   document.body.classList.toggle('page-feedback', isFeedbackPage);
 
@@ -3309,7 +3310,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     ...Array.from({ length: 6 }, (_, index) => `/assets/module-random/${index + 1}.webp`),
     ...Array.from({ length: 5 }, (_, index) => `/assets/module-${index + 1}.webp`)
   ];
-  const moduleName = isTechTreePage ? 'tech-tree' : isCivilizationsPage ? 'civilizations' : isProfilePage ? 'profile' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
+  const moduleName = isTechTreePage ? 'tech-tree' : isCivilizationsPage ? 'civilizations' : isProfilePage ? 'profile' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isRealtimePage ? 'realtime' : (isEventsPage || isEventResultsPage) ? 'events' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(moduleArtworkKey) || '{}'); } catch {}
   const order = Array.isArray(saved.order) && saved.order.length === moduleArtworkFiles.length
@@ -3344,27 +3345,28 @@ function renderCurrentRoute(selectedPlayer = null) {
   document.querySelector('#updates-page').hidden = !isUpdatesPage;
   document.querySelector('#realtime-page').hidden = !isRealtimePage;
   document.querySelector('#events-page').hidden = !isEventsPage;
+  document.querySelector('#event-results-page').hidden = !isEventResultsPage;
   document.querySelector('#build-orders-page').hidden = !isBuildOrdersPage;
   document.querySelector('#feedback-page').hidden = !isFeedbackPage;
   document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => {
-    const activePage = isTechTreePage ? 'tech-tree' : isCivilizationsPage ? 'civilizations' : isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : isEventsPage ? 'events' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
+    const activePage = isTechTreePage ? 'tech-tree' : isCivilizationsPage ? 'civilizations' : isProfilePage ? 'profile' : isRealtimePage ? 'realtime' : (isEventsPage || isEventResultsPage) ? 'events' : isMediaPage ? 'media' : isReplayAnalysisPage ? 'replay-analysis' : isUpdatesPage ? 'updates' : isBuildOrdersPage ? 'build-orders' : isFeedbackPage ? 'feedback' : 'leaderboard';
     const active = link.dataset.page === activePage;
     link.classList.toggle('active', active);
   });
-  document.querySelector('.breadcrumbs b').textContent = isTechTreePage ? '民族科技树' : isCivilizationsPage ? '民族统计' : isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isEventsPage ? '赛事信息' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isReplayAnalysisPage ? '录像解析' : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : isFeedbackPage ? '反馈区' : '天梯榜单';
+  document.querySelector('.breadcrumbs b').textContent = isTechTreePage ? '民族科技树' : isCivilizationsPage ? '民族统计' : isProfilePage ? '玩家资料' : isRealtimePage ? '实时对局' : isEventResultsPage ? '赛事结果' : isEventsPage ? '赛事信息' : isMediaPage ? (isMediaVideosPage ? '全部视频' : '视频直播') : isReplayAnalysisPage ? '录像解析' : isUpdatesPage ? '更新汇总' : isBuildOrdersPage ? (buildOrderSlug ? '开局指南详情' : '开局指南') : isFeedbackPage ? '反馈区' : '天梯榜单';
   if (!isRealtimePage) { clearInterval(realtimePollTimer); realtimePollTimer = null; clearInterval(realtimeChatTimer); realtimeChatTimer = null; realtimeRequest?.abort?.(); realtimeVersionRequest?.abort?.(); }
   if (!isEventsPage) { clearInterval(eventsPollTimer); eventsPollTimer = null; }
   if (isTechTreePage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/tech-tree.js?v=40').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
+    import('/tech-tree.js?v=75').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
       .catch(() => { document.querySelector('#tech-tree-page').textContent='科技树加载失败，请刷新页面重试。'; });
     return;
   }
   if (isCivilizationsPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/civilizations.js?v=18').then(module => module.mountCivilizations(document.querySelector('#civilizations-page'), {
+    import('/civilizations.js?v=23').then(module => module.mountCivilizations(document.querySelector('#civilizations-page'), {
       civName: civilizationNameZh, mapName: mapDisplayName, civImage: aoe2CivilizationImageUrl
     })).catch(() => { document.querySelector('#civilizations-page').textContent='民族统计加载失败，请刷新页面重试。'; });
     return;
@@ -3393,6 +3395,14 @@ function renderCurrentRoute(selectedPlayer = null) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
     startEventsPolling();
+    return;
+  }
+  if (isEventResultsPage) {
+    window.scrollTo({top:0,behavior:'auto'});
+    profileDetailsRequestId++;
+    clearTimeout(profileDetailsTimeout);
+    import('/event-results.js?v=12').then(module=>module.mountEventResults(document.querySelector('#event-results-page')))
+      .catch(()=>{document.querySelector('#event-results-page').textContent='赛事结果加载失败，请刷新页面重试。';});
     return;
   }
   if (isUpdatesPage) {
@@ -3640,6 +3650,13 @@ document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));
+document.addEventListener('click',event=>{
+  const link=event.target.closest('a[data-events-route]');
+  if (!link || event.button!==0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  history.pushState({},'',link.href);
+  renderCurrentRoute();
+});
 document.addEventListener('click', event => {
   const link = event.target.closest('.player-name');
   if (!link || link.tagName !== 'A' || location.pathname.startsWith('/profile')) return;

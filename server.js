@@ -32,6 +32,7 @@ import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/serv
 import { createProfileService } from './server/services/profile-service.js';
 import { createGameAssetService } from './server/services/game-assets.js';
 import { parseYoutubeWatchMetadata } from './server/services/youtube-live-metadata.js';
+import { parseTournamentResultsHtml, tournamentResultCategories } from './server/services/liquipedia-tournament-results.js';
 import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 const execFileAsync = promisify(execFile);
 
@@ -54,7 +55,10 @@ const siteTrafficPath = join(dataDir, 'site-traffic.json');
 const siteDailyArchivePath = join(dataDir, 'site-daily-archive.jsonl');
 const liquipediaMatchesCachePath = join(dataDir, 'liquipedia-matches.json');
 const liquipediaTournamentsCachePath = join(dataDir, 'liquipedia-tournaments.json');
+const liquipediaResultsCachePath = join(dataDir, 'liquipedia-tournament-results.json');
 const liquipediaMatchesRefreshInterval = 60_000;
+const liquipediaTournamentsRefreshInterval = 6 * 60 * 60_000;
+const liquipediaResultsRefreshInterval = 12 * 60 * 60_000;
 const liquipediaApiUrl = 'https://liquipedia.net/ageofempires/api.php';
 const liquipediaUserAgent = 'AOE2CN/1.0 (https://aoe2cn.cc/; contact: https://aoe2cn.cc/feedback)';
 const feedbackDailyLimit = 5;
@@ -2193,6 +2197,36 @@ let liquipediaMatchesLastError = null;
 const liquipediaLivePlayerTournaments = new Map();
 let liquipediaTournamentsCache = null;
 let liquipediaTournamentsRefreshPromise = null;
+let liquipediaResultsCache = null;
+let liquipediaResultsCachePromise = null;
+const liquipediaResultsRefreshes = new Map();
+let liquipediaResultsWriteQueue = Promise.resolve();
+let liquipediaResultsSchedulerTimer = null;
+const liquipediaParseQueue = [];
+let liquipediaParseRunning = false;
+let liquipediaParseLastStartedAt = 0;
+let liquipediaParseSequence = 0;
+
+function queueLiquipediaParse(task, priority=1) {
+  return new Promise((resolve,reject) => {
+    liquipediaParseQueue.push({task,priority,order:liquipediaParseSequence++,resolve,reject});
+    if (!liquipediaParseRunning) void runLiquipediaParseQueue();
+  });
+}
+
+async function runLiquipediaParseQueue() {
+  liquipediaParseRunning = true;
+  while (liquipediaParseQueue.length) {
+    const delay = Math.max(0,31_000 - (Date.now()-liquipediaParseLastStartedAt));
+    if (delay) await new Promise(resolve=>setTimeout(resolve,delay));
+    liquipediaParseQueue.sort((left,right)=>left.priority-right.priority || left.order-right.order);
+    const request = liquipediaParseQueue.shift();
+    liquipediaParseLastStartedAt = Date.now();
+    try { request.resolve(await request.task()); }
+    catch (error) { request.reject(error); }
+  }
+  liquipediaParseRunning = false;
+}
 
 function parseLiquipediaTournaments(html) {
   const source = String(html || '');
@@ -2217,16 +2251,18 @@ function parseLiquipediaTournaments(html) {
 }
 
 async function loadLiquipediaTournaments() {
-  if (liquipediaTournamentsCache && Date.now() - Date.parse(liquipediaTournamentsCache.fetchedAt || 0) < liquipediaMatchesRefreshInterval) return liquipediaTournamentsCache;
+  if (liquipediaTournamentsCache && Date.now() - Date.parse(liquipediaTournamentsCache.fetchedAt || 0) < liquipediaTournamentsRefreshInterval) return liquipediaTournamentsCache;
   if (liquipediaTournamentsRefreshPromise) return liquipediaTournamentsRefreshPromise;
   liquipediaTournamentsRefreshPromise = (async () => {
     try {
       const cached = JSON.parse(await readFile(liquipediaTournamentsCachePath, 'utf8'));
-      if (cached?.fetchedAt && Date.now() - Date.parse(cached.fetchedAt) < liquipediaMatchesRefreshInterval) { liquipediaTournamentsCache = cached; return cached; }
+      if (cached?.fetchedAt && Date.now() - Date.parse(cached.fetchedAt) < liquipediaTournamentsRefreshInterval) { liquipediaTournamentsCache = cached; return cached; }
     } catch {}
-    const response = await fetch(`${liquipediaApiUrl}?action=parse&page=Main_Page&prop=text&format=json`, { headers: { accept: 'application/json', 'user-agent': liquipediaUserAgent }, signal: AbortSignal.timeout(25_000) });
-    if (!response.ok) throw new Error(`Liquipedia 首页返回 HTTP ${response.status}`);
-    const payload = await response.json();
+    const payload = await queueLiquipediaParse(async () => {
+      const response = await fetch(`${liquipediaApiUrl}?action=parse&page=Main_Page&prop=text&format=json`, { headers: { accept: 'application/json', 'user-agent': liquipediaUserAgent }, signal: AbortSignal.timeout(25_000) });
+      if (!response.ok) throw new Error(`Liquipedia 首页返回 HTTP ${response.status}`);
+      return response.json();
+    },1);
     const next = { fetchedAt: new Date().toISOString(), tournaments: parseLiquipediaTournaments(payload?.parse?.text?.['*'] || '') };
     await mkdir(dataDir, { recursive: true });
     await writeFile(`${liquipediaTournamentsCachePath}.tmp`, JSON.stringify(next, null, 2), 'utf8');
@@ -2237,8 +2273,104 @@ async function loadLiquipediaTournaments() {
   return liquipediaTournamentsRefreshPromise;
 }
 
+async function loadLiquipediaResultsCache() {
+  if (liquipediaResultsCache) return liquipediaResultsCache;
+  if (!liquipediaResultsCachePromise) liquipediaResultsCachePromise = (async () => {
+    try {
+      const cached = JSON.parse(await readFile(liquipediaResultsCachePath,'utf8'));
+      if (cached?.version === 2 && cached.categories && typeof cached.categories === 'object') return cached;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') console.warn('[event-results] cache unavailable:',error.message);
+    }
+    return {version:2,categories:{}};
+  })();
+  liquipediaResultsCache = await liquipediaResultsCachePromise;
+  return liquipediaResultsCache;
+}
+
+function refreshLiquipediaResults(category) {
+  if (liquipediaResultsRefreshes.has(category)) return liquipediaResultsRefreshes.get(category);
+  const configuration = tournamentResultCategories[category];
+  const pending = (async () => {
+    const cache = await loadLiquipediaResultsCache();
+    const payload = await queueLiquipediaParse(async () => {
+      const address = new URL(liquipediaApiUrl);
+      address.search = new URLSearchParams({action:'parse',page:configuration.page,prop:'text',format:'json'}).toString();
+      const response = await fetch(address,{headers:{accept:'application/json','accept-encoding':'gzip','user-agent':liquipediaUserAgent},signal:AbortSignal.timeout(30_000)});
+      if (!response.ok) throw new Error(`${configuration.label}赛事页面返回 HTTP ${response.status}`);
+      return response.json();
+    },2);
+    const previousScores=new Map((cache.categories[category]?.rows || []).filter(row=>row.url&&row.score).map(row=>[row.url,row.score]));
+    const rows = parseTournamentResultsHtml(payload?.parse?.text?.['*'] || '').map(row=>({...row,score:row.score || previousScores.get(row.url) || ''}));
+    if (!rows.length) throw new Error(`${configuration.label}赛事页面没有可用的表格`);
+    const snapshot = {
+      category,label:configuration.label,fetchedAt:new Date().toISOString(),
+      sourceUrl:`https://liquipedia.net/ageofempires/${configuration.page}`,
+      rows
+    };
+    cache.categories[category] = snapshot;
+    liquipediaResultsWriteQueue = liquipediaResultsWriteQueue.catch(()=>{}).then(async () => {
+      await mkdir(dataDir,{recursive:true});
+      await writeFile(`${liquipediaResultsCachePath}.tmp`,JSON.stringify(cache),'utf8');
+      await rename(`${liquipediaResultsCachePath}.tmp`,liquipediaResultsCachePath);
+    });
+    await liquipediaResultsWriteQueue;
+    return snapshot;
+  })().finally(()=>liquipediaResultsRefreshes.delete(category));
+  liquipediaResultsRefreshes.set(category,pending);
+  return pending;
+}
+
+async function scheduleLiquipediaResultsRefresh() {
+  if (liquipediaResultsSchedulerTimer) clearTimeout(liquipediaResultsSchedulerTimer);
+  liquipediaResultsSchedulerTimer = null;
+  const cache = await loadLiquipediaResultsCache();
+  const now = Date.now();
+  const categories = Object.keys(tournamentResultCategories);
+  const stale = categories.filter(category => {
+    const fetchedAt = Date.parse(cache.categories[category]?.fetchedAt || 0);
+    return !Number.isFinite(fetchedAt) || now - fetchedAt >= liquipediaResultsRefreshInterval;
+  });
+  if (stale.length) {
+    console.log(`[event-results] background refresh starting: ${stale.join(', ')}`);
+    const results = await Promise.allSettled(stale.map(category=>refreshLiquipediaResults(category)));
+    const failed = results.filter(result=>result.status==='rejected');
+    if (failed.length) {
+      for (const result of failed) console.warn('[event-results] background refresh failed:',result.reason?.message || result.reason);
+      liquipediaResultsSchedulerTimer = setTimeout(()=>scheduleLiquipediaResultsRefresh().catch(error=>console.warn('[event-results] scheduler failed:',error.message)),30*60_000);
+      liquipediaResultsSchedulerTimer.unref?.();
+      return;
+    }
+    console.log(`[event-results] background refresh complete: ${stale.length} categories`);
+  }
+  const deadlines = categories.map(category=>Date.parse(cache.categories[category]?.fetchedAt || 0)+liquipediaResultsRefreshInterval).filter(Number.isFinite);
+  const nextAt = deadlines.length ? Math.min(...deadlines) : Date.now();
+  const delay = Math.max(1000,nextAt-Date.now());
+  console.log(`[event-results] next background refresh ${new Date(Date.now()+delay).toISOString()}`);
+  liquipediaResultsSchedulerTimer = setTimeout(()=>scheduleLiquipediaResultsRefresh().catch(error=>console.warn('[event-results] scheduler failed:',error.message)),delay);
+  liquipediaResultsSchedulerTimer.unref?.();
+}
+
 function normalizeEventPlayerName(value) {
   return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function resultScore(row, matches) {
+  const event=normalizeEventPlayerName(row?.name);
+  const winner=normalizeEventPlayerName(row?.winner);
+  const runnerUp=normalizeEventPlayerName(row?.runnerUp);
+  if (!event || !winner || !runnerUp) return '';
+  for (const match of matches || []) {
+    const tournament=normalizeEventPlayerName(match?.tournament?.name);
+    if (!tournament || (!tournament.startsWith(event) && !event.startsWith(tournament))) continue;
+    const opponents=(match.opponents || []).map(opponent=>normalizeEventPlayerName(opponent?.name));
+    if (!opponents.includes(winner) || !opponents.includes(runnerUp)) continue;
+    const scores=Array.isArray(match.score) ? match.score : [];
+    if (scores.length < 2 || scores.some(score=>String(score ?? '').trim()==='')) continue;
+    const winnerIndex=opponents.indexOf(winner),runnerUpIndex=opponents.indexOf(runnerUp);
+    return `${scores[winnerIndex]}–${scores[runnerUpIndex]}`;
+  }
+  return '';
 }
 
 function rebuildLiquipediaLivePlayerCache(data) {
@@ -2699,19 +2831,21 @@ async function refreshLiquipediaMatches() {
     if (Number.isFinite(cachedAt) && Date.now() - cachedAt < liquipediaMatchesRefreshInterval) return liquipediaMatchesCache;
     const sourceText = '<div data-aoe2cn-section="upcoming">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=upcoming|limit=50|filterbuttons-game=Age of Empires II}}</div><div data-aoe2cn-section="recent">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=recent|limit=50|filterbuttons-game=Age of Empires II}}</div>';
     const form = new URLSearchParams({ action: 'parse', text: sourceText, title: 'Liquipedia:Upcoming and ongoing matches', prop: 'text', format: 'json', formatversion: '2' });
-    const response = await fetch(liquipediaApiUrl, {
-      method: 'POST',
-      headers: {
-        accept: 'application/json',
-        'accept-encoding': 'gzip',
-        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
-        'user-agent': liquipediaUserAgent
-      },
-      body: form,
-      signal: AbortSignal.timeout(25_000)
-    });
-    if (!response.ok) throw new Error(`Liquipedia API 返回 HTTP ${response.status}`);
-    const payload = await response.json();
+    const payload = await queueLiquipediaParse(async () => {
+      const response = await fetch(liquipediaApiUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'accept-encoding': 'gzip',
+          'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          'user-agent': liquipediaUserAgent
+        },
+        body: form,
+        signal: AbortSignal.timeout(25_000)
+      });
+      if (!response.ok) throw new Error(`Liquipedia API 返回 HTTP ${response.status}`);
+      return response.json();
+    },0);
     const html = String(payload?.parse?.text || '');
     if (!html.includes('match-info')) throw new Error('Liquipedia API 未返回比赛信息');
     const previous = liquipediaMatchesCache;
@@ -2867,6 +3001,20 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     } catch (error) {
       return sendNoStoreJson(res, 502, { error: error.message || '赛事列表获取失败' });
     }
+  }
+  if (url.pathname === '/api/tournament-results') {
+    if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
+    const category = url.searchParams.get('category') || 's';
+    if (!Object.hasOwn(tournamentResultCategories,category)) return sendNoStoreJson(res,400,{error:'未知赛事分类'});
+    const cache = await loadLiquipediaResultsCache();
+    const snapshot = cache.categories[category];
+    const fresh = snapshot && Date.now()-Date.parse(snapshot.fetchedAt || 0) < liquipediaResultsRefreshInterval;
+    if (!fresh) refreshLiquipediaResults(category).catch(error=>console.warn(`[event-results] ${category} refresh failed:`,error.message));
+    if (!snapshot) return sendNoStoreJson(res,202,{status:'syncing',retryAfterSeconds:30});
+    const matches=await loadLiquipediaMatchesCache();
+    const completed=matches?.completed || [];
+    const rows=snapshot.rows.map(row=>({...row,score:row.score || resultScore(row,completed)}));
+    return sendVersionedJson(req,res,{...snapshot,rows,stale:!fresh},`tournament-results-${category}-${snapshot.fetchedAt}`,300);
   }
   if (url.pathname === '/api/feedback/recent') {
     if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
@@ -3295,7 +3443,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events|feedback|civilizations|tech-tree|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : url.pathname.slice(1);
+  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events(?:\/results)?|feedback|civilizations|tech-tree|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : url.pathname.slice(1);
   const path = await staticFilePath(join(root, 'public'), relative);
   try {
     const data = await readFile(path);
@@ -3317,6 +3465,7 @@ httpServer.maxHeadersCount = 100;
 httpServer.listen(port, '127.0.0.1', () => {
   console.log(`AoE2DE Ladder running at http://localhost:${port}`);
   startLiquipediaMatchesLifecycle().catch(error => console.warn('[events] lifecycle startup failed:', error.message));
+  scheduleLiquipediaResultsRefresh().catch(error=>console.warn('[event-results] scheduler startup failed:',error.message));
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
   startBilibiliUpdatesLifecycle().catch(error => console.warn('[updates] lifecycle startup failed:', error.message));
   leaderboardDumpSummary.start();

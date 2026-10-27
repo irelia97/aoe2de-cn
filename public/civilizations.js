@@ -1,3 +1,4 @@
+import { searchableCivilizationSelect } from './civilization-combobox.js?v=4';
 const mounted = new WeakMap();
 const number = new Intl.NumberFormat('zh-CN');
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
@@ -16,7 +17,7 @@ export function civilizationTrend(data, opponent = '') {
 export async function mountCivilizations(root, helpers) {
   if (mounted.has(root)) return mounted.get(root).activate();
   const { civName, mapName, civImage } = helpers;
-  let metadata, data, request, sequence = 0, sort = 'winRate', descending = true;
+  let metadata, data, request, overviewCombo, opponentCombo, sequence = 0, sort = 'winRate', descending = true;
   let state = { mode:'rm_1v1', map:'all', elo:'all', duration:'all', civ:'' };
   root.innerHTML = `
     <div class="civ-heading"><div><div class="section-kicker">CIVILIZATION STATISTICS</div><h2 id="civ-title">民族统计</h2><p>每周更新真实天梯对局，了解民族表现与对位。</p></div></div>
@@ -176,9 +177,11 @@ export async function mountCivilizations(root, helpers) {
         metadata = await json('/api/civilization-stats/meta', request.signal);
         find('#civ-map').innerHTML = '<option value="all">全部地图</option>' + [...metadata.maps].sort((a,b) => mapName(a.slug).localeCompare(mapName(b.slug),'zh-CN')).map(item => `<option value="${item.id}">${escape(mapName(item.slug))}</option>`).join('');
         for (const [key,selector] of [['ratings','#civ-rating'],['durations','#civ-duration']]) find(selector).innerHTML = `<option value="all">全部${key === 'ratings' ? '分数段' : '时长'}</option>` + metadata[key].map(item => `<option value="${item.id}">${escape(item.label)}</option>`).join('');
-        const civilizationOptions = [...metadata.civs].sort((a,b) => civName(a.slug).localeCompare(civName(b.slug),'zh-CN')).map(item => `<option value="${escape(item.slug)}">${escape(civName(item.slug))}</option>`).join('');
+        const civilizationOptions = [...metadata.civs].sort((a,b) => String(a.slug).localeCompare(String(b.slug),'en',{sensitivity:'base'})).map(item => `<option value="${escape(item.slug)}" data-search="${escape(String(item.slug).replace(/^./,letter=>letter.toUpperCase()))}" data-icon="${escape(civImage(item.slug))}">${escape(civName(item.slug))}</option>`).join('');
         find('#civ-overview-select').innerHTML = civilizationOptions;
         find('#civ-opponent-select').innerHTML = '<option value="">全部对手</option>' + civilizationOptions;
+        overviewCombo = searchableCivilizationSelect(find('#civ-overview-select'));
+        opponentCombo = searchableCivilizationSelect(find('#civ-opponent-select'));
       }
       for (const [key,list] of [['map',metadata.maps],['elo',ratingBands()],['duration',metadata.durations]]) {
         if (state[key] !== 'all' && !list.some(item => String(item.id) === state[key])) state[key] = 'all';
@@ -189,6 +192,7 @@ export async function mountCivilizations(root, helpers) {
       if (id !== sequence) return;
       data = result; state.civ = result.selectedCiv || state.civ;
       find('#civ-overview-select').value = state.civ;
+      overviewCombo.sync();
       find('#civ-games').textContent = number.format(result.games);
       find('#civ-game-share').textContent = percent(result.gameShare);
       find('#civ-count').textContent = number.format(result.civilizations.length);
@@ -218,7 +222,7 @@ export async function mountCivilizations(root, helpers) {
   find('#civ-overview-select').addEventListener('change', event => { state.civ = event.target.value; load({ locate: true }); });
   find('#civ-opponent-select').addEventListener('change',()=>{ renderMatchups(); renderTrend(); });
   find('#civ-retry').addEventListener('click',load);
-  find('#civ-reset').addEventListener('click',()=>{ state={mode:state.mode,map:'all',elo:'all',duration:'all',civ:''};find('#civ-opponent-select').value='';load(); });
+  find('#civ-reset').addEventListener('click',()=>{ state={mode:state.mode,map:'all',elo:'all',duration:'all',civ:''};find('#civ-opponent-select').value='';opponentCombo?.sync();load(); });
   const controller = { activate() {
     const params = new URLSearchParams(location.search);
     const next = { mode:params.get('mode') === 'rm_team' ? 'rm_team' : 'rm_1v1',map:params.get('map') || 'all',elo:params.get('elo') || 'all',duration:params.get('duration') || 'all',civ:params.get('civ') || '' };
