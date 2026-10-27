@@ -7,6 +7,20 @@ export const tournamentResultCategories = Object.freeze({
   qualifier:{label:'资格赛',page:'Age_of_Empires_II/Qualifier_Tournaments'},
 });
 
+const resultKey = row => String(row?.url || '').trim() || `${String(row?.year || '').trim()}\u0000${String(row?.name || '').trim()}`;
+
+export function appendNewTournamentResults(existingRows,newRows) {
+  const rows=Array.isArray(existingRows)?existingRows.map(row=>({...row})):[];
+  const known=new Set(rows.map(resultKey).filter(Boolean));
+  for(const row of Array.isArray(newRows)?newRows:[]) {
+    const key=resultKey(row);
+    if (!key || known.has(key)) continue;
+    known.add(key);
+    rows.push({...row});
+  }
+  return rows;
+}
+
 const decode = value => String(value || '')
   .replace(/<br\s*\/?\s*>/gi,' / ')
   .replace(/<[^>]*>/g,' ')

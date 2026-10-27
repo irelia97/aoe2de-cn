@@ -32,7 +32,7 @@ import { leaderboardRowsFromPayloads, mergeLeaderboardData } from './server/serv
 import { createProfileService } from './server/services/profile-service.js';
 import { createGameAssetService } from './server/services/game-assets.js';
 import { parseYoutubeWatchMetadata } from './server/services/youtube-live-metadata.js';
-import { parseTournamentResultsHtml, tournamentResultCategories } from './server/services/liquipedia-tournament-results.js';
+import { appendNewTournamentResults, parseTournamentResultsHtml, tournamentResultCategories } from './server/services/liquipedia-tournament-results.js';
 import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 const execFileAsync = promisify(execFile);
 
@@ -2300,9 +2300,9 @@ function refreshLiquipediaResults(category) {
       if (!response.ok) throw new Error(`${configuration.label}赛事页面返回 HTTP ${response.status}`);
       return response.json();
     },2);
-    const previousScores=new Map((cache.categories[category]?.rows || []).filter(row=>row.url&&row.score).map(row=>[row.url,row.score]));
-    const rows = parseTournamentResultsHtml(payload?.parse?.text?.['*'] || '').map(row=>({...row,score:row.score || previousScores.get(row.url) || ''}));
-    if (!rows.length) throw new Error(`${configuration.label}赛事页面没有可用的表格`);
+    const fetchedRows=parseTournamentResultsHtml(payload?.parse?.text?.['*'] || '');
+    if (!fetchedRows.length) throw new Error(`${configuration.label}赛事页面没有可用的表格`);
+    const rows=appendNewTournamentResults(cache.categories[category]?.rows || [],fetchedRows);
     const snapshot = {
       category,label:configuration.label,fetchedAt:new Date().toISOString(),
       sourceUrl:`https://liquipedia.net/ageofempires/${configuration.page}`,

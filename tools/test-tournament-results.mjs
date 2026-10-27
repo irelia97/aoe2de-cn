@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTournamentResultsHtml, tournamentResultCategories } from '../server/services/liquipedia-tournament-results.js';
+import { appendNewTournamentResults, parseTournamentResultsHtml, tournamentResultCategories } from '../server/services/liquipedia-tournament-results.js';
 
 const row = (name,extra) => `<tr class="table2&#95;&#95;row--body"><td>S-Tier</td><td></td><td></td><td class="column&#95;&#95;tournament"><a href="/ageofempires/${name}">${name}</a></td><td>Oct 01–03, 2026</td><td>$50,000</td><td>World</td><td>8</td>${extra}</tr>`;
 
@@ -51,4 +51,13 @@ test('known team pages contribute team logos when list pages omit them',()=>{
   const [result]=parseTournamentResultsHtml(html);
   assert.match(result.qualifiedEntries[0].logo,/SY_logo_screenshot/);
   assert.match(result.qualifiedEntries[1].logo,/Team_Vitality/);
+});
+
+test('result refreshes append new tournaments without changing existing rows',()=>{
+  const existing=[{year:'2025',name:'Existing',url:'https://liquipedia.net/ageofempires/Existing',score:'5–1',winner:'Original'}];
+  const fetched=[
+    {year:'2025',name:'Existing',url:'https://liquipedia.net/ageofempires/Existing',score:'',winner:'Changed'},
+    {year:'2026',name:'New',url:'https://liquipedia.net/ageofempires/New',score:'',winner:'Winner'},
+  ];
+  assert.deepEqual(appendNewTournamentResults(existing,fetched),[existing[0],fetched[1]]);
 });
