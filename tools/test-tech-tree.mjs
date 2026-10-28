@@ -15,6 +15,8 @@ const manifest=load('manifest.json'),entities=load('entities.json'),overrides=lo
 test('technology tree identifies the current game version',()=>{
   assert.equal(manifest.gameVersion,'188329');
   assert.match(manifest.patchUrl,/update-188329\/$/);
+  const source=readFileSync(new URL('../public/tech-tree.js',import.meta.url),'utf8');
+  assert.match(source,/href="\/updates\?articleId=53639326"/);
 });
 
 test('every civilization supports full pinyin and initials search',()=>{
