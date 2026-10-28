@@ -38,7 +38,7 @@ export const benefitTechAliases = {
 };
 export const compactEnglish = value => String(value || '').toLocaleLowerCase().replace(/[^a-z0-9]/g,'');
 const categoryNames = {all:'全部', military:'军事', economy:'经济', defense:'城防与大学', naval:'海军'};
-const datasetVersion = '188329-1';
+const datasetVersion = '188329-2';
 const json = async path => {
   const response = await fetch(`${path}?v=${datasetVersion}`,{cache:'force-cache'});
   if (!response.ok) throw new Error(`读取失败（${response.status}）`);

@@ -270,3 +270,20 @@ test('October balance update keeps regular and elite unit changes distinct',()=>
   assert.equal(entities['Unit:2569'].stats.Speed,1.45);
   assert.equal(entities['Unit:2571'].stats.Speed,1.5);
 });
+
+test('188329 supplemental usage notes and Gate armour are preserved',()=>{
+  const supplemented=Object.values(entities).filter(entity=>entity.description?.includes('\n补充说明与用途：\n'));
+  assert.equal(supplemented.length,84);
+  assert.match(entities['Building:1665'].description,/帝王时代后获得：生命值 \+50%/);
+  assert.match(entities['Unit:1755'].description,/城堡时代自动获得：升级为骆驼兵/);
+  assert.match(entities['Unit:1974'].description,/生命值低于 45 时将进行转换/);
+  assert.match(entities['Unit:2704'].description,/0\.0136\/0\.0159 黄金/);
+  assert.match(entities['Unit:1706'].description,/背后距离 1 范围内/);
+  assert.match(entities['Unit:726'].description,/攻击力 \+1，最多叠加 4 次/);
+
+  const gate=entities['Building:487'];
+  assert.equal(gate.stats.MeleeArmor,6);
+  assert.equal(gate.stats.PierceArmor,6);
+  assert.equal(gate.stats.Armours.find(armour=>armour.Class===4).Amount,6);
+  assert.equal(gate.stats.Armours.find(armour=>armour.Class===3).Amount,6);
+});
