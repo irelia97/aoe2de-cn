@@ -87,13 +87,35 @@ function renderedArticleBody(page) {
   tags.lastIndex = openEnd + 1;
   for (let match; (match = tags.exec(page));) {
     depth += /^<\/div/i.test(match[0]) ? -1 : 1;
-    if (depth === 0) return page.slice(openEnd + 1, match.index)
+    if (depth === 0) return normalizeRenderedArticleBody(page.slice(openEnd + 1, match.index))
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
       .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
       .replace(/<div\b[^>]*opus-module-topic[^>]*>[\s\S]*?<\/div>\s*<\/div>/i, '')
       .trim();
   }
   return '';
+}
+
+function normalizeRenderedArticleBody(html) {
+  let value = String(html || '')
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '')
+    .replace(/<span\b[^>]*>/gi, '')
+    .replace(/<\/span>/gi, '')
+    .replace(/<h2\b/gi, '<h3')
+    .replace(/<\/h2>/gi, '</h3>')
+    .replace(/<h1\b/gi, '<h2')
+    .replace(/<\/h1>/gi, '</h2>')
+    .replace(/\s(?:style|class|data-[\w-]+|start|list-style-type)=(?:"[^"]*"|'[^']*')/gi, '');
+  value = value.replace(/<ul\b[^>]*>([\s\S]*?)<\/ul>/gi, (block, inner) => {
+    const level = Math.max(1, Number(inner.match(/<li\b[^>]*\blevel=["']?(\d+)/i)?.[1]) || 1);
+    return `<ul class="updates-opus-list level-${level}">${inner.replace(/<li\b[^>]*>/gi, '<li>')}</ul>`;
+  });
+  value = value.replace(/\slevel=(?:"[^"]*"|'[^']*')/gi, '');
+  value = value.replace(/^\s*<p>([\s\S]*?)<\/p>/i, (block, inner) => {
+    const plain = inner.replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').replace(/[\u200B-\u200F\u2060\uFEFF]/g, '').trim();
+    return /^(?:#[^#]+#\s*)+$/u.test(plain) ? '' : block;
+  });
+  return value;
 }
 
 const response = await fetch(`https://api.bilibili.com/x/article/view?id=${articleId}`, {
