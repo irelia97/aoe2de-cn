@@ -279,9 +279,19 @@ test('188329 supplemental usage notes and Gate armour are preserved',()=>{
   assert.match(entities['Building:1665'].description,/帝王时代后获得：生命值 \+50%/);
   assert.match(entities['Unit:1755'].description,/城堡时代自动获得：升级为骆驼兵/);
   assert.match(entities['Unit:1974'].description,/生命值低于 45 时将进行转换/);
-  assert.match(entities['Unit:2704'].description,/0\.0136\/0\.0159 黄金/);
+  assert.match(entities['Unit:2703'].description,/0\.0136 黄金/);
+  assert.doesNotMatch(entities['Unit:2703'].description,/0\.0159/);
+  assert.match(entities['Unit:2704'].description,/0\.0159 黄金/);
+  assert.doesNotMatch(entities['Unit:2704'].description,/0\.0136/);
   assert.match(entities['Unit:1706'].description,/背后距离 1 范围内/);
   assert.match(entities['Unit:726'].description,/攻击力 \+1，最多叠加 4 次/);
+
+  assert.match(entities['Unit:1655'].description,/攻击 \+20（/);
+  assert.match(entities['Unit:1657'].description,/攻击 \+25（/);
+  assert.match(entities['Unit:1790'].description,/距离 10 格.*移动速度 \+10%/);
+  assert.match(entities['Unit:1792'].description,/距离 12 格.*移动速度 \+15%/);
+  assert.match(entities['Unit:73'].description,/副箭数量：2；/);
+  assert.match(entities['Unit:559'].description,/副箭数量：4；/);
 
   const gate=entities['Building:487'];
   assert.equal(gate.stats.MeleeArmor,6);
