@@ -33,7 +33,7 @@ export const mediaSources = {
     { platform: 'bilibili', id: '281894927', name: '喷泉之下', url: 'https://space.bilibili.com/281894927' },
   ],
   live: [
-    { platform: 'bilibili', roomId: '22075249', name: '好耶是周末', url: 'https://live.bilibili.com/22075249' },
+    { platform: 'bilibili', roomId: '1957024441', name: '好耶是周末', url: 'https://live.bilibili.com/1957024441' },
     { platform: 'bilibili', roomId: '22276118', name: '秋已夕', url: 'https://live.bilibili.com/22276118' },
     { platform: 'bilibili', roomId: '3859473', name: 'B站直播间 3859473', url: 'https://live.bilibili.com/3859473' },
     { platform: 'bilibili', roomId: '23195173', name: 'spadetwo', url: 'https://live.bilibili.com/23195173' },

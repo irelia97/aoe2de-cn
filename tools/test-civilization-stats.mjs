@@ -5,7 +5,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCivilizationStats, parseCivilizationFilters } from '../server/services/civilization-stats.js';
-import { civilizationTrend } from '../public/civilizations.js';
+import { civilizationTrend, civilizationTrendDomain } from '../public/civilizations.js';
+
+test('trend axis zooms tightly into sub-percentage-point changes',()=>{
+  const domain=civilizationTrendDomain([.472245,.472817]);
+  assert.ok(domain.min<.472245);assert.ok(domain.max>.472817);
+  assert.ok(domain.max-domain.min<.01);
+  assert.ok(domain.max<.5);
+  assert.equal(domain.ticks.length,5);
+});
 
 test('validate filter dimensions before any SQL execution', () => {
   assert.deepEqual(parseCivilizationFilters(new URLSearchParams()), { mode:'rm_1v1',map:null,elo:null,duration:null,civ:'' });

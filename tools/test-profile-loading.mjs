@@ -5,10 +5,21 @@ import vm from 'node:vm';
 import { createProfileService } from '../server/services/profile-service.js';
 
 const deferred = () => { let resolve,reject; const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject}; };
-function service(fetchImpl,cache=new Map()) {
-  return createProfileService({getProfileDb:()=>null,leaderboardCache:new Map(),ladderOrder:[3,4],types:{3:'1v1',4:'团队'},personalStatsCache:cache,personalStatsCacheTtl:600000,fetchUpstreamWithRateLimit:fetchImpl});
+function service(fetchImpl,cache=new Map(),options={}) {
+  return createProfileService({getProfileDb:()=>null,leaderboardCache:new Map(),ladderOrder:[3,4],types:{3:'1v1',4:'团队'},personalStatsCache:cache,personalStatsCacheTtl:600000,fetchUpstreamWithRateLimit:fetchImpl,...options});
 }
 const rankedPayload = {result:{code:0},leaderboardStats:[{leaderboard_id:3,rank:20,rating:2200,wins:30,losses:20}]};
+
+test('disabled lobby statistics return ranked data without calling Companion',async()=>{
+  let companionCalls=0;
+  const api=service(async url=>{
+    if (String(url).includes('getPersonalStat')) return Response.json(rankedPayload);
+    companionCalls++;return Response.json({leaderboards:[]});
+  },new Map(),{lobbyStatsEnabled:false});
+  const result=await api.fetchPersonalLeaderboardStats('42');
+  assert.deepEqual(result.map(row=>row.id),[3,4]);
+  assert.equal(companionCalls,0);
+});
 
 test('ranked stats render before a hanging lobby request; concurrent full lookup shares work',async()=>{
   const lobby=deferred(),cache=new Map();let rankedCalls=0,lobbyCalls=0;

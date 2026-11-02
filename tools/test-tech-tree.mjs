@@ -279,10 +279,10 @@ test('188329 supplemental usage notes and Gate armour are preserved',()=>{
   assert.match(entities['Building:1665'].description,/帝王时代后获得：生命值 \+50%/);
   assert.match(entities['Unit:1755'].description,/城堡时代自动获得：升级为骆驼兵/);
   assert.match(entities['Unit:1974'].description,/生命值低于 45 时将进行转换/);
-  assert.match(entities['Unit:1228'].description,/每秒产生 0\.3 黄金/);
-  assert.match(entities['Unit:1230'].description,/每秒产生 0\.4 黄金/);
-  assert.match(entities['Unit:2703'].description,/每秒产生 0\.6 黄金/);
-  assert.match(entities['Unit:2704'].description,/每秒产生 0\.7 黄金/);
+  assert.match(entities['Unit:1228'].description,/每秒约产生 0\.3 黄金/);
+  assert.match(entities['Unit:1230'].description,/每秒约产生 0\.4 黄金/);
+  assert.match(entities['Unit:2703'].description,/每秒约产生 0\.6 黄金/);
+  assert.match(entities['Unit:2704'].description,/每秒约产生 0\.7 黄金/);
   assert.match(entities['Unit:1706'].description,/背后距离 1 范围内/);
   assert.match(entities['Unit:726'].description,/攻击力 \+1，最多叠加 4 次/);
 

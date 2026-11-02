@@ -14,6 +14,21 @@ export function civilizationTrend(data, opponent = '') {
   }));
 }
 
+export function civilizationTrendDomain(values) {
+  const rates = values.filter(Number.isFinite).map(value => Math.max(0, Math.min(1, value)));
+  if (!rates.length) return { min:0, max:1, ticks:[0,.25,.5,.75,1] };
+  let min = Math.min(...rates), max = Math.max(...rates);
+  if (max - min < .002) {
+    const middle = (min + max) / 2;
+    min = middle - .001; max = middle + .001;
+  }
+  const padding = Math.max(.00025, (max - min) * .2);
+  min = Math.max(0, Math.floor((min - padding) * 2000) / 2000);
+  max = Math.min(1, Math.ceil((max + padding) * 2000) / 2000);
+  if (max - min < .001) { min = Math.max(0, min - .0005); max = Math.min(1, max + .0005); }
+  return { min, max, ticks:Array.from({ length:5 }, (_,index) => min + (max - min) * index / 4) };
+}
+
 export async function mountCivilizations(root, helpers) {
   if (mounted.has(root)) return mounted.get(root).activate();
   const { civName, mapName, civImage } = helpers;
@@ -32,7 +47,7 @@ export async function mountCivilizations(root, helpers) {
     <div class="civ-metrics"><div><small>筛选后对局</small><div class="civ-games-metric"><strong id="civ-games">—</strong><span id="civ-game-share" title="占当前模式全部有效对局的比例">—</span></div></div><div><small>出现民族</small><strong id="civ-count">—</strong></div><div><small>数据范围</small><strong id="civ-date-short">—</strong></div></div>
     <div class="civ-panels">
       <section class="civ-panel civ-overview" aria-labelledby="civ-overview-title"><div class="civ-panel-heading"><div><h3 id="civ-overview-title">民族表现</h3><p>点击民族名称查看科技树；使用“查看民族”切换对位统计</p><p>点击胜率/使用率/参赛次数可切换排序</p></div><div class="civ-overview-controls"><label>查看民族<select id="civ-overview-select"></select></label><span id="civ-rank-count"></span></div></div>
-        <div class="civ-table-scroll"><table><thead><tr><th>民族</th><th><button type="button" data-sort="winRate">胜率</button></th><th><button type="button" data-sort="usage">使用率</button></th><th><button type="button" data-sort="games">参赛次数</button></th></tr></thead><tbody id="civ-overview-body"></tbody></table></div>
+        <div class="civ-table-scroll"><table><thead><tr><th>民族</th><th><button type="button" data-sort="winRate">胜率 / 较上周</button></th><th><button type="button" data-sort="usage">使用率 / 较上周</button></th><th><button type="button" data-sort="games">参赛次数</button></th></tr></thead><tbody id="civ-overview-body"></tbody></table></div>
       </section>
       <section class="civ-panel civ-matchups" aria-labelledby="civ-matchups-title"><div class="civ-panel-heading"><div><h3 id="civ-matchups-title">民族对位胜率</h3><p id="civ-matchup-intro">选择一个民族查看对位</p></div>
         <div class="civ-opponent-controls"><label>查看对手<select id="civ-opponent-select"><option value="">全部对手</option></select></label></div></div>
@@ -40,7 +55,7 @@ export async function mountCivilizations(root, helpers) {
       </section>
     </div>
     <section class="civ-panel civ-trend" aria-labelledby="civ-trend-title">
-      <div class="civ-trend-heading"><div><h3 id="civ-trend-title">胜率走势</h3><p>每个点为一次周更新后的累计胜率，与上方卡片口径一致；横轴为该次统计截至日期。</p></div><div id="civ-trend-legend" class="civ-trend-legend"></div></div>
+      <div class="civ-trend-heading"><div><h3 id="civ-trend-title">胜率走势</h3><p>每个点为一次周更新后的累计胜率；纵轴会自动聚焦实际变化区间，50% 落入区间时以虚线标出。</p></div><div id="civ-trend-legend" class="civ-trend-legend"></div></div>
       <div id="civ-trend-chart" class="civ-trend-chart"></div>
       <div id="civ-trend-filters" class="civ-trend-filters" aria-label="当前筛选条件"></div>
       <div id="civ-trend-detail" class="civ-trend-detail" role="status" aria-live="polite"></div>
@@ -77,7 +92,7 @@ export async function mountCivilizations(root, helpers) {
     if (!data) return;
     const rows = [...data.civilizations].sort((a,b) => ((a[sort]-b[sort]) * (descending ? -1 : 1)) || civName(a.civ).localeCompare(civName(b.civ),'zh-CN'));
     find('#civ-rank-count').textContent = `${rows.length} 个民族`;
-    find('#civ-overview-body').innerHTML = rows.length ? rows.map((row,index) => `<tr class="${row.civ === data.selectedCiv ? 'selected' : ''}"><td><a class="civ-name-button" href="${civilizationTechTreeUrl(row.civ)}" title="查看${escape(civName(row.civ))}科技树">${icon(row.civ)}<span title="${escape(civName(row.civ))}"><span class="civ-row-rank">#${index+1}</span>${escape(civName(row.civ))}</span></a></td><td title="${number.format(row.wins)} 胜 / ${number.format(row.losses)} 负"><span class="civ-rate ${row.winRate >= .5 ? 'positive' : 'negative'}">${percent(row.winRate)}</span>${change(row.winRateDelta)}<span class="civ-rate-bar"><i style="width:${Math.max(0,Math.min(100,row.winRate*100))}%"></i></span></td><td><span class="civ-usage">${percent(row.usage)}</span>${change(row.usageDelta)}</td><td class="civ-number">${number.format(row.games)}</td></tr>`).join('') : '<tr><td colspan="4" class="civ-empty">当前筛选下暂无对局</td></tr>';
+    find('#civ-overview-body').innerHTML = rows.length ? rows.map((row,index) => { const selected = row.civ === data.selectedCiv; return `<tr class="${selected ? 'selected' : ''}"><td><a class="civ-name-button" href="${civilizationTechTreeUrl(row.civ)}" title="查看${escape(civName(row.civ))}科技树">${icon(row.civ)}<span title="${escape(civName(row.civ))}"><span class="civ-row-rank">#${index+1}</span>${escape(civName(row.civ))}${selected ? '<em class="civ-selected-mark">当前</em>' : ''}</span></a></td><td title="${number.format(row.wins)} 胜 / ${number.format(row.losses)} 负"><span class="civ-rate ${row.winRate >= .5 ? 'positive' : 'negative'}">${percent(row.winRate)}</span>${change(row.winRateDelta)}<span class="civ-rate-bar"><i style="width:${Math.max(0,Math.min(100,row.winRate*100))}%"></i></span></td><td><span class="civ-usage">${percent(row.usage)}</span>${change(row.usageDelta)}</td><td class="civ-number">${number.format(row.games)}</td></tr>`; }).join('') : '<tr><td colspan="4" class="civ-empty">当前筛选下暂无对局</td></tr>';
     root.querySelectorAll('[data-sort]').forEach(button => {
       button.classList.toggle('selected',button.dataset.sort === sort);
       button.parentElement.setAttribute('aria-sort',button.dataset.sort === sort ? (descending ? 'descending' : 'ascending') : 'none');
@@ -119,13 +134,16 @@ export async function mountCivilizations(root, helpers) {
     const left = 48, right = width-22, top = 26, bottom = height-38;
     const firstTime = Date.parse(dates[0].date), lastTime = Date.parse(dates.at(-1).date);
     const x = index => dates.length === 1 ? (left+right)/2 : left+(Date.parse(dates[index].date)-firstTime)/(lastTime-firstTime)*(right-left);
-    const y = rate => bottom-rate*(bottom-top);
+    const domain = civilizationTrendDomain(dates.flatMap(day => series.map(line => day[line.key]?.winRate)));
+    const y = rate => bottom-(rate-domain.min)/(domain.max-domain.min)*(bottom-top);
     const description = day => `截至 ${day.date} · ` + series.map(line => {
       const point = day[line.key];
       return `${line.label} ${point ? `${percent(point.winRate)}（${number.format(point.games)}${line.key === 'overall' ? '次参赛' : '场'}）` : day.comparable ? '无样本' : '统计口径不同，无法比较'}`;
     }).join('；');
     let svg = `<svg viewBox="0 0 ${width} ${height}" role="group" aria-label="${escape(name)}每次周更新累计胜率折线图，悬停、点击或使用Tab查看历史数据"><text x="${left}" y="13" class="civ-trend-axis">胜率</text>`;
-    for (const rate of [0,.25,.5,.75,1]) svg += `<line class="civ-trend-grid ${rate === .5 ? 'midpoint' : ''}" x1="${left}" x2="${right}" y1="${y(rate)}" y2="${y(rate)}"/><text class="civ-trend-axis civ-trend-y-axis" x="${left-9}" y="${y(rate)+4}" text-anchor="end">${rate*100}%</text>`;
+    const axisDecimals = domain.max - domain.min <= .02 ? 2 : domain.max - domain.min <= .1 ? 1 : 0;
+    for (const rate of domain.ticks) svg += `<line class="civ-trend-grid" x1="${left}" x2="${right}" y1="${y(rate)}" y2="${y(rate)}"/><text class="civ-trend-axis civ-trend-y-axis" x="${left-9}" y="${y(rate)+4}" text-anchor="end">${(rate*100).toFixed(axisDecimals)}%</text>`;
+    if (domain.min < .5 && domain.max > .5) svg += `<line class="civ-trend-grid midpoint" x1="${left}" x2="${right}" y1="${y(.5)}" y2="${y(.5)}"/><text class="civ-trend-axis civ-trend-baseline-label" x="${right}" y="${y(.5)-6}" text-anchor="end">50% 基准</text>`;
     const labelCount = width < 500 ? 3 : 7;
     const labels = new Set(Array.from({ length:Math.min(labelCount,dates.length) },(_,i) => Math.round(i*(dates.length-1)/Math.max(1,Math.min(labelCount,dates.length)-1))));
     for (const i of labels) svg += `<text class="civ-trend-axis" x="${x(i)}" y="${bottom+23}" text-anchor="${dates.length===1 ? 'middle' : i===0 ? 'start' : i===dates.length-1 ? 'end' : 'middle'}">${dates[i].date.replaceAll('-','/')}</text>`;
@@ -136,8 +154,10 @@ export async function mountCivilizations(root, helpers) {
         if (!Number.isFinite(point?.winRate)) { connected = false; return; }
         path += `${connected ? 'L' : 'M'}${x(i).toFixed(2)},${y(point.winRate).toFixed(2)} `; connected = true;
       });
-      svg += `<g class="civ-trend-${line.key}"><path class="civ-trend-line" d="${path}"/>`;
-      dates.forEach((day,i) => { if (Number.isFinite(day[line.key]?.winRate)) svg += `<circle class="civ-trend-dot" cx="${x(i)}" cy="${y(day[line.key].winRate)}" r="3"/>`; });
+      svg += `<g class="civ-trend-${line.key}"><path class="civ-trend-line-shadow" d="${path}"/><path class="civ-trend-line" d="${path}"/>`;
+      dates.forEach((day,i) => { if (Number.isFinite(day[line.key]?.winRate)) svg += `<circle class="civ-trend-dot" cx="${x(i)}" cy="${y(day[line.key].winRate)}" r="4.5"/>`; });
+      const lastIndex = dates.findLastIndex(day => Number.isFinite(day[line.key]?.winRate));
+      if (lastIndex >= 0) svg += `<text class="civ-trend-end-label" x="${x(lastIndex)-7}" y="${y(dates[lastIndex][line.key].winRate)+(line.key === 'overall' ? -10 : 18)}" text-anchor="end">${percent(dates[lastIndex][line.key].winRate)}</text>`;
       svg += '</g>';
     }
     svg += `<line id="civ-trend-cursor" class="civ-trend-cursor" x1="${left}" x2="${left}" y1="${top}" y2="${bottom}" visibility="hidden"/>`;

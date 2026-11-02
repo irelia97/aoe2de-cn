@@ -1661,6 +1661,8 @@ async function buildProfileCache() {
     if (!profileRefreshState.processedRows) throw new Error('Profile dump 中没有读取到玩家资料');
     profileRefreshState.stage = '建立昵称搜索索引';
     db.exec("CREATE VIRTUAL TABLE profile_search USING fts5(name, content='profiles', content_rowid='rowid', tokenize='trigram'); INSERT INTO profile_search(profile_search) VALUES('rebuild');");
+    profileRefreshState.stage = '建立两字符昵称索引';
+    db.exec("CREATE TABLE profile_bigram(term TEXT NOT NULL, profile_rowid INTEGER NOT NULL, PRIMARY KEY(term, profile_rowid)) WITHOUT ROWID; WITH RECURSIVE grams(profile_rowid, normalized, position, last_position) AS (SELECT rowid, lower(substr(name,1,80)), 1, length(substr(name,1,80))-1 FROM profiles WHERE length(name)>=2 UNION ALL SELECT profile_rowid, normalized, position+1, last_position FROM grams WHERE position<last_position) INSERT OR IGNORE INTO profile_bigram(term,profile_rowid) SELECT substr(normalized,position,2),profile_rowid FROM grams;");
     const updatedAt = new Date().toISOString();
     db.prepare('INSERT INTO profile_meta(key, value) VALUES (?, ?)').run('updatedAt', updatedAt);
     db.close();
@@ -1835,6 +1837,8 @@ const profileService = createProfileService({
   personalStatsCacheTtl,
   fetchUpstreamWithRateLimit,
   forceChinaCountry,
+  // Keep the lobby implementation available, but do not expose or fetch it.
+  lobbyStatsEnabled: false,
   WebSocket
 });
 const { localProfileDetails, fetchPersonalLeaderboardStats } = profileService;
@@ -2106,7 +2110,7 @@ async function getAoE2RecsProfile(profileId) {
 }
 
 const profileSearchPool = createProfileSearchPool();
-async function searchProfiles(query, leaderboardId) {
+async function searchProfiles(query, leaderboardId, signal) {
   const normalized = query.trim();
   const queryLower = normalized.toLocaleLowerCase();
   const ratings = new Map();
@@ -2124,7 +2128,7 @@ async function searchProfiles(query, leaderboardId) {
     const rating = Number(row.rating);
     if (profileId && Number.isFinite(rating)) selectedRatings.set(profileId, rating);
   }
-  const matchingProfiles = await profileSearchPool.query(join(dataDir, profileCache.filename), normalized);
+  const matchingProfiles = await profileSearchPool.query(join(dataDir, profileCache.filename), normalized, { signal });
   const candidates = new Map(matchingProfiles.map(player => [String(player.profileId), { ...player, aliases: [] }]));
   const profileById = profileDb.prepare('SELECT profile_id AS profileId, steam_id AS steamId, name, clan, country, last_match_time AS lastMatchTime FROM profiles WHERE profile_id = ?');
   for (const boardCache of leaderboardCache.values()) {
@@ -3135,12 +3139,20 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: '玩家资料索引尚未准备好', ...profileStatePayload() }));
     }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const cleanupAbort = () => { req.removeListener('aborted', abort); res.removeListener('close', abort); };
+    req.once('aborted', abort);
+    res.once('close', abort);
     try {
       const leaderboardId = Number(url.searchParams.get('leaderboardId') || 3);
-      const results = await searchProfiles(query, types[leaderboardId] ? leaderboardId : 3);
+      const results = await searchProfiles(query, types[leaderboardId] ? leaderboardId : 3, controller.signal);
+      cleanupAbort();
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ query, results, updatedAt: profileCache?.updatedAt || null }));
     } catch (error) {
+      cleanupAbort();
+      if (error.name === 'AbortError' || res.destroyed) return;
       res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '查询玩家资料失败' }));
     }

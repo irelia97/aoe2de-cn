@@ -39,8 +39,16 @@ body.page-civilizations #leaderboard{max-width:none}
 .civ-overview td{padding:11px 12px;height:52px;border-bottom:1px solid var(--line);text-align:right;font-size:12px;overflow:hidden}
 .civ-overview td:first-child{padding-left:20px;text-align:left}
 .civ-overview tr:last-child td{border-bottom:0}
-.civ-overview tr.selected td{background:color-mix(in srgb,var(--green) 8%,transparent)}
-.civ-overview tr:hover td{background:var(--panel2)}
+.civ-overview tr.selected td{background:color-mix(in srgb,var(--green) 18%,var(--panel));border-top:1px solid color-mix(in srgb,var(--green) 55%,var(--line));border-bottom:1px solid color-mix(in srgb,var(--green) 55%,var(--line))}
+.civ-overview tr.selected td:first-child{box-shadow:inset 4px 0 0 var(--green)}
+.civ-overview tr.selected .civ-name-button{color:var(--green);font-weight:800}
+.civ-overview tr.selected .civ-row-rank{color:var(--green)}
+.civ-overview tr:hover:not(.selected) td{background:var(--panel2)}
+.civ-selected-mark{display:inline-flex;align-items:center;margin-left:7px;padding:2px 5px;border:1px solid color-mix(in srgb,var(--green) 62%,transparent);border-radius:3px;background:color-mix(in srgb,var(--green) 17%,transparent);color:var(--green);font:800 8px/1 var(--sans);font-style:normal;vertical-align:2px}
+html[data-resolved-theme="light"] .civ-overview tr.selected td{background:#dce8cf;border-top-color:#829b62;border-bottom-color:#829b62}
+html[data-resolved-theme="light"] .civ-overview tr.selected td:first-child{box-shadow:inset 4px 0 0 #526f33}
+html[data-resolved-theme="light"] .civ-overview tr.selected .civ-name-button,html[data-resolved-theme="light"] .civ-overview tr.selected .civ-row-rank{color:#36551f}
+html[data-resolved-theme="light"] .civ-selected-mark{border-color:#789457;background:#f3f7ed;color:#36551f;box-shadow:0 0 0 1px #fff8}
 .civ-name-button{display:flex;align-items:center;gap:9px;width:100%;min-width:0;border:0;background:none;color:var(--text);font:12px var(--sans);text-align:left;padding:0;cursor:pointer}
 .civ-name-button img,.civ-opponent img{width:26px;height:26px;object-fit:contain;flex:none}
 .civ-name-button>span,.civ-opponent>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -112,7 +120,7 @@ body.page-civilizations #leaderboard{max-width:none}
 .civ-overview tbody tr,.civ-overview td,.civ-matchup-row{height:52px;min-height:52px}
 .civ-overview th:first-child,.civ-overview td:first-child{padding-left:16px}
 .civ-matchup-labels,.civ-matchup-row{padding-left:16px}
-@media(max-width:620px){.civ-overview th:first-child,.civ-overview td:first-child,.civ-matchup-labels,.civ-matchup-row{padding-left:12px}.civ-name-button{gap:6px}}
+@media(max-width:620px){.civ-overview th:first-child,.civ-overview td:first-child,.civ-matchup-labels,.civ-matchup-row{padding-left:12px}.civ-name-button{gap:6px}.civ-selected-mark{margin-left:4px;padding:2px 4px;font-size:7px}}
 
 .civ-trend{height:auto;margin-top:20px;padding:20px;gap:14px}
 .civ-trend-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
@@ -127,11 +135,14 @@ body.page-civilizations #leaderboard{max-width:none}
 .civ-trend-chart svg{display:block;width:100%;height:auto;overflow:visible}
 .civ-trend-axis{fill:var(--muted);font:11px var(--mono)}
 .civ-trend-y-axis{fill:var(--text);font:600 13px var(--mono)}
-.civ-trend-grid{stroke:var(--line);stroke-width:1}.civ-trend-grid.midpoint{stroke:var(--muted);stroke-dasharray:4 5;opacity:.5}
-.civ-trend-line{fill:none;stroke:currentColor;stroke-width:2.3;stroke-linejoin:round;stroke-linecap:round}
+.civ-trend-baseline-label{fill:var(--text);font:700 10px var(--sans)}
+.civ-trend-grid{stroke:var(--line);stroke-width:1;opacity:.75}.civ-trend-grid.midpoint{stroke:var(--text);stroke-width:1.5;stroke-dasharray:5 5;opacity:.72}
+.civ-trend-line-shadow{fill:none;stroke:var(--panel);stroke-width:7;stroke-linejoin:round;stroke-linecap:round;opacity:.92}
+.civ-trend-line{fill:none;stroke:currentColor;stroke-width:3.8;stroke-linejoin:round;stroke-linecap:round;filter:drop-shadow(0 1px 2px color-mix(in srgb,currentColor 35%,transparent))}
 .civ-trend-matchup .civ-trend-line{stroke-dasharray:6 4}
-.civ-trend-dot{fill:var(--panel);stroke:currentColor;stroke-width:2}
-.civ-trend-cursor{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 4;pointer-events:none}
+.civ-trend-dot{fill:var(--panel);stroke:currentColor;stroke-width:3}
+.civ-trend-end-label{fill:currentColor;font:800 12px var(--mono);paint-order:stroke;stroke:var(--panel);stroke-width:4px;stroke-linejoin:round}
+.civ-trend-cursor{stroke:var(--text);stroke-width:1.5;stroke-dasharray:3 4;pointer-events:none}
 .civ-trend-hit{cursor:crosshair}.civ-trend-hit:focus{outline:none;fill:color-mix(in srgb,var(--green) 7%,transparent)}
 .civ-trend-detail{min-height:34px;color:var(--muted);font:11px/1.7 var(--sans);overflow-wrap:anywhere}
 .civ-trend-detail{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 20px}
@@ -141,6 +152,6 @@ body.page-civilizations #leaderboard{max-width:none}
 .civ-trend-filters{display:flex;flex-wrap:wrap;gap:6px 20px;border-top:1px solid var(--line);padding-top:12px;color:var(--muted);font:11px/1.8 var(--sans)}
 .civ-trend-filters>span{max-width:100%;overflow-wrap:anywhere}.civ-trend-filters b{font-weight:500;color:var(--text)}
 .civ-pending .civ-trend{opacity:.45;pointer-events:none}
-@media(max-width:620px){.civ-trend{padding:16px 10px 12px;margin-top:16px;gap:12px}.civ-trend-heading{padding:0 3px}.civ-trend-legend{font-size:10px;gap:10px}.civ-trend-detail{padding:0 3px;min-height:55px}}
+@media(max-width:620px){.civ-trend{padding:16px 10px 12px;margin-top:16px;gap:12px}.civ-trend-heading{padding:0 3px}.civ-trend-legend{font-size:10px;gap:10px}.civ-trend-detail{padding:0 3px;min-height:55px}.civ-trend-line{stroke-width:4.4}.civ-trend-dot{stroke-width:3.2}.civ-trend-end-label{font-size:11px}}
 
 .civ-name-button,.civ-opponent{text-decoration:none;color:inherit}.civ-name-button:hover,.civ-opponent:hover{color:var(--green)}

@@ -1,5 +1,5 @@
 export function createProfileService(deps) {
-  const { getProfileDb, leaderboardCache, ladderOrder, types, personalStatsCache, personalStatsCacheTtl, fetchUpstreamWithRateLimit, forceChinaCountry } = deps;
+  const { getProfileDb, leaderboardCache, ladderOrder, types, personalStatsCache, personalStatsCacheTtl, fetchUpstreamWithRateLimit, forceChinaCountry, lobbyStatsEnabled = true } = deps;
   function localProfileDetails(profileId) {
     const profileDb = getProfileDb();
     if (!profileDb) return null;
@@ -61,6 +61,11 @@ export function createProfileService(deps) {
           return { id, label: types[id], hasData: true, active, rank: active ? Number(stat.rank) : null, rating: stat.rating ?? null, highestRating: Number(stat.highestrating) > 0 ? stat.highestrating : (stat.rating ?? null), wins: stat.wins ?? null, losses: stat.losses ?? null, streak: stat.streak ?? null, lastMatchDate: stat.lastmatchdate ?? null, rankTotal: stat.ranktotal ?? null };
         });
         const savedAt = Date.now();
+        if (!lobbyStatsEnabled) {
+          personalStatsCache.set(key, { savedAt, data, lobbyPending:false });
+          ready(data);
+          return data;
+        }
         const previousLobby = cached?.data?.find(row => Number(row.id) === 0);
         const initial = data.concat(previousLobby ? [{ ...previousLobby, stale:true }] : [{ id:0, label:'大厅局', hasData:true, active:true, pending:true, rank:null }]);
         personalStatsCache.set(key, { savedAt, data:initial, lobbyPending:true });

@@ -460,6 +460,8 @@ let profileDetailsRequestId = 0;
 let profileMatchesRequestId = 0;
 let currentProfileId = '';
 let currentProfileAvatarUrl = '';
+let currentProfileLastMatchTimestamp = 0;
+let currentProfileLastMatchLive = false;
 const lastProfileIdStorageKey = 'aoe2de:last-profile-id:v1';
 let currentProfileLeaderboardRows = [];
 let currentProfileRecentResults = new Map();
@@ -559,11 +561,24 @@ function renderPlayerDetailsRows(details) {
       ? `<a href="/profile/${encodeURIComponent(accountId)}">${escapeHtml(accountName)}</a>`
       : escapeHtml(accountName);
     const avatar = `<span class="profile-account-avatar" data-profile-id="${escapeHtml(accountId)}" title="${escapeHtml(accountName)} 的 Steam 头像"><span>${escapeHtml(accountName.slice(0, 1).toUpperCase() || '?')}</span></span>`;
-    const last = Number(account.last);
-    const lastText = formatTimeAgo(last) || '暂无数据';
-    const lastTitle = last > 0 ? new Date(last * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
-    return `<tr><td class="profile-account-id">${escapeHtml(accountId || '—')}</td><td><div class="profile-account-name">${avatar}${accountMarkup}</div></td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : '无'}</td><td class="profile-account-last" title="${escapeHtml(lastTitle)}">${escapeHtml(lastText)}</td></tr>`;
+    const isCurrentAccount = accountId === String(currentProfileId);
+    const accountLast = Number(account.last);
+    const last = isCurrentAccount && currentProfileLastMatchTimestamp > 0 ? currentProfileLastMatchTimestamp : accountLast;
+    const lastText = isCurrentAccount && currentProfileLastMatchLive ? '游戏中' : formatTimeAgo(last) || '暂无数据';
+    const lastTitle = last > 0 ? `${currentProfileLastMatchLive && isCurrentAccount ? '开始于 ' : ''}${new Date(last * 1000).toLocaleString('zh-CN')}` : '接口未提供最后游戏时间';
+    return `<tr data-profile-account-id="${escapeHtml(accountId)}"><td class="profile-account-id">${escapeHtml(accountId || '—')}</td><td><div class="profile-account-name">${avatar}${accountMarkup}</div></td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : '无'}</td><td class="profile-account-last" title="${escapeHtml(lastTitle)}">${escapeHtml(lastText)}</td></tr>`;
   }).join('');
+}
+function syncCurrentProfileAccountLastMatch(timestamp, live = false) {
+  const value = Number(timestamp);
+  if (!(value > 0) || value < currentProfileLastMatchTimestamp) return;
+  currentProfileLastMatchTimestamp = value;
+  currentProfileLastMatchLive = Boolean(live);
+  const row = [...document.querySelectorAll('#profileDetailsBody tr[data-profile-account-id]')].find(item => item.dataset.profileAccountId === String(currentProfileId));
+  const cell = row?.querySelector('.profile-account-last');
+  if (!cell) return;
+  cell.textContent = currentProfileLastMatchLive ? '游戏中' : formatTimeAgo(value) || '暂无数据';
+  cell.title = `${currentProfileLastMatchLive ? '开始于 ' : ''}${new Date(value * 1000).toLocaleString('zh-CN')}`;
 }
 function loadProfileAccountAvatars() {
   for (const avatar of document.querySelectorAll('.profile-account-avatar[data-profile-id]')) {
@@ -988,7 +1003,7 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
     const hasData = row.hasData !== false;
     const active = hasData && row.active !== false;
     const games = lobbyMode && row.games != null ? Number(row.games) : row.wins != null && row.losses != null && Number.isFinite(Number(row.wins)) && Number.isFinite(Number(row.losses)) ? Number(row.wins) + Number(row.losses) : null;
-    const winrate = games !== null && games > 0 && Number.isFinite(Number(row.wins)) ? `${(Number(row.wins) / games * 100).toFixed(1)}%` : '—';
+    const winrate = games !== null && games > 0 && Number.isFinite(Number(row.wins)) ? `${(Number(row.wins) / games * 100).toFixed(2)}%` : '—';
     const ratingPair = row.rating != null || row.highestRating != null ? `${row.rating != null ? fmt.format(row.rating) : '—'} / ${row.highestRating != null ? fmt.format(row.highestRating) : '—'}` : '—';
     const recent = Array.isArray(recentResults?.get?.(Number(row.id))) ? recentResults.get(Number(row.id)).slice().reverse() : [];
     const favorite = recentStats?.get?.(Number(row.id)) || {};
@@ -1000,14 +1015,19 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
     const rankValue = lobbyMode ? (row.pending ? '加载中…' : row.wins != null ? fmt.format(row.wins) : '—') : active ? '#' + fmt.format(row.rank) : hasData ? '无排名' : '—';
     const favoriteCiv = favorite.civilization ? `${favorite.civilization} · ${favorite.civilizationCount} 场` : '—';
     const favoriteMap = favorite.map ? `${favorite.map} · ${favorite.mapCount} 场` : '—';
-    const favoriteOpponentRecord = favorite.opponent ? `${favorite.opponentWins}场/${favorite.opponentTotal}场` : '—';
-    const favoriteOpponentId = favorite.opponentId && /^\d+$/.test(String(favorite.opponentId)) ? String(favorite.opponentId) : '';
-    const favoriteOpponentAvatar = favoriteOpponentId ? `<span class="profile-ladder-opponent-avatar" data-profile-avatar-id="${escapeHtml(favoriteOpponentId)}"><span>${escapeHtml((favorite.opponent || '?').slice(0, 1).toUpperCase())}</span></span>` : '';
-    const favoriteOpponentLink = favorite.opponent && favoriteOpponentId ? `<a class="profile-ladder-opponent-link" href="/profile/${encodeURIComponent(favoriteOpponentId)}" title="查看 ${escapeHtml(favorite.opponent)} 的资料">${favoriteOpponentAvatar}<span class="profile-ladder-opponent-name">${escapeHtml(favorite.opponent)}</span></a>` : escapeHtml(favorite.opponent || '—');
+    const opponentItemMarkup = prefix => {
+      const name = favorite[`${prefix}Opponent`] || '';
+      const id = /^\d+$/.test(String(favorite[`${prefix}OpponentId`] || '')) ? String(favorite[`${prefix}OpponentId`]) : '';
+      const record = name ? `${favorite[`${prefix}OpponentWins`] || 0}场/${favorite[`${prefix}OpponentTotal`] || 0}场` : '—';
+      const avatar = id ? `<span class="profile-ladder-opponent-avatar" data-profile-avatar-id="${escapeHtml(id)}"><span>${escapeHtml((name || '?').slice(0, 1).toUpperCase())}</span></span>` : '';
+      const player = name && id ? `<a class="profile-ladder-opponent-link" href="/profile/${encodeURIComponent(id)}" title="查看 ${escapeHtml(name)} 的资料">${avatar}<span class="profile-ladder-opponent-name">${escapeHtml(name)}</span></a>` : `<span class="profile-ladder-opponent-name">${escapeHtml(name || '—')}</span>`;
+      return `<div class="profile-ladder-opponent-item"><b title="${escapeHtml(name || '暂无数据')}">${player}</b><em>${escapeHtml(record)}</em></div>`;
+    };
+    const favoriteOpponents = `<div class="profile-ladder-opponent-pair">${opponentItemMarkup('strongest')}${opponentItemMarkup('most')}</div>`;
     const favoriteCivIcon = favorite.civilizationIcon ? `<img class="profile-ladder-civ-icon" src="${escapeHtml(favorite.civilizationIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : '';
     const lastGame = formatTimeAgo(row.lastMatchDate) || '—';
     const lastGameTitle = Number(row.lastMatchDate) > 0 ? new Date(Number(row.lastMatchDate) * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
-    return `<article class="profile-ladder-card${active ? '' : ' profile-inactive-row'}"${active ? '' : ' hidden'}><div class="profile-ladder-card-head"><strong>${escapeHtml(row.label || '未知模式')}</strong><span>${games !== null ? `${fmt.format(games)} 场` : '—'}</span><span class="profile-ladder-last-game" title="${escapeHtml(lastGameTitle)}">最后游戏时间 ${escapeHtml(lastGame)}</span></div><div class="profile-ladder-card-body"><div class="profile-ladder-card-main"><div class="profile-ladder-rank"><small>${rankLabel}</small><b>${rankValue}</b></div><div class="profile-ladder-stat profile-ladder-rating"><span>${lobbyMode ? '累计负场' : '当前积分/历史最高'}</span><b>${lobbyMode ? (row.losses != null ? fmt.format(row.losses) : '—') : ratingPair}</b></div><div class="profile-ladder-stat profile-ladder-record"><span>胜率</span><b>${winrate}</b></div></div><div class="profile-ladder-favorites"><div class="profile-ladder-stat profile-ladder-favorite-civ"><span>近期最多民族</span><b title="${escapeHtml(favorite.civilization || '暂无数据')}">${favoriteCivIcon}${escapeHtml(favoriteCiv)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-map"><span>近期最多地图</span><b title="${escapeHtml(favorite.map || '暂无数据')}">${escapeHtml(favoriteMap)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-opponent"><span>近期最强对手</span><b title="${escapeHtml(favorite.opponent || '暂无数据')}">${favoriteOpponentLink}</b><small class="profile-ladder-opponent-record">${escapeHtml(favoriteOpponentRecord)}</small></div></div></div><div class="profile-ladder-card-foot"><span class="profile-recent-results-label">最近 5 场</span><span class="profile-recent-results">${recentMarkup}</span></div></article>`;
+    return `<article class="profile-ladder-card${active ? '' : ' profile-inactive-row'}"${active ? '' : ' hidden'}><div class="profile-ladder-card-head"><strong>${escapeHtml(row.label || '未知模式')}</strong><span>${games !== null ? `${fmt.format(games)} 场` : '—'}</span><span class="profile-ladder-last-game" title="${escapeHtml(lastGameTitle)}">最后游戏时间 ${escapeHtml(lastGame)}</span></div><div class="profile-ladder-card-body"><div class="profile-ladder-card-main"><div class="profile-ladder-rank"><small>${rankLabel}</small><b>${rankValue}</b></div><div class="profile-ladder-stat profile-ladder-rating"><span>${lobbyMode ? '累计负场' : '当前积分/历史最高'}</span><b>${lobbyMode ? (row.losses != null ? fmt.format(row.losses) : '—') : ratingPair}</b></div><div class="profile-ladder-stat profile-ladder-record"><span>胜率</span><b>${winrate}</b></div></div><div class="profile-ladder-favorites"><div class="profile-ladder-stat profile-ladder-favorite-civ"><span>近期最多民族</span><b title="${escapeHtml(favorite.civilization || '暂无数据')}">${favoriteCivIcon}${escapeHtml(favoriteCiv)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-map"><span>近期最多地图</span><b title="${escapeHtml(favorite.map || '暂无数据')}">${escapeHtml(favoriteMap)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-opponent"><span>近期最强对手/最多对手</span>${favoriteOpponents}</div></div></div><div class="profile-ladder-card-foot"><span class="profile-recent-results-label">最近 5 场</span><span class="profile-recent-results">${recentMarkup}</span></div></article>`;
   }).join('') || '<div class="profile-leaderboard-empty">暂无天梯汇总数据</div>';
   body.querySelectorAll('.profile-ladder-opponent-avatar[data-profile-avatar-id]').forEach(avatar => {
     const profileId = avatar.dataset.profileAvatarId;
@@ -1171,12 +1191,14 @@ function renderProfileLastMatchFromMatch(match) {
   const plausibleAge = started > 0 && started <= Math.floor(Date.now() / 1000) + 300 && age <= 3 * 60 * 60;
   const live = plausibleAge && (match?.live === true || (match?.live !== false && !Number(match?.finished) && match?.abandoned !== true));
   if (live) {
+    syncCurrentProfileAccountLastMatch(started, true);
     target.innerHTML = '<span class="profile-live-dot" aria-hidden="true"></span><span class="profile-live-label">游戏中</span>';
     target.title = started > 0 ? `开始于 ${new Date(started * 1000).toLocaleString('zh-CN')}` : '正在进行的对局';
     return;
   }
   const duration = Number(match?.duration);
   const finished = started > 0 ? started + (Number.isFinite(duration) && duration > 0 ? duration : 0) : 0;
+  syncCurrentProfileAccountLastMatch(finished || started, false);
   target.textContent = `最后游戏时间：${formatTimeAgo(finished || started) || '暂无数据'}`;
   target.title = finished > 0 ? new Date(finished * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
 }
@@ -1228,9 +1250,11 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
       for (const opponent of (Array.isArray(match.players) ? match.players : []).filter(player => !selfMembers.has(String(player.number)))) {
         const name = String(opponent.name || '').trim();
         if (name) {
-          const prior = entry.opponents.get(name) || { id: String(opponent.id || ''), total: 0, wins: 0, losses: 0, latest: 0 };
+          const prior = entry.opponents.get(name) || { id: String(opponent.id || ''), total: 0, wins: 0, losses: 0, rating: 0, latest: 0 };
           prior.total += 1;
           prior.latest = Math.max(prior.latest, Number(match.started || match.finished || 0));
+          const opponentRating = Number(opponent.rating);
+          if (Number.isFinite(opponentRating) && opponentRating > 0) prior.rating = Math.max(prior.rating, opponentRating);
           if (selfWon) prior.wins += 1;
           if (selfLost) prior.losses += 1;
           entry.opponents.set(name, prior);
@@ -1243,8 +1267,14 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
     const mostFrequent = values => [...values.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))[0] || ['', 0];
     const civilization = mostFrequent(entry.civilizations);
     const map = mostFrequent(entry.maps);
-    const opponent = [...entry.opponents.entries()].sort((a, b) => a[1].wins * b[1].total - b[1].wins * a[1].total || b[1].latest - a[1].latest || a[0].localeCompare(b[0], 'zh-CN'))[0] || ['', { total: 0, wins: 0, losses: 0 }];
-    stats.set(id, { civilization: civilization[0], civilizationCount: civilization[1], civilizationIcon: entry.civilizationIcons.get(civilization[0]) || '', map: map[0], mapCount: map[1], opponent: opponent[0], opponentId: opponent[1].id || '', opponentWins: opponent[1].wins, opponentTotal: opponent[1].total });
+    const fallbackOpponent = ['', { id: '', total: 0, wins: 0, losses: 0, rating: 0, latest: 0 }];
+    const strongestOpponent = [...entry.opponents.entries()].sort((a, b) => a[1].wins * b[1].total - b[1].wins * a[1].total || b[1].total - a[1].total || b[1].rating - a[1].rating || b[1].latest - a[1].latest || a[0].localeCompare(b[0], 'zh-CN'))[0] || fallbackOpponent;
+    const mostOpponent = [...entry.opponents.entries()].sort((a, b) => b[1].total - a[1].total || b[1].rating - a[1].rating || b[1].latest - a[1].latest || a[0].localeCompare(b[0], 'zh-CN'))[0] || fallbackOpponent;
+    stats.set(id, {
+      civilization: civilization[0], civilizationCount: civilization[1], civilizationIcon: entry.civilizationIcons.get(civilization[0]) || '', map: map[0], mapCount: map[1],
+      strongestOpponent: strongestOpponent[0], strongestOpponentId: strongestOpponent[1].id || '', strongestOpponentWins: strongestOpponent[1].wins, strongestOpponentTotal: strongestOpponent[1].total,
+      mostOpponent: mostOpponent[0], mostOpponentId: mostOpponent[1].id || '', mostOpponentWins: mostOpponent[1].wins, mostOpponentTotal: mostOpponent[1].total
+    });
   }
   return stats;
 }
@@ -1463,7 +1493,10 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
     const latestMatch = Array.isArray(profile.matches) ? profile.matches[0] : null;
     const started = Number(latestMatch?.started || latestMatch?.lobby_created) || 0;
     const duration = Number(latestMatch?.duration);
-    const latest = started > 0 ? started + (Number.isFinite(duration) && duration > 0 ? duration : 0) : 0;
+    const selectedAccountLast = Number(selectedAccount?.last) || 0;
+    const latestFromMatch = started > 0 ? started + (Number.isFinite(duration) && duration > 0 ? duration : 0) : 0;
+    const latest = Math.max(latestFromMatch, selectedAccountLast);
+    syncCurrentProfileAccountLastMatch(latest, false);
     const relative = formatTimeAgo(latest) || '暂无数据';
     lastMatch.textContent = `最后游戏时间：${relative}`;
     lastMatch.title = latest > 0 ? new Date(latest * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
@@ -3359,14 +3392,14 @@ function renderCurrentRoute(selectedPlayer = null) {
   if (isTechTreePage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/tech-tree.js?v=80').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
+    import('/tech-tree.js?v=81').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
       .catch(() => { document.querySelector('#tech-tree-page').textContent='科技树加载失败，请刷新页面重试。'; });
     return;
   }
   if (isCivilizationsPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/civilizations.js?v=23').then(module => module.mountCivilizations(document.querySelector('#civilizations-page'), {
+    import('/civilizations.js?v=27').then(module => module.mountCivilizations(document.querySelector('#civilizations-page'), {
       civName: civilizationNameZh, mapName: mapDisplayName, civImage: aoe2CivilizationImageUrl
     })).catch(() => { document.querySelector('#civilizations-page').textContent='民族统计加载失败，请刷新页面重试。'; });
     return;
@@ -3496,6 +3529,8 @@ function loadAoE2RecsProfile(profileId, fallbackName = '') {
   const requestId = ++profileDetailsRequestId;
   profileMatchesRequestId = requestId;
   currentProfileAvatarUrl = '';
+  currentProfileLastMatchTimestamp = 0;
+  currentProfileLastMatchLive = false;
   currentProfileLeaderboardRows = [];
   currentProfileRecentResults = new Map();
   currentProfileRecentStats = new Map();
