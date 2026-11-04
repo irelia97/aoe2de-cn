@@ -2820,7 +2820,9 @@ function playerTeamMarkup(value) {
     ['team vitality',['Vitality','Team%20Vitality']],
     ['onimaru esports',['Oni','Onimaru%20Esports']],
     ['cn zhongsheng',['CNZS','CN%20ZhongSheng']],
-    ['white wolf palace',['WWP','White%20Wolf%20Palace']]
+    ['white wolf palace',['WWP','White%20Wolf%20Palace']],
+    ['vietnam legends',['Vietnam','Vietnam%20Legends']],
+    ['nocturna esports',['NOC','Nocturna%20eSports']]
   ]);
   const team = teams.get(name.toLowerCase().replace(/\s+/g,' '));
   return team ? `<a class="player-team-link" href="https://liquipedia.net/ageofempires/${team[1]}" title="${escapeHtml(name)}" target="_blank" rel="noopener noreferrer">${team[0]}</a>` : escapeHtml(name);
