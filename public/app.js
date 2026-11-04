@@ -2783,9 +2783,10 @@ function realtimeStatusActivity(state) {
   const teamIds = new Set(players.map(player => String(player.team ?? '')).filter(Boolean));
   const oneVsOne = leaderboard.includes('1V1') || (players.length === 2 && teamIds.size === 2);
   const teamGame = leaderboard.includes('TG') || players.length > 2;
+  const tournamentName = typeof match.tournament === 'string' ? match.tournament.trim() : String(match.tournament?.name || '').trim();
   let label = map;
   if (!leaderboard || leaderboard === 'UNRANKED') {
-    label = `${map} 大厅局`;
+    label = tournamentName ? map : `${map} 大厅局`;
   } else if (oneVsOne) {
     const opponent = players.find(player => String(player.profileId) !== String(state.profileId) && (!own || String(player.team) !== String(own.team))) || players.find(player => String(player.profileId) !== String(state.profileId));
     if (opponent) label = `${map} vs ${opponent.name || `玩家 ${opponent.profileId || ''}`}`;
@@ -2796,7 +2797,6 @@ function realtimeStatusActivity(state) {
   const score = rawScore.length >= 2
     ? `${rawScore[0] ?? 0}:${rawScore[1] ?? 0}`
     : '0:0';
-  const tournamentName = typeof match.tournament === 'string' ? match.tournament.trim() : String(match.tournament?.name || '').trim();
   const tournamentBestOf = Number(match.tournament?.bestOf);
   const bestOf = Number.isInteger(tournamentBestOf) && tournamentBestOf > 0 ? tournamentBestOf : Number(match.bestOf);
   const format = Number.isInteger(bestOf) && bestOf > 0 ? `BO${bestOf}` : '';
