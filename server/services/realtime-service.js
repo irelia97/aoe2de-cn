@@ -2,6 +2,7 @@ import { readQueueSnapshot } from './queue-snapshot.js';
 import { createVisibilityGrace } from './realtime-visibility-grace.js';
 import { createLobbyListener } from './realtime-lobbies.js';
 import { createRealtimeRatings } from './realtime-ratings.js';
+import { createRealtimeRecovery } from './realtime-recovery.js';
 import { cleanRealtimePlayerName, realtimePlayerNameOverrides, realtimePlayerIdentityOverrides } from './realtime-player-names.js';
 
 export function createRealtimeService(deps) {
@@ -26,7 +27,19 @@ export function createRealtimeService(deps) {
   } = deps;
 
   const notificationTasks = new Map();
-  const lobbyListener = createLobbyListener({ WebSocket, onChange:() => scheduleRealtimeSocketPublish() });
+  const lobbyListener = createLobbyListener({ WebSocket, onChange:() => scheduleRealtimeSocketPublish(), onDeparted:(ids,matchId)=>recovery.enqueue(ids,{matchId,priority:true}) });
+  const recovery = createRealtimeRecovery({
+    fetchLatest:fetchLatestWorldsEdgeMatchOnce,
+    hasState:id=>!realtimeSocketProfileIds.includes(id) || Boolean(queueState(id) || lobbyListener.state(id)) || [...realtimeSocketGroups.values()].some(group=>[...group.matches.values()].some(match=>socketMatchPlayerIds(match).has(id))),
+    ingest:(id,raw)=>{
+      const match=normalizeSocketMatch(raw);
+      if(normalizeRealtimeLatestMatch(match,id).status!=='game')return false;
+      const group=[...realtimeSocketGroups.values()].find(group=>group.ids.includes(id));
+      if(!group)return false;
+      if(upsertRealtimeMatch(group,match))scheduleRealtimeSocketPublish();
+      return true;
+    }
+  });
   const realtimeRatings = createRealtimeRatings({ fetchStats:fetchPersonalLeaderboardStats, onChange:() => scheduleRealtimeSocketPublish() });
   const queueEntries = new Map();
   let queueRecheckPromise = null, nextQueueRecheckAt = 0;
@@ -136,6 +149,7 @@ export function createRealtimeService(deps) {
             }
           }
           if (queueEntries.delete(data.id)) changed = true;
+          if(data.reason==='started' && prior)recovery.enqueue((prior.players||[]).map(player=>String(player.profileId)),{matchId:data.matchId || '',priority:true});
           continue;
         }
         const prior = queueEntries.get(data.id)?.data || {};
@@ -453,6 +467,10 @@ export function createRealtimeService(deps) {
           console.log(`[realtime] ${reason} API validation kept match ${matchId}`);
         } else {
           removeRealtimeMatch(matchId);
+          if(latestState.status==='game') {
+            const group=[...realtimeSocketGroups.values()].find(group=>group.ids.includes(profileId));
+            if(group && upsertRealtimeMatch(group,latest))scheduleRealtimeSocketPublish();
+          }
           realtimeValidationStats.removed += 1;
           realtimeValidationStats.lastResult = { matchId, result: 'removed', profileId };
           console.log(`[realtime] ${reason} API validation removed stale match ${matchId}`);
@@ -569,8 +587,10 @@ export function createRealtimeService(deps) {
         // Includes warm-start matches on the first connection, as well as
         // matches whose end event may have been missed while disconnected.
         for (const match of group.matches.values()) enqueueRealtimeValidation(match, 'reconnect');
+        recovery.enqueue(group.ids);
       });
       socket.addEventListener('message', event => {
+        if (generation !== realtimeSocketGeneration || group.socket !== socket) return;
         let messages; try { messages = JSON.parse(String(event.data)); } catch { return; }
         if (!Array.isArray(messages)) messages = [messages];
         group.lastMessageAt = new Date().toISOString();
@@ -612,6 +632,7 @@ export function createRealtimeService(deps) {
     const key = ids.join(',');
     if (key === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size) return;
     realtimeSocketGeneration += 1;
+    recovery.reset();
     clearTimeout(queueReconnectTimer);
     const previousQueueSocket = queueSocket; queueSocket = null;
     try { previousQueueSocket?.close(); } catch {}

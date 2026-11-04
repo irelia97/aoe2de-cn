@@ -1,4 +1,4 @@
-export function createLobbyListener({ WebSocket, onChange }) {
+export function createLobbyListener({ WebSocket, onChange, onDeparted = () => {} }) {
   const rooms = new Map();
   let socket, retry, profileIds = new Set(), stopped = true;
   const watched = room => [...room.slots.values()].some(player => profileIds.has(String(player.profileId)));
@@ -23,16 +23,23 @@ export function createLobbyListener({ WebSocket, onChange }) {
         let room = rooms.get(id);
         const wasWatched = room && watched(room);
         if (message.type === 'lobbyRemoved') {
+          const departed=room ? [...room.slots.values()].filter(player=>profileIds.has(String(player.profileId))).map(player=>String(player.profileId)) : [];
           if (wasWatched) changed = true;
           rooms.delete(id);
+          if(departed.length)onDeparted(departed,id);
         } else if (['lobbyAdded','lobbyUpdated'].includes(message.type)) {
           if (!room) { room = { data:{matchId:data.matchId}, slots:new Map() }; rooms.set(id,room); }
           room.data = { ...room.data, ...data };
-          if (room.data.started || room.data.finished) rooms.delete(id);
+          if (room.data.started || room.data.finished) {
+            rooms.delete(id);
+            const departed=[...room.slots.values()].filter(player=>profileIds.has(String(player.profileId))).map(player=>String(player.profileId));
+            if(departed.length)onDeparted(departed,id);
+          }
           if (wasWatched || watched(room)) changed = true;
         } else if (['slotAdded','slotUpdated','slotRemoved'].includes(message.type) && data.slot != null) {
           if (!room) { room = { data:{matchId:data.matchId}, slots:new Map() }; rooms.set(id,room); }
           const key = String(data.slot);
+          const previous=room.slots.get(key);
           if (message.type === 'slotRemoved') room.slots.delete(key);
           else {
             const player = { ...room.slots.get(key), ...data };
@@ -40,6 +47,7 @@ export function createLobbyListener({ WebSocket, onChange }) {
             else room.slots.delete(key);
           }
           if (wasWatched || watched(room)) changed = true;
+          if(previous && profileIds.has(String(previous.profileId)) && String(previous.profileId)!==String(room.slots.get(key)?.profileId))onDeparted([String(previous.profileId)],id);
         }
       }
       if (changed) onChange();
