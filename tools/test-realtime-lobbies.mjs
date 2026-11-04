@@ -66,3 +66,27 @@ test('lobby status is published, disappears into five-minute grace and yields to
   lobby.handlers.close({code:1006,reason:'disconnect'});
   assert.ok((await state()).graceUntil>Date.now()+299000);
 });
+
+test('lobby status arrives before slow ratings and later includes the resolved scores', async () => {
+  const {Socket,sockets,send}=fakeSockets();
+  const waiting=new Map();
+  const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache');},writeFile:async()=>{},
+    localProfileDetails:()=>null,getMediaCache:async()=>({live:[]}),loadRlReference:async()=>new Map(),
+    fetchPersonalLeaderboardStats:id=>new Promise(resolve=>waiting.set(id,resolve)),fetchLatestWorldsEdgeMatchOnce:async()=>null,forceChinaCountry:(_,c)=>c});
+  await service.startRealtimeWebSockets(['42']);
+  const socket=sockets.find(s=>s.url.includes('handler=lobbies'));
+  send(socket,[{type:'lobbyAdded',data:{matchId:100,name:'即时大厅'}},{type:'slotAdded',data:{matchId:100,slot:0,profileId:42}},{type:'slotAdded',data:{matchId:100,slot:1,profileId:99}}]);
+  let timer;
+  const first=await Promise.race([
+    service.refreshRealtimePayload(['42']),
+    new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Lobby state blocked on ratings')),500);})
+  ]).finally(()=>clearTimeout(timer));
+  assert.equal(first.states[0].status,'lobby');
+  assert.equal(first.states[0].player.rating,null);
+  assert.equal(first.states[0].lobby.players[1].rating,null);
+  waiting.get('42')([{id:3,rating:2500}]);waiting.get('99')([{id:3,rating:2600}]);
+  await new Promise(resolve=>setImmediate(resolve));
+  const second=await service.refreshRealtimePayload(['42']);
+  assert.equal(second.states[0].player.rating,2500);
+  assert.equal(second.states[0].lobby.players[1].rating,2600);
+});

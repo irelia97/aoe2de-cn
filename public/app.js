@@ -2934,9 +2934,12 @@ async function loadRealtimeStates() {
     }
   }
 }
+let realtimeVersionPending = false;
 async function checkRealtimeVersion() {
   void refreshRealtimeSchedulePreview();
   if (!/^\/realtime\/?$/.test(location.pathname)) return;
+  if (realtimeVersionPending) return;
+  realtimeVersionPending = true;
   try {
     realtimeVersionRequest?.abort?.();
     realtimeVersionRequest = new AbortController();
@@ -2947,6 +2950,8 @@ async function checkRealtimeVersion() {
     else renderRealtimeCards(realtimeLastPayload);
   } catch (error) {
     if (error?.name !== 'AbortError' && !realtimeLastPayload) await loadRealtimeStates();
+  } finally {
+    realtimeVersionPending = false;
   }
 }
 function showRealtimeLoading() {
@@ -2967,7 +2972,7 @@ function startRealtimePolling() {
   // The browser only reads the server cache. The server's single scheduled
   // refresh loop is the only path that calls the upstream match API.
   checkRealtimeVersion();
-  realtimePollTimer = setInterval(checkRealtimeVersion, 5 * 1000);
+  realtimePollTimer = setInterval(checkRealtimeVersion, 1500);
   startRealtimeChat();
 }
 

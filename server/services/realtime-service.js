@@ -1,6 +1,7 @@
 import { readQueueSnapshot } from './queue-snapshot.js';
 import { createVisibilityGrace } from './realtime-visibility-grace.js';
 import { createLobbyListener } from './realtime-lobbies.js';
+import { createRealtimeRatings } from './realtime-ratings.js';
 import { cleanRealtimePlayerName, realtimePlayerNameOverrides, realtimePlayerIdentityOverrides } from './realtime-player-names.js';
 
 export function createRealtimeService(deps) {
@@ -26,6 +27,7 @@ export function createRealtimeService(deps) {
 
   const notificationTasks = new Map();
   const lobbyListener = createLobbyListener({ WebSocket, onChange:() => scheduleRealtimeSocketPublish() });
+  const realtimeRatings = createRealtimeRatings({ fetchStats:fetchPersonalLeaderboardStats, onChange:() => scheduleRealtimeSocketPublish() });
   const queueEntries = new Map();
   let queueRecheckPromise = null, nextQueueRecheckAt = 0;
   async function recheckExpiredQueues() {
@@ -282,7 +284,6 @@ export function createRealtimeService(deps) {
     // One visibility rule covers every transition, including socket gaps,
     // cancelled matches and ended streams. Live streams never expire here.
     states = visibilityGrace.apply(states.map(state => ({ ...state, live: liveByProfile.get(String(state.profileId)) || null })));
-    const ratingMap = new Map();
     // Read RM 1v1 from each player's profile data. Do not use the top-2000
     // leaderboard here: players outside that list would otherwise fall back
     // to the rating attached to the current match (for example RM TG).
@@ -291,16 +292,9 @@ export function createRealtimeService(deps) {
       if (!visible) return [];
       return [state.profileId, ...(state.status === 'game' && Array.isArray(state.match?.players) ? state.match.players.map(player => player.profileId) : []), ...(state.status === 'matched' ? (state.queue?.players || []).map(player => player.profileId) : []), ...(state.lobby?.players || []).map(player=>player.profileId)];
     }).map(id => String(id || '').trim()).filter(id => /^[1-9]\d*$/.test(id)))];
-    for (let offset = 0; offset < activeProfileIds.length; offset += 8) {
-      const batch = activeProfileIds.slice(offset, offset + 8);
-      await Promise.all(batch.map(async profileId => {
-        try {
-          const rows = await fetchPersonalLeaderboardStats(profileId);
-          const row = Array.isArray(rows) ? rows.find(item => Number(item.id) === 3 && Number.isFinite(Number(item.rating))) : null;
-          if (row) ratingMap.set(profileId, Number(row.rating));
-        } catch {}
-      }));
-    }
+    // Publish status immediately using known ratings; new/expired ratings
+    // refresh independently and trigger a later update for card ordering.
+    const ratingMap = realtimeRatings.get(activeProfileIds);
     const realtimeReferences = await loadRlReference();
     const nameIds = states.flatMap(state => [state.profileId,...(state.match?.players||[]).map(p=>p.profileId),...(state.queue?.players||[]).map(p=>p.profileId),...(state.cancellation?.players||[]).map(p=>p.profileId),...(state.lobby?.players||[]).map(p=>p.profileId)]);
     const verifiedNames = deps.loadVerifiedRealtimeNames ? await deps.loadVerifiedRealtimeNames(nameIds) : new Map();
@@ -630,6 +624,7 @@ export function createRealtimeService(deps) {
         if (persisted?.payload?.states) cachedPayload = persisted.payload;
       } catch {}
     }
+    realtimeRatings.restore(cachedPayload?.states || []);
     visibilityGrace.restore((cachedPayload?.states || []).filter(state => ids.includes(String(state.profileId))));
     for (const state of Array.isArray(cachedPayload?.states) ? cachedPayload.states : []) {
       if (state.queueGrace?.until > Date.now()) rememberQueueGrace({ id:state.queueGrace.queueId, players:[{profileId:state.profileId}] }, state.queueGrace.until);
