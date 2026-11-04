@@ -27,7 +27,7 @@ export function createRealtimeService(deps) {
   } = deps;
 
   const notificationTasks = new Map();
-  const lobbyListener = createLobbyListener({ WebSocket, onChange:() => scheduleRealtimeSocketPublish(), onDeparted:(ids,matchId)=>recovery.enqueue(ids,{matchId,priority:true}) });
+  const lobbyListener = createLobbyListener({ WebSocket, onChange:() => scheduleRealtimeSocketPublish() });
   const recovery = createRealtimeRecovery({
     fetchLatest:fetchLatestWorldsEdgeMatchOnce,
     hasState:id=>!realtimeSocketProfileIds.includes(id) || Boolean(queueState(id) || lobbyListener.state(id)) || [...realtimeSocketGroups.values()].some(group=>[...group.matches.values()].some(match=>socketMatchPlayerIds(match).has(id))),
@@ -149,7 +149,6 @@ export function createRealtimeService(deps) {
             }
           }
           if (queueEntries.delete(data.id)) changed = true;
-          if(data.reason==='started' && prior)recovery.enqueue((prior.players||[]).map(player=>String(player.profileId)),{matchId:data.matchId || '',priority:true});
           continue;
         }
         const prior = queueEntries.get(data.id)?.data || {};

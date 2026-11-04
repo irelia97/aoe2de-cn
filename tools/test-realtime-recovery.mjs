@@ -10,12 +10,12 @@ test('missing players recover one shared match without rechecking players alread
   recovery.enqueue(['1','2']);await flush();
   assert.deepEqual(calls,['1']);assert.deepEqual([...active],['1','2']);
 });
-test('room recovery rejects other matches and ignores results from obsolete pools',async()=>{
+test('recovery ignores results from obsolete pools',async()=>{
   let resolve;
   const ingested=[];
   const recovery=createRealtimeRecovery({hasState:()=>false,fetchLatest:()=>new Promise(done=>{resolve=done;}),ingest:(id,match)=>{ingested.push(match.id);return true;}});
-  recovery.enqueue(['1'],{matchId:'123'});await flush();resolve({id:456});await flush();assert.deepEqual(ingested,[]);
-  recovery.reset();recovery.enqueue(['2']);await flush();recovery.reset();resolve({id:789});await flush();assert.deepEqual(ingested,[]);
+  recovery.enqueue(['1']);await flush();recovery.reset();resolve({id:456});await flush();assert.deepEqual(ingested,[]);
+  recovery.enqueue(['2']);await flush();resolve({id:789});await flush();assert.deepEqual(ingested,[789]);
 });
 test('fresh socket connection recovers an ongoing game absent from the persisted payload',async()=>{
   const sockets=[];
@@ -29,4 +29,18 @@ test('fresh socket connection recovers an ongoing game absent from the persisted
   await new Promise(resolve=>setTimeout(resolve,400));
   const payload=await service.getCachedPayload(['42']);
   assert.equal(payload.states[0].status,'game');assert.equal(payload.states[0].match.id,123);
+});
+
+test('lobby departures and queue started events do not trigger recovery lookups',async()=>{
+  const sockets=[];let lookups=0;
+  class Socket{constructor(url){this.url=url;this.handlers={};this.readyState=1;sockets.push(this);}addEventListener(key,fn){this.handlers[key]=fn;}close(){}}
+  const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache');},writeFile:async()=>{},localProfileDetails:()=>null,
+    getMediaCache:async()=>({live:[]}),loadRlReference:async()=>new Map(),fetchPersonalLeaderboardStats:async()=>[],forceChinaCountry:(_,c)=>c,
+    fetchLatestWorldsEdgeMatchOnce:async()=>{lookups++;return null;}});
+  await service.startRealtimeWebSockets(['42']);
+  const send=(handler,rows)=>sockets.find(socket=>socket.url.includes('handler='+handler)).handlers.message({data:JSON.stringify(rows)});
+  send('lobbies',[{type:'lobbyAdded',data:{matchId:123,name:'Room'}},{type:'slotAdded',data:{matchId:123,slot:0,profileId:42}},{type:'slotRemoved',data:{matchId:123,slot:0}},{type:'lobbyRemoved',data:{matchId:123}}]);
+  send('queueing',[{type:'queueingAdded',data:{id:'q1',status:'queueing',players:[{profileId:42}]}},{type:'queueingRemoved',data:{id:'q1',reason:'started',matchId:123}}]);
+  await flush();assert.equal(lookups,0);
+  sockets.find(socket=>socket.url.includes('handler=match-updated')).handlers.open();await flush();assert.equal(lookups,1);
 });
