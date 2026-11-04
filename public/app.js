@@ -598,7 +598,7 @@ function renderPlayerDetailsRows(details) {
     const last = isCurrentAccount && currentProfileLastMatchTimestamp > 0 ? currentProfileLastMatchTimestamp : accountLast;
     const lastText = isCurrentAccount && currentProfileLastMatchLive ? '游戏中' : formatTimeAgo(last) || '暂无数据';
     const lastTitle = last > 0 ? `${currentProfileLastMatchLive && isCurrentAccount ? '开始于 ' : ''}${new Date(last * 1000).toLocaleString('zh-CN')}` : '接口未提供最后游戏时间';
-    return `<tr data-profile-account-id="${escapeHtml(accountId)}"><td class="profile-account-id">${escapeHtml(accountId || '—')}</td><td><div class="profile-account-name">${avatar}${accountMarkup}</div></td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : '无'}</td><td class="profile-account-last" title="${escapeHtml(lastTitle)}">${escapeHtml(lastText)}</td></tr>`;
+    return `<tr data-profile-account-id="${escapeHtml(accountId)}"><td class="profile-account-id">${escapeHtml(accountId || '—')}</td><td><div class="profile-account-name">${avatar}${accountMarkup}</div></td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : details.partial ? '暂未获取' : '无'}</td><td class="profile-account-last" title="${escapeHtml(lastTitle)}">${escapeHtml(lastText)}</td></tr>`;
   }).join('');
 }
 function syncCurrentProfileAccountLastMatch(timestamp, live = false) {
@@ -1463,18 +1463,20 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
   }
 
 }
-function loadProfileAccounts(profileId, requestId) {
+function loadProfileAccounts(profileId, requestId, attempt = 0) {
   const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
-  setProfileMessage(profileSectionLoadingMarkup());
+  if(!attempt)setProfileMessage(profileSectionLoadingMarkup());
   fetch(`/api/profile-accounts?id=${encodeURIComponent(profileId)}`, { cache: 'no-store' })
     .then(response => response.ok ? response.json() : Promise.reject(new Error('账号资料请求失败')))
     .then(data => {
       if (!isCurrent()) return;
       if (data?.avatar) currentProfileAvatarUrl = data.avatar;
-      const details = { player: { id: profileId }, avatar: data?.avatar || '', accounts: Array.isArray(data?.accounts) ? data.accounts : [] };
+      const details = { player: { id: profileId }, avatar: data?.avatar || '', accounts: Array.isArray(data?.accounts) ? data.accounts : [],partial:Boolean(data?.partial) };
       renderProfileIdentityLinks(details.accounts, profileId);
-      document.querySelector('#profileDetailsBody').innerHTML = renderPlayerDetailsRows(details);
+      const notice=details.partial ? '<tr><td colspan="4" class="profile-accounts-notice">完整资料暂不可用，以下为本地已知账号；曾用名待补全。</td></tr>' : '';
+      document.querySelector('#profileDetailsBody').innerHTML = notice+renderPlayerDetailsRows(details);
       loadProfileAccountAvatars();
+      if(details.partial && attempt<4)setTimeout(()=>{if(isCurrent())loadProfileAccounts(profileId,requestId,attempt+1);},5000);
     })
     .catch(() => { if (isCurrent()) setProfileMessage('暂时无法获取账号与曾用名', 'profile-details-error'); });
 }

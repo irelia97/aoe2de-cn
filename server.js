@@ -39,6 +39,7 @@ import { appendNewTournamentResults, parseTournamentResultsHtml, tournamentResul
 import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 import { fetchKickLive } from './server/services/kick-live.js';
 import { createPlayerTeams } from './server/services/player-teams.js';
+import { createProfileAccountsReader } from './server/services/profile-accounts.js';
 const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
@@ -170,6 +171,7 @@ const ladderOrder = Object.keys(leaderboardSchedules).map(Number);
 const cacheWaiters = new Map();
 const aoe2RecsProfileCache = new BoundedCache(512);
 const aoe2RecsProfileRefreshes = new Map();
+let aoe2RecsProfileBlockedUntil = 0;
 const gameAssetRefreshes = new Map();
 const aoe2RecsProfileCacheTtl = 48 * 60 * 60_000;
 const worldsEdgeMatchCacheDir = join(dataDir, 'worldsedge-matches');
@@ -1864,6 +1866,7 @@ const profileService = createProfileService({
   WebSocket
 });
 const { localProfileDetails, fetchPersonalLeaderboardStats } = profileService;
+const readProfileAccounts = createProfileAccountsReader({readCached:readAoE2RecsProfileCache,refresh:refreshAoE2RecsProfile,localProfileDetails,loadReferences:loadRlReference});
 
 const matchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches });
 const { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce } = matchesService;
@@ -2041,7 +2044,7 @@ async function readAoE2RecsProfileCache(profileId) {
   if (cached) return cached;
   try {
     const parsed = JSON.parse(await readFile(aoe2RecsProfilePath(profileId), 'utf8'));
-    if (parsed?.savedAt && parsed.profile && Object.prototype.hasOwnProperty.call(parsed.profile, 'matches')) {
+    if (parsed?.savedAt && Array.isArray(parsed.profile?.accounts)) {
       aoe2RecsProfileCache.set(profileId, parsed);
       return parsed;
     }
@@ -2060,6 +2063,7 @@ async function writeAoE2RecsProfileCache(profileId, profile) {
 }
 
 function fetchAoE2RecsProfileOnce(profileId) {
+  if(Date.now()<aoe2RecsProfileBlockedUntil)return Promise.reject(new Error('AoE2Recs 暂时无法连接，稍后重试'));
   return new Promise((resolve, reject) => {
     let socket;
     let settled = false;
@@ -2073,6 +2077,7 @@ function fetchAoE2RecsProfileOnce(profileId) {
       clearTimeout(timeout);
       clearInterval(sendTimer);
       try { socket?.close(); } catch {}
+      if(error && /WebSocket|连接|超时/.test(error.message))aoe2RecsProfileBlockedUntil=Date.now()+60000;
       error ? reject(error) : resolve(profile);
     };
     try { socket = new WebSocket('wss://aoe2recs.com/dashboard/api/'); }
@@ -2106,17 +2111,8 @@ function fetchAoE2RecsProfileOnce(profileId) {
 async function refreshAoE2RecsProfile(profileId) {
   if (aoe2RecsProfileRefreshes.has(profileId)) return aoe2RecsProfileRefreshes.get(profileId);
   const refresh = (async () => {
-    let lastError;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      try {
-        const profile = await fetchAoE2RecsProfileOnce(profileId);
-        return (await writeAoE2RecsProfileCache(profileId, profile)).profile;
-      } catch (error) {
-        lastError = error;
-        if (attempt < 9) await new Promise(resolve => setTimeout(resolve, Math.min(500 * (2 ** attempt), 4_000)));
-      }
-    }
-    throw lastError || new Error('AoE2Recs 资料请求失败');
+    const profile = await fetchAoE2RecsProfileOnce(profileId);
+    return (await writeAoE2RecsProfileCache(profileId, profile)).profile;
   })().finally(() => aoe2RecsProfileRefreshes.delete(profileId));
   aoe2RecsProfileRefreshes.set(profileId, refresh);
   return refresh;
@@ -3251,11 +3247,9 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       return res.end(JSON.stringify({ error: '无效的选手 ID' }));
     }
     try {
-      const result = await getAoE2RecsProfile(profileId);
-      const rlReference = await loadRlReference();
-      const accounts = (result.profile.accounts || []).map(account => ({ ...account, rlReference: rlReference.get(String(account.id ?? '').trim()) || null }));
+      const result = await readProfileAccounts(profileId);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': result.stale ? 'no-cache' : 'public, max-age=300' });
-      return res.end(JSON.stringify({ accounts, avatar: result.profile.avatar || '', cached: result.cached, stale: result.stale, source: 'aoe2recs' }));
+      return res.end(JSON.stringify(result));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '获取账号与曾用名失败' }));
