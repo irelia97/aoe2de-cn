@@ -1,6 +1,15 @@
 {
-  "playerCount": 80,
+  "playerCount": 82,
   "players": [
+    {
+      "name": "Monoz",
+      "rl": ["2844691", "1861822", "6779041", "17331610"],
+      "live_links": {
+        "twitch": ["https://www.twitch.tv/monoz_aoe"],
+        "kick": ["https://kick.com/monoz_aoe"]
+      },
+      "isCN": false
+    },
     {
       "name": "Yo",
       "rl": [

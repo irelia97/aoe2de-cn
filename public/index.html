@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.onload=null;this.media='all'" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=event-results-v6" />
+  <link rel="stylesheet" href="/styles.css?v=event-results-v26" />
   <link rel="stylesheet" href="/civilizations.css?v=22" />
   <link rel="stylesheet" href="/civilization-combobox.css?v=3" />
   <link rel="stylesheet" href="/tech-tree.css?v=25" />
@@ -69,6 +69,7 @@
         <div class="realtime-left">
         <div class="profile-loading-animation realtime-loading-animation" id="realtimeLoading" role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div>
         <div class="realtime-status-panel" id="realtimeStatusPanel" hidden><table class="realtime-status-table"><thead><tr><th>分数</th><th>玩家</th><th>战队</th><th>状态</th><th>赛事</th><th>直播</th></tr></thead><tbody id="realtimeStatusRows"></tbody></table></div>
+        <section id="realtimeSchedulePreview" class="realtime-schedule-panel" aria-label="比赛预告(B级以上)" hidden></section>
         <section class="realtime-chat" aria-label="实时对局聊天区"><button class="realtime-chat-toggle" id="realtimeChatToggle" type="button" aria-expanded="true" aria-controls="realtimeChatBody"><span>聊天区</span><span class="realtime-chat-chevron" aria-hidden="true">⌄</span></button><div class="realtime-chat-body" id="realtimeChatBody"><div class="realtime-chat-messages" id="realtimeChatMessages" role="log" aria-live="polite" aria-label="聊天记录"><p class="realtime-chat-empty">正在加载聊天记录……</p></div><form class="realtime-chat-form" id="realtimeChatForm"><label class="realtime-chat-name-label" for="realtimeChatName">昵称</label><input id="realtimeChatName" name="name" maxlength="20" autocomplete="nickname" required><label class="realtime-chat-message-label" for="realtimeChatMessage">发言</label><input id="realtimeChatMessage" name="message" maxlength="127" placeholder="文明交流，请勿发布链接或联系方式" autocomplete="off" required><button id="realtimeChatSend" type="submit">发送</button></form><div class="realtime-chat-profile"><span id="realtimeChatIdentity">正在获取访客身份……</span><button id="realtimeChatSaveName" type="button" hidden>保存昵称</button></div><p class="realtime-chat-hint">昵称最多20字，发言最多127字；昵称修改后15天内不可再次修改；每分钟5条、每天100条；发言间隔至少10秒。</p><p class="realtime-chat-status" id="realtimeChatStatus" role="status" aria-live="polite"></p></div></section>
         </div>
         <div class="realtime-grid" id="realtimePlayers" hidden></div>
@@ -144,7 +145,7 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=event-results-v58" defer></script>
+  <script src="/app.js?v=event-results-v82" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');

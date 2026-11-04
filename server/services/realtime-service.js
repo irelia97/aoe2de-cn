@@ -1,3 +1,8 @@
+import { readQueueSnapshot } from './queue-snapshot.js';
+import { createVisibilityGrace } from './realtime-visibility-grace.js';
+import { createLobbyListener } from './realtime-lobbies.js';
+import { cleanRealtimePlayerName, realtimePlayerNameOverrides, realtimePlayerIdentityOverrides } from './realtime-player-names.js';
+
 export function createRealtimeService(deps) {
   const {
     realtimePayloadPath,
@@ -20,6 +25,122 @@ export function createRealtimeService(deps) {
   } = deps;
 
   const notificationTasks = new Map();
+  const lobbyListener = createLobbyListener({ WebSocket, onChange:() => scheduleRealtimeSocketPublish() });
+  const queueEntries = new Map();
+  let queueRecheckPromise = null, nextQueueRecheckAt = 0;
+  async function recheckExpiredQueues() {
+    if (queueRecheckPromise || Date.now() < nextQueueRecheckAt) return;
+    const expired = [...queueEntries].filter(([,entry]) => Date.now()-entry.seenAt > 300000);
+    if (!expired.length) return;
+    const generation = realtimeSocketGeneration;
+    const ids = [...new Set(expired.flatMap(([,entry]) => (entry.data.players||[]).map(p=>String(p.profileId))).filter(id=>realtimeSocketProfileIds.includes(id)))];
+    if (!ids.length) return;
+    nextQueueRecheckAt = Date.now()+60000;
+    queueRecheckPromise = Promise.resolve().then(()=>deps.readQueueSnapshot ? deps.readQueueSnapshot(ids) : readQueueSnapshot(WebSocket,ids)).then(rows=>{
+      if (generation !== realtimeSocketGeneration) return;
+      for (const [id,entry] of expired) {
+        if (queueEntries.get(id) !== entry) continue;
+        const monitored=(entry.data.players||[]).filter(p=>ids.includes(String(p.profileId)));
+        const matching=rows.filter(row=>['queueing','matched'].includes(row.status)&&(row.players||[]).some(p=>monitored.some(m=>String(m.profileId)===String(p.profileId))));
+        queueEntries.delete(id);
+        for (const row of matching) {
+          if (!queueEntries.has(row.id)) queueEntries.set(row.id,{data:{...row,displaySeed:entry.data.displaySeed},seenAt:Date.now()});
+        }
+        const absent=monitored.filter(p=>!matching.some(row=>(row.players||[]).some(m=>String(m.profileId)===String(p.profileId))));
+        if (entry.data.status==='queueing' && absent.length) rememberQueueGrace({...entry.data,players:absent});
+      }
+      scheduleRealtimeSocketPublish();
+    }).catch(error=>console.warn('[realtime] queue recheck failed; keeping existing state:',error.message)).finally(()=>{queueRecheckPromise=null;});
+    return queueRecheckPromise;
+  }
+  const queueGrace = new Map();
+  function rememberQueueGrace(data, until = Date.now() + 5*60*1000) {
+    for (const player of data.players || []) {
+      const id = String(player.profileId);
+      if (!realtimeSocketProfileIds.includes(id)) continue;
+      queueGrace.set(id, { until, queueId:data.id });
+      const timer = setTimeout(() => {
+        if (queueGrace.get(id)?.until !== until) return;
+        queueGrace.delete(id); scheduleRealtimeSocketPublish();
+      }, Math.max(0, until-Date.now()));
+      timer.unref?.();
+    }
+  }
+  const cancelledPlayers = new Map();
+  let queueSocket, queueReconnectTimer;
+  function queueState(profileId) {
+    if (queueSocket?.readyState !== 1) return null;
+    const now = Date.now();
+    for (const [id, entry] of queueEntries) {
+      if (now - entry.seenAt > 300000) void recheckExpiredQueues();
+      const data = entry.data;
+      if (!(data.players || []).some(p => String(p.profileId) === String(profileId))) continue;
+      return { profileId: String(profileId), status: data.status, match: null, queue: data };
+    }
+    return null;
+  }
+  function connectQueueSocket() {
+    if (!WebSocket) return;
+    const generation = realtimeSocketGeneration;
+    const socket = new WebSocket('wss://socket.aoe2companion.com/listen?handler=queueing');
+    queueSocket = socket;
+    socket.addEventListener('open', () => { queueEntries.clear(); console.log('[realtime] queueing connected'); });
+    socket.addEventListener('message', event => {
+      if (socket !== queueSocket) return;
+      let messages; try { messages = JSON.parse(String(event.data)); } catch { return; }
+      let changed = false;
+      for (const message of Array.isArray(messages) ? messages : [messages]) {
+        const data = message.data;
+        if (!data?.id) continue;
+        if (message.type === 'queueingRemoved') {
+          const prior = queueEntries.get(data.id)?.data;
+          if (data.reason === 'left' && prior?.status === 'queueing' && Array.isArray(data.profileIds) && data.profileIds.length) {
+            const leftIds = new Set(data.profileIds.map(String));
+            const departed = (prior.players || []).filter(player => leftIds.has(String(player.profileId)));
+            const remaining = (prior.players || []).filter(player => !leftIds.has(String(player.profileId)));
+            if (departed.length) {
+              rememberQueueGrace({ ...prior, players:departed });
+              if (remaining.length) {
+                queueEntries.set(data.id, { data:{ ...prior, players:remaining, partyLeaderProfileId:leftIds.has(String(prior.partyLeaderProfileId)) ? null : prior.partyLeaderProfileId }, seenAt:Date.now() });
+              } else queueEntries.delete(data.id);
+              changed = true;
+            }
+            continue;
+          }
+          if (prior?.status === 'queueing') rememberQueueGrace(prior);
+          if (data.reason === 'cancelled' && prior?.status === 'matched') {
+            const cancellingIds = new Set((Array.isArray(data.profileIds) ? data.profileIds : []).map(String));
+            rememberQueueGrace({ ...prior, players:(prior.players || []).filter(player => !cancellingIds.has(String(player.profileId))) });
+            const members = new Set((prior.players || []).map(p => String(p.profileId)));
+            for (const id of Array.isArray(data.profileIds) ? data.profileIds : []) {
+              const profileId = String(id);
+              if (members.has(profileId) && realtimeSocketProfileIds.includes(profileId)) {
+                queueGrace.delete(profileId);
+                cancelledPlayers.set(profileId, { matchId: prior.matchId, cancelledAt: Date.now(), players: (prior.players || []).map(p => ({ profileId:String(p.profileId), name:p.name || '' })) });
+                changed = true;
+              }
+            }
+          }
+          if (queueEntries.delete(data.id)) changed = true;
+          continue;
+        }
+        const prior = queueEntries.get(data.id)?.data || {};
+        const merged = { ...prior, ...data };
+        if (!(merged.players || []).some(p => realtimeSocketProfileIds.includes(String(p.profileId)))) continue;
+        for (const player of merged.players || []) { cancelledPlayers.delete(String(player.profileId)); queueGrace.delete(String(player.profileId)); }
+        merged.displaySeed = prior.displaySeed ?? Math.random();
+        queueEntries.set(data.id, { data: merged, seenAt: Date.now() });
+        changed = true;
+      }
+      if (changed) scheduleRealtimeSocketPublish();
+    });
+    socket.addEventListener('error', () => console.warn('[realtime] queueing connection error'));
+    socket.addEventListener('close', () => {
+      if (socket !== queueSocket || generation !== realtimeSocketGeneration) return;
+      queueEntries.clear(); scheduleRealtimeSocketPublish();
+      queueReconnectTimer = setTimeout(connectQueueSocket, 5000); queueReconnectTimer.unref?.();
+    });
+  }
   function notifyActiveMatch(rawMatch) {
     const profileId = (rawMatch?.players || []).map(player => String(player.profileId ?? player.id))
       .find(id => notificationProfileIds.includes(id));
@@ -96,6 +217,7 @@ export function createRealtimeService(deps) {
   let realtimeRefreshPromise = null;
   const recentGames = new Map();
   const gracePeriod = 5 * 60 * 1000;
+  const visibilityGrace = createVisibilityGrace({ onExpire: () => scheduleRealtimeSocketPublish() });
 
   function withGameGrace(states) {
     const now = Date.now();
@@ -124,6 +246,30 @@ export function createRealtimeService(deps) {
 
   async function buildEnrichedPayload(profileIds, states, source = 'aoe2companion-latest') {
     states = withGameGrace(states);
+    states = states.map(state => {
+      const lobby = lobbyListener.state(state.profileId);
+      const queued = queueState(state.profileId);
+      if (lobby && !queued) {
+        cancelledPlayers.delete(String(state.profileId));
+        queueGrace.delete(String(state.profileId));
+        return lobby;
+      }
+      const cancelled = cancelledPlayers.get(String(state.profileId));
+      if (cancelled) {
+        if (state.status === 'game' && Number(state.match?.started)*1000 > cancelled.cancelledAt) cancelledPlayers.delete(String(state.profileId));
+        else return { profileId:String(state.profileId), status:'cancelled', match:null, cancellation:cancelled };
+      }
+      if (!queued) {
+        const grace = queueGrace.get(String(state.profileId));
+        if (state.status === 'game') queueGrace.delete(String(state.profileId));
+        else if (grace?.until > Date.now()) return { ...state, status:'offline', graceUntil:grace.until, queueGrace:grace };
+        return state;
+      }
+      // A new queue supersedes stale game/grace records. A confirmed game
+      // supersedes the matching countdown for that same match.
+      if (queued.status === 'matched' && state.status === 'game' && String(state.match?.id) === String(queued.queue.matchId)) return state;
+      return queued;
+    });
     const liveByProfile = new Map();
     try {
       const media = await getMediaCache();
@@ -133,14 +279,17 @@ export function createRealtimeService(deps) {
         for (const profileId of Array.isArray(item.profileIds) ? item.profileIds : []) liveByProfile.set(String(profileId), live);
       }
     } catch {}
+    // One visibility rule covers every transition, including socket gaps,
+    // cancelled matches and ended streams. Live streams never expire here.
+    states = visibilityGrace.apply(states.map(state => ({ ...state, live: liveByProfile.get(String(state.profileId)) || null })));
     const ratingMap = new Map();
     // Read RM 1v1 from each player's profile data. Do not use the top-2000
     // leaderboard here: players outside that list would otherwise fall back
     // to the rating attached to the current match (for example RM TG).
     const activeProfileIds = [...new Set(states.flatMap(state => {
-      const visible = state.status === 'game' || state.graceUntil > Date.now() || liveByProfile.has(String(state.profileId));
+      const visible = state.status === 'game' || state.status === 'cancelled' || state.status === 'lobby' || state.queue || state.graceUntil > Date.now() || liveByProfile.has(String(state.profileId));
       if (!visible) return [];
-      return [state.profileId, ...(state.status === 'game' && Array.isArray(state.match?.players) ? state.match.players.map(player => player.profileId) : [])];
+      return [state.profileId, ...(state.status === 'game' && Array.isArray(state.match?.players) ? state.match.players.map(player => player.profileId) : []), ...(state.status === 'matched' ? (state.queue?.players || []).map(player => player.profileId) : []), ...(state.lobby?.players || []).map(player=>player.profileId)];
     }).map(id => String(id || '').trim()).filter(id => /^[1-9]\d*$/.test(id)))];
     for (let offset = 0; offset < activeProfileIds.length; offset += 8) {
       const batch = activeProfileIds.slice(offset, offset + 8);
@@ -153,6 +302,15 @@ export function createRealtimeService(deps) {
       }));
     }
     const realtimeReferences = await loadRlReference();
+    const nameIds = states.flatMap(state => [state.profileId,...(state.match?.players||[]).map(p=>p.profileId),...(state.queue?.players||[]).map(p=>p.profileId),...(state.cancellation?.players||[]).map(p=>p.profileId),...(state.lobby?.players||[]).map(p=>p.profileId)]);
+    const verifiedNames = deps.loadVerifiedRealtimeNames ? await deps.loadVerifiedRealtimeNames(nameIds) : new Map();
+    const displayName = (id, name, clan='') => {
+      const verified = verifiedNames.get(String(id));
+      const reference = realtimeReferences.get(String(id));
+      const identity = realtimePlayerIdentityOverrides.get(String(id)) || verified?.canonicalProfileId || reference?.canonicalProfileId || String(id);
+      const canonical = realtimePlayerNameOverrides.get(String(id)) || realtimePlayerNameOverrides.get(identity) || verified?.name || reference?.name;
+      return cleanRealtimePlayerName(canonical || name, canonical ? '' : clan);
+    };
     function tournamentScoreForPlayer(tournament, playerNames) {
       const score = Array.isArray(tournament?.score) && tournament.score.length >= 2 ? tournament.score : null;
       const opponents = Array.isArray(tournament?.opponents) ? tournament.opponents : [];
@@ -191,8 +349,11 @@ export function createRealtimeService(deps) {
           })()
         }
         : state.match;
-      const ratedMatch = match ? { ...match, players: (match.players || []).map(player => ({ ...player, rating: ratingMap.get(String(player.profileId)) ?? null, ratingMode: 'rm_1v1' })) } : null;
-      return { ...state, match: ratedMatch, identity: reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), name: playerName, team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
+      const ratedMatch = match ? { ...match, players: (match.players || []).map(player => ({ ...player, originalName:player.name, name:displayName(player.profileId,player.name,player.clan), rating: ratingMap.get(String(player.profileId)) ?? null, ratingMode: 'rm_1v1' })) } : null;
+      const queue = state.queue ? { ...state.queue, players: (state.queue.players || []).map(p => ({ ...p, originalName:p.name, name:displayName(p.profileId,p.name,p.clan), rating1v1: ratingMap.get(String(p.profileId)) ?? null })) } : undefined;
+      const cancellation = state.cancellation ? {...state.cancellation,players:(state.cancellation.players||[]).map(p=>({...p,name:displayName(p.profileId,p.name)}))} : undefined;
+      if (state.lobby) state = { ...state, lobby:{...state.lobby, players:(state.lobby.players||[]).map(player=>({...player,name:displayName(player.profileId,player.name),rating:ratingMap.get(String(player.profileId))??null,ratingMode:'rm_1v1'}))} };
+      return { ...state, ...(queue ? { queue } : {}), ...(cancellation?{cancellation}:{}), match: ratedMatch, identity: realtimePlayerIdentityOverrides.get(String(state.profileId)) || verifiedNames.get(String(state.profileId))?.canonicalProfileId || reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), originalName:playerName, name:displayName(state.profileId,playerName,profile.team), team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
     });
     return { source, checkedAt: new Date().toISOString(), states: enrichedStates };
   }
@@ -210,6 +371,7 @@ export function createRealtimeService(deps) {
   const realtimeValidatedMatches = new Map();
   const realtimeValidationConcurrency = 2;
   const realtimeValidationQueue = [];
+  const realtimeValidationPending = new Set();
   let realtimeValidationActive = 0;
   let realtimeLastPublishAt = null;
   const realtimeValidationStats = { kept: 0, removed: 0, deferred: 0, lastRunAt: null, lastResult: null };
@@ -261,7 +423,7 @@ export function createRealtimeService(deps) {
     if (!previous || JSON.stringify(previous) !== JSON.stringify(match)) changed = true;
     return changed;
   }
-  async function validateRealtimeMatchEveryThirtyMinutes(match) {
+  async function validateRealtimeMatchEveryThirtyMinutes(match, generation = realtimeSocketGeneration, reason = 'periodic') {
     if (!match) return;
     const matchId = socketMatchId(match);
     const monitoredIds = new Set(realtimeSocketProfileIds.map(String));
@@ -271,6 +433,8 @@ export function createRealtimeService(deps) {
     for (const profileId of profileIds) {
       try {
         const latest = await fetchLatestWorldsEdgeMatchOnce(profileId);
+        if (generation !== realtimeSocketGeneration || ![...realtimeSocketGroups.values()].some(group => group.matches.get(matchId) === match)) return;
+        if (!latest || !socketMatchId(latest)) throw new Error('empty match response; keeping existing state');
         const latestState = normalizeRealtimeLatestMatch(latest, profileId);
         const active = socketMatchId(latest) === matchId && latestState.status === 'game';
         if (active) {
@@ -278,12 +442,12 @@ export function createRealtimeService(deps) {
           if (group && upsertRealtimeMatch(group, latest)) scheduleRealtimeSocketPublish();
           realtimeValidationStats.kept += 1;
           realtimeValidationStats.lastResult = { matchId, result: 'kept', profileId };
-          console.log('[realtime] 30-minute API validation kept match ' + matchId);
+          console.log(`[realtime] ${reason} API validation kept match ${matchId}`);
         } else {
           removeRealtimeMatch(matchId);
           realtimeValidationStats.removed += 1;
           realtimeValidationStats.lastResult = { matchId, result: 'removed', profileId };
-          console.log('[realtime] 30-minute API validation removed stale match ' + matchId);
+          console.log(`[realtime] ${reason} API validation removed stale match ${matchId}`);
         }
         realtimeValidationStats.lastRunAt = new Date().toISOString();
         return;
@@ -299,19 +463,24 @@ export function createRealtimeService(deps) {
   }
   function drainRealtimeValidationQueue() {
     while (realtimeValidationActive < realtimeValidationConcurrency && realtimeValidationQueue.length) {
-      const match = realtimeValidationQueue.shift();
+      const { match, generation, reason } = realtimeValidationQueue.shift();
       realtimeValidationActive += 1;
-      Promise.resolve(validateRealtimeMatchEveryThirtyMinutes(match))
+      Promise.resolve(validateRealtimeMatchEveryThirtyMinutes(match, generation, reason))
         .catch(error => console.warn('[realtime] 30-minute API validation failed:', error.message))
         .finally(() => {
           realtimeValidationActive -= 1;
+          realtimeValidationPending.delete(`${generation}:${socketMatchId(match)}`);
           const timer = setTimeout(drainRealtimeValidationQueue, 750);
           timer.unref?.();
         });
     }
   }
-  function enqueueRealtimeValidation(match) {
-    realtimeValidationQueue.push(match);
+  function enqueueRealtimeValidation(match, reason = 'periodic') {
+    const generation = realtimeSocketGeneration;
+    const key = `${generation}:${socketMatchId(match)}`;
+    if (realtimeValidationPending.has(key)) return;
+    realtimeValidationPending.add(key);
+    realtimeValidationQueue.push({ match, generation, reason });
     drainRealtimeValidationQueue();
   }
   function validateRealtimeMatchesEveryThirtyMinutes() {
@@ -337,7 +506,7 @@ export function createRealtimeService(deps) {
   }
   function startRealtimeValidationLoop() {
     if (realtimeValidationTimer) return;
-    realtimeValidationTimer = setInterval(validateRealtimeMatchesEveryThirtyMinutes, 60000);
+    realtimeValidationTimer = setInterval(() => { validateRealtimeMatchesEveryThirtyMinutes(); void recheckExpiredQueues(); }, 60000);
     realtimeValidationTimer.unref?.();
   }
   function normalizeSocketMatch(match) {
@@ -384,7 +553,15 @@ export function createRealtimeService(deps) {
       const socket = new WebSocket(url);
       group.socket = socket;
       group.connected = false;
-      socket.addEventListener('open', () => { group.connected = true; group.connectedAt = new Date().toISOString(); group.failures = 0; console.log(`[realtime] match-updated group ${group.index + 1} connected (${group.ids.length} profiles)`); });
+      socket.addEventListener('open', () => {
+        if (generation !== realtimeSocketGeneration || group.socket !== socket) return;
+        group.connected = true; group.connectedAt = new Date().toISOString(); group.failures = 0;
+        group.lastMessageAt = null;
+        console.log(`[realtime] match-updated group ${group.index + 1} connected (${group.ids.length} profiles)`);
+        // Includes warm-start matches on the first connection, as well as
+        // matches whose end event may have been missed while disconnected.
+        for (const match of group.matches.values()) enqueueRealtimeValidation(match, 'reconnect');
+      });
       socket.addEventListener('message', event => {
         let messages; try { messages = JSON.parse(String(event.data)); } catch { return; }
         if (!Array.isArray(messages)) messages = [messages];
@@ -427,6 +604,10 @@ export function createRealtimeService(deps) {
     const key = ids.join(',');
     if (key === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size) return;
     realtimeSocketGeneration += 1;
+    clearTimeout(queueReconnectTimer);
+    const previousQueueSocket = queueSocket; queueSocket = null;
+    try { previousQueueSocket?.close(); } catch {}
+    queueEntries.clear();
     for (const group of realtimeSocketGroups.values()) { clearTimeout(group.reconnectTimer); try { group.socket?.close(); } catch {} }
     realtimeSocketGroups.clear();
     realtimeSocketProfileIds = ids;
@@ -449,7 +630,10 @@ export function createRealtimeService(deps) {
         if (persisted?.payload?.states) cachedPayload = persisted.payload;
       } catch {}
     }
+    visibilityGrace.restore((cachedPayload?.states || []).filter(state => ids.includes(String(state.profileId))));
     for (const state of Array.isArray(cachedPayload?.states) ? cachedPayload.states : []) {
+      if (state.queueGrace?.until > Date.now()) rememberQueueGrace({ id:state.queueGrace.queueId, players:[{profileId:state.profileId}] }, state.queueGrace.until);
+      if (state.status === 'cancelled' && state.cancellation && ids.includes(String(state.profileId))) cancelledPlayers.set(String(state.profileId), state.cancellation);
       if (state.graceUntil > Date.now() && state.match) {
         recentGames.set(String(state.profileId), { state, endedAt: state.graceUntil - gracePeriod });
       }
@@ -464,6 +648,8 @@ export function createRealtimeService(deps) {
       });
     }
     for (const group of realtimeSocketGroups.values()) connectRealtimeSocketGroup(group);
+    if (ids.length) connectQueueSocket();
+    lobbyListener.start(ids);
     // Republish restored matches immediately so newly loaded enrichments,
     // such as Liquipedia tournament metadata, are reflected without waiting
     // for the next WebSocket event.
@@ -566,6 +752,7 @@ export function createRealtimeService(deps) {
       profileCount: realtimeSocketProfileIds.length,
       groupCount: realtimeSocketGroups.size,
       socketCount: realtimeSocketGroups.size,
+      lobbies: lobbyListener.status(),
       checkedAt: realtimePayloadCache?.payload?.checkedAt || null,
       lastPublishAt: realtimeLastPublishAt,
       groups: [...realtimeSocketGroups.values()].map(group => ({

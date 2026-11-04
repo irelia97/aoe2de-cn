@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly realtime account activity check on Wednesday 04:00 Beijing
+
+[Timer]
+OnCalendar=Wed *-*-* 04:00:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=aoe2-realtime-pool.service
+
+[Install]
+WantedBy=timers.target

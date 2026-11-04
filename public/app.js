@@ -668,6 +668,7 @@ function aoe2MapImageUrl(mapName) {
 }
 const mapNamesZh = {
   "Arabia": "阿拉伯半岛",
+  "Mountain Pass": "雪山地",
   "Archipelago": "群岛",
   "Baltic": "波罗的海",
   "Black Forest": "黑森林",
@@ -2485,11 +2486,47 @@ function realtimeChatStored(key) {
 function realtimeChatSave(key, value) {
   try { localStorage.setItem(key, value); } catch {}
 }
+let realtimeScheduleCheckedAt = 0;
+let realtimeScheduleMatches = [];
+function realtimeScheduleTitle(timestamp = Date.now()) {
+  const hour = new Date(Number(timestamp) + 8 * 60 * 60 * 1000).getUTCHours();
+  return hour >= 6 && hour < 18 ? '白天比赛预告' : '夜间比赛预告';
+}
+async function refreshRealtimeSchedulePreview() {
+  const panel = document.querySelector('#realtimeSchedulePreview');
+  if (!panel || !/^\/realtime\/?$/.test(location.pathname)) return;
+  if (Date.now() - realtimeScheduleCheckedAt > 60000) {
+    realtimeScheduleCheckedAt = Date.now();
+    try {
+      const response = await fetch('/api/events', { cache:'no-store' });
+      if (response.ok) {
+        const data = await response.json();
+        const now = Date.now();
+        const retained = realtimeScheduleMatches.filter(match => match.timestamp*1000 <= now && match.timestamp*1000 > now-15*60*1000);
+        // Recently started fixtures can move out of upcoming before the
+        // preview's fifteen-minute retention window has elapsed.
+        realtimeScheduleMatches = [...new Map([...retained,...(data.completed || []),...(data.upcoming || [])].map(match => [String(match.id || `${match.tournament?.url || match.tournament?.name}:${match.timestamp}:${(match.opponents || []).map(p=>p.name).join('|')}`), match])).values()];
+      }
+    } catch {}
+  }
+  const now = Date.now();
+  const matches = realtimeScheduleMatches.filter(m => m.timestamp*1000 > now-15*60*1000 && m.timestamp*1000 < now+43200000 && ['S','A','B'].includes(m.tournament?.tier)).sort((a,b)=>a.timestamp-b.timestamp);
+  panel.hidden = !matches.length;
+  const title = `${realtimeScheduleTitle(now)}(B级以上)`;
+  panel.setAttribute('aria-label', title);
+  panel.innerHTML = matches.length ? `<h3>${title}</h3>${matches.map(match => {
+    const tournament = match.tournament;
+    const name = tournament.round ? `${tournament.mainName || tournament.name} - ${tournament.round}` : tournament.name;
+    const time = new Date(match.timestamp*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+    const bo = Number(match.bestOf);
+    return `<div class="realtime-schedule-fixture"><time>${escapeHtml(time)}</time> ${escapeHtml(tournament.tier)}级｜${escapeHtml(name)}｜${Number.isInteger(bo)&&bo>0?`BO${bo}｜`:''}${(match.opponents||[]).slice(0,2).map(p=>escapeHtml(p.name||'待定')).join(' vs ')}</div>`;
+  }).join('')}` : '';
+}
 function renderRealtimeChat(messages) {
   const box = document.querySelector('#realtimeChatMessages');
   if (!box) return;
-  const items = Array.isArray(messages) ? messages : [];
-  const key = JSON.stringify(items.map(item => [item.id, item.author, item.uid]));
+  const items = (Array.isArray(messages) ? messages : []).filter(item => !(item.kind === 'system' && /^未来12小时(?:比赛预告|暂无)/.test(String(item.content || ''))));
+  const key = JSON.stringify(items.map(item => [item.id, item.author, item.uid, item.content]));
   if (key === realtimeChatLastKey) return;
   const stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 45;
   realtimeChatLastKey = key;
@@ -2669,6 +2706,38 @@ function realtimeStateIsActive(state) {
   return state?.status === 'game' && state.match;
 }
 function realtimeStatusActivity(state) {
+  if (state?.status === 'lobby') {
+    return `<span class="realtime-status-activity is-lobby"><span aria-hidden="true">🏠</span><span>大厅房间 ${escapeHtml(state.lobby?.name || '未命名房间')}</span></span>`;
+  }
+  if (state?.status === 'cancelled') {
+    const players = state.cancellation?.players || [];
+    const opponent = players.find(p => String(p.profileId) !== String(state.profileId));
+    const label = players.length === 2 ? `逃跑 vs ${opponent?.name || '未知对手'}` : players.length > 2 ? '逃跑 TG' : '逃跑';
+    return `<span class="realtime-status-activity is-cancelled"><span class="realtime-escape-icon" aria-hidden="true">🐕</span><span>${escapeHtml(label)}</span></span>`;
+  }
+  if (state?.queue && ['queueing', 'matched'].includes(state.status)) {
+    const queue = state.queue;
+    const players = queue.players || [];
+    let label;
+    let icon = '<i class="realtime-queue-spinner" aria-hidden="true"></i>';
+    if (state.status === 'queueing') {
+      const teammates = players.filter(p => String(p.profileId) !== String(state.profileId));
+      const teammateNames = teammates.map(p => p.name || `玩家 ${p.profileId || '未知'}`).join(' + ');
+      label = players.length <= 1 ? '队列中' : `TG 队列中(${teammateNames})`;
+    } else {
+      const own = players.find(p => String(p.profileId) === String(state.profileId));
+      const opponents = players.filter(p => String(p.profileId) !== String(state.profileId) && (!own || p.team !== own.team));
+      const leader = [...opponents].sort((a, b) => (b.rating1v1 ?? -1) - (a.rating1v1 ?? -1))[0];
+      const slug = String(queue.mapImageUrl || '').split('/').pop()?.replace(/\.png(?:\?.*)?$/, '') || '';
+      const map = queue.mapName ? mapDisplayName(queue.mapName) : slug ? mapDisplayName(slug) : '未知地图';
+      const teamGame = players.length > 2;
+      label = `${teamGame ? 'TG ' : ''}${map} vs ${leader?.name || '未知对手'}${teamGame ? '队' : ''}`;
+      const matchedAt = Date.parse(queue.matchedAt || '');
+      const elapsed = Number.isFinite(matchedAt) ? Math.max(0, (Date.now() - matchedAt) / 1000) % 5 : 0;
+      icon = `<svg class="realtime-match-hourglass" style="--hourglass-delay:-${elapsed}s" viewBox="0 0 16 20" aria-label="匹配成功，等待开始" role="img"><path d="M2 1h12M2 19h12M3 1v4c0 2 2 3 5 5-3 2-5 3-5 5v4M13 1v4c0 2-2 3-5 5 3 2 5 3 5 5v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 4h8L8 9ZM5 18h6l-3-3Z" fill="currentColor"/></svg>`;
+    }
+    return `<span class="realtime-status-activity realtime-queue-activity is-${state.status}">${icon}<span>${escapeHtml(label)}</span></span>`;
+  }
   if (!realtimeStateIsActive(state)) return '';
   const match = state.match;
   const map = mapDisplayName(match.map || '未知地图');
@@ -2694,7 +2763,7 @@ function realtimeStatusActivity(state) {
   const bestOf = Number.isInteger(tournamentBestOf) && tournamentBestOf > 0 ? tournamentBestOf : Number(match.bestOf);
   const format = Number.isInteger(bestOf) && bestOf > 0 ? `BO${bestOf}` : '';
   const eventMeta = tournamentName ? `<span class="realtime-status-match-meta">（${escapeHtml(format || '赛事')}，${escapeHtml(score)}）</span>` : '';
-  return `<span class="realtime-status-activity"><a class="realtime-status-live-link" href="aoe2de://1/${encodeURIComponent(String(match.id || null))}" title="在游戏内观战">◉ ${escapeHtml(label)}</a>${eventMeta}</span>`;
+  return `<span class="realtime-status-activity is-game"><a class="realtime-status-live-link" href="aoe2de://1/${encodeURIComponent(String(match.id || null))}" title="在游戏内观战">◉ ${escapeHtml(label)}</a>${eventMeta}</span>`;
 }
 function alignRealtimeStatusActivity() {
   document.querySelectorAll('.realtime-status-activity').forEach(activity => {
@@ -2710,10 +2779,10 @@ document.fonts?.ready.then(alignRealtimeStatusActivity);
 function renderRealtimeStatus(states) {
   const target = document.querySelector('#realtimeStatusRows');
   if (!target) return;
-  const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.live?.url || Number(state?.graceUntil) > Date.now());
+  const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.status === 'lobby' || state?.status === 'cancelled' || state?.queue || state?.live?.url || Number(state?.graceUntil) > Date.now());
   const identityMap = new Map();
   const priority = state => [
-    realtimeStateIsActive(state) ? 3 : state?.live?.url ? 2 : 1,
+    realtimeStateIsActive(state) || state?.queue || state?.status === 'lobby' || state?.status === 'cancelled' ? 3 : state?.live?.url ? 2 : 1,
     Number(state?.match?.started || 0),
     Number(state?.player?.rating || 0)
   ];
@@ -2746,7 +2815,7 @@ function renderRealtimeStatus(states) {
     const name = escapeHtml(player.name || `玩家 ${state.profileId || ''}`);
     const team = escapeHtml(player.team || '');
     const tournamentValue = state.match?.tournament || state.match?.event || state.match?.eventName || '';
-    const tournamentName = typeof tournamentValue === 'string' ? tournamentValue : tournamentValue?.name || '';
+    const tournamentName = eventTournamentMainName(typeof tournamentValue === 'string' ? { name:tournamentValue } : tournamentValue).replace(/\s+[-–—]\s+Top\s*\d+\s*$/i, '');
     const tournamentUrl = typeof tournamentValue === 'object'
       ? tournamentValue?.url || tournamentValue?.href || ''
       : state.match?.tournamentUrl || state.match?.eventUrl || '';
@@ -2793,17 +2862,25 @@ function renderRealtimeCards(payload) {
   if (statusPanel) statusPanel.hidden=false;
   container.hidden=false;
   const matchAverageRating = state => {
-    const ratings=(Array.isArray(state?.match?.players)?state.match.players:[]).filter(player=>player.ratingMode==='rm_1v1').map(player=>Number(player.rating)).filter(rating=>Number.isFinite(rating)&&rating>0);
+    const participants=state?.lobby?.players || state?.match?.players;
+    const ratings=(Array.isArray(participants)?participants:[]).filter(player=>player.ratingMode==='rm_1v1').map(player=>Number(player.rating)).filter(rating=>Number.isFinite(rating)&&rating>0);
     return ratings.length?ratings.reduce((sum,rating)=>sum+rating,0)/ratings.length:-Infinity;
   };
-  const games=[...new Map(states.filter(realtimeStateIsActive).map(state=>[String(state.match.id||state.profileId),state])).values()]
-    .sort((a,b)=>Number(Boolean(b.match?.tournament || b.match?.event || b.match?.eventName))-Number(Boolean(a.match?.tournament || a.match?.event || a.match?.eventName))||matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
+  const games=[...new Map(states.filter(realtimeStateIsActive).map(state=>[String(state.match.id||state.profileId),state])).values()];
+  const lobbies=[...new Map(states.filter(state=>state.status==='lobby' && state.lobby).map(state=>[String(state.lobby.id),state])).values()];
+  const cards=[...games,...lobbies].sort((a,b)=>Number(Boolean(b.match?.tournament || b.match?.event || b.match?.eventName))-Number(Boolean(a.match?.tournament || a.match?.event || a.match?.eventName))||matchAverageRating(b)-matchAverageRating(a)||Number(b.match?.started||0)-Number(a.match?.started||0));
   if (updated) updated.textContent=payload?.checkedAt?`更新于 ${new Date(payload.checkedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`:'等待更新';
-  if (!games.length) {
+  if (!games.length && !lobbies.length) {
     container.innerHTML='<div class="realtime-empty"><div class="realtime-empty-icon">◌</div><h3>当前没有检测到进行中的对局</h3><p>检测池中的玩家均未返回正在进行的最新对局。</p></div>';
     return;
   }
-  container.innerHTML=games.map(state=>{
+  container.innerHTML=cards.map(state=>{
+    if (state.status==='lobby') {
+      const lobby=state.lobby;
+      const players=Array.isArray(lobby.players)?lobby.players:[];
+      const rows=players.map((player,index)=>realtimePlayerRow(player,index)).join('');
+      return `<article class="realtime-match-card"><div class="realtime-match-top"><span aria-hidden="true">🏠</span><strong>大厅房间 ${escapeHtml(lobby.name || '未命名房间')}</strong></div><div class="realtime-match-players">${rows}</div><div class="realtime-match-tags"><span>🏠 大厅房间</span><span>◇ ${escapeHtml(mapDisplayName(lobby.map || '未知地图'))}</span><span>▣ ${escapeHtml(realtimeServerName(lobby.server || ''))}</span></div></article>`;
+    }
     const match=state.match;
     const players=Array.isArray(match.players)?match.players:[];
     const groups=realtimeGroupedPlayers(match);
@@ -2851,6 +2928,7 @@ async function loadRealtimeStates() {
   }
 }
 async function checkRealtimeVersion() {
+  void refreshRealtimeSchedulePreview();
   if (!/^\/realtime\/?$/.test(location.pathname)) return;
   try {
     realtimeVersionRequest?.abort?.();
@@ -3094,7 +3172,9 @@ function eventCardMarkup(match) {
   const hasScore = scores.some(score => score !== '' && score !== null && score !== undefined);
   const scoreLine = hasScore ? `${scores[0] ?? 0}:${scores[1] ?? 0}` : '—';
   const center = `<span class="events-scoreline"><b>${escapeHtml(scoreLine)}</b>${match.bestOf ? `<small>BO${Number(match.bestOf)}</small>` : ''}</span>`;
-  const tournamentName = escapeHtml(match.tournament?.name || '未命名赛事');
+  const tournamentName = escapeHtml(match.tournament?.round
+    ? `${match.tournament.mainName || match.tournament.name} - ${match.tournament.round}`
+    : match.tournament?.name || '未命名赛事');
   const tournament = match.tournament?.url
     ? `<a href="${escapeHtml(match.tournament.url)}" target="_blank" rel="noopener noreferrer">${tournamentName}</a>`
     : `<span>${tournamentName}</span>`;
@@ -3107,6 +3187,14 @@ function eventCardMarkup(match) {
   return `<article class="events-match-card${statusClass}"><div class="events-match-meta"><time datetime="${escapeHtml(match.startTime || '')}">${escapeHtml(timeText)}</time><span>${escapeHtml(eventStatusLabel(match))}</span></div><div class="events-matchup">${eventOpponentMarkup(opponents[0], scores[0], 'left')}${center}${eventOpponentMarkup(opponents[1], scores[1], 'right')}</div><div class="events-tournament">${tournamentLogo}${tournament}</div></article>`;
 }
 
+function eventTournamentMainName(tournament) {
+  if (tournament?.mainName) return tournament.mainName;
+  const pathOf = value => { try { return decodeURIComponent(new URL(value).pathname).replace(/\/+$/, '').toLowerCase(); } catch { return ''; } };
+  const path = pathOf(tournament?.url);
+  const items = eventsTournamentsPayload?.tournaments || [];
+  const parent = path && items.filter(item => { const candidate = pathOf(item.url); return candidate && (path === candidate || path.startsWith(`${candidate}/`)); }).sort((a,b) => pathOf(b.url).length - pathOf(a.url).length)[0];
+  return parent?.name || tournament?.name || '';
+}
 function refreshEventFilterOptions() {
   if (!eventsPayload) return;
   const allMatches = eventsSelectedTab === 'completed'
@@ -3119,7 +3207,8 @@ function refreshEventFilterOptions() {
       const key = eventCountryKey(opponent);
       if (key && !countries.has(key)) countries.set(key, { name: key === 'CN' ? '中国' : eventCountryName(opponent), code: key });
     });
-    if (match.tournament?.name) tournaments.add(match.tournament.name);
+    const mainName = eventTournamentMainName(match.tournament);
+    if (mainName) tournaments.add(mainName);
   });
   const countrySelect = document.querySelector('#eventsCountryFilter');
   const tournamentSelect = document.querySelector('#eventsTournamentFilter');
@@ -3202,7 +3291,7 @@ function renderEvents() {
   const selectedMatches = eventsSelectedTab === 'completed' ? completed : upcoming;
   const matches = selectedMatches.filter(match => {
     const matchesCountry = eventsCountryFilter === 'all' || (match.opponents || []).some(opponent => eventCountryKey(opponent) === eventsCountryFilter);
-    const matchesTournament = eventsTournamentFilter === 'all' || match.tournament?.name === eventsTournamentFilter;
+    const matchesTournament = eventsTournamentFilter === 'all' || eventTournamentMainName(match.tournament) === eventsTournamentFilter;
     const matchesTier = eventsTierFilter.has(eventTierCategory(eventTournamentTier(match.tournament?.name, match.tournament?.url)));
     return matchesCountry && matchesTournament && matchesTier;
   });

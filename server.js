@@ -7,6 +7,9 @@ import { safeHttpHandler, staticFilePath } from './server/services/http-safety.j
 import { createApiProtection } from './server/services/api-protection.js';
 import { createAvatarCache } from './server/services/avatar-cache.js';
 import { createProfileSearchPool } from './server/services/profile-search-pool.js';
+import { resolveTournament } from './server/services/tournament-identity.js';
+import { createVerifiedRealtimeNames } from './server/services/realtime-player-names.js';
+import { parseTournamentRounds, findTournamentRound } from './server/services/tournament-rounds.js';
 import http from 'node:http';
 import { nextScheduledVideoRound } from './server/services/media-video-schedule.js';
 import { appendFile, readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -34,6 +37,7 @@ import { createGameAssetService } from './server/services/game-assets.js';
 import { parseYoutubeWatchMetadata } from './server/services/youtube-live-metadata.js';
 import { appendNewTournamentResults, parseTournamentResultsHtml, tournamentResultCategories } from './server/services/liquipedia-tournament-results.js';
 import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
+import { fetchKickLive } from './server/services/kick-live.js';
 const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
@@ -1098,6 +1102,7 @@ async function fetchMediaLiveSource(source) {
     return fetchYoutubeLive({ ...source, liveUrl: source.url, url: source.url, platform: 'youtube', isCN: source.isCN });
   }
   if (source.platform === 'twitch') return fetchTwitchLive(source);
+  if (source.platform === 'kick') return fetchKickLive(source);
   if (source.platform === 'douyu') return fetchDouyuLive(source);
   if (source.platform === 'douyin') return fetchDouyinLive(source);
   return fetchGenericLive(source);
@@ -1851,6 +1856,7 @@ const profileMatchesService = createMatchesService({ fetchUpstreamWithRateLimit,
 const { fetchWorldsEdgeMatchesOnce:fetchProfileMatchesOnce, fetchLatestWorldsEdgeMatchOnce:fetchLatestProfileMatchOnce } = profileMatchesService;
 
 const realtimeService = createRealtimeService({
+  loadVerifiedRealtimeNames: createVerifiedRealtimeNames({ readFile, cacheDir:aoe2RecsProfileCacheDir }),
   realtimePayloadPath: join(dataDir, 'realtime-payload.json'),
   readFile,
   writeFile,
@@ -2164,6 +2170,7 @@ async function searchProfiles(query, leaderboardId, signal) {
     const startsWith = position === 0;
     return {
       ...player,
+      country: forceChinaCountry(player.profileId, player.country || ''),
       rating: selectedRatings.get(String(player.profileId)) ?? ratings.get(String(player.profileId)) ?? null,
       matchQuality: exact ? 3 : startsWith ? 2 : position >= 0 ? 1 : 0,
       matchPosition: Math.max(0, position),
@@ -2791,12 +2798,53 @@ function normalizedTournamentTier(value) {
   return match?.[1] || '';
 }
 
-async function addMatchTiers(parsed) {
+const tournamentRoundCache = new Map();
+async function addMatchRounds(parsed) {
+  const groups = new Map();
+  for (const match of parsed.upcoming || []) {
+    if (!match.tournament?.tier) continue;
+    try {
+      const url = new URL(match.tournament.url);
+      const page = decodeURIComponent(url.pathname.replace(/^\/ageofempires\//, ''));
+      if (url.hostname !== 'liquipedia.net' || !page || page.includes(':')) continue;
+      if (!groups.has(page)) groups.set(page, []);
+      groups.get(page).push(match);
+    } catch {}
+  }
+  for (const [page, matches] of [...groups].slice(0, 8)) {
+    try {
+      let cached = tournamentRoundCache.get(page);
+      if (!cached || Date.now() - cached.at > 60 * 60_000) {
+        const payload = await queueLiquipediaParse(async () => {
+          const url = new URL(liquipediaApiUrl);
+          url.search = new URLSearchParams({ action:'parse', page, prop:'wikitext', format:'json', formatversion:'2' });
+          const response = await fetch(url, { headers:{'user-agent':liquipediaUserAgent}, signal:AbortSignal.timeout(15000) });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          if (typeof payload.parse?.wikitext !== 'string') throw new Error('missing wikitext');
+          return payload;
+        }, 0);
+        cached = { at:Date.now(), rows:parseTournamentRounds(payload.parse.wikitext) };
+        tournamentRoundCache.set(page, cached);
+        if (tournamentRoundCache.size > 64) tournamentRoundCache.delete(tournamentRoundCache.keys().next().value);
+      }
+      for (const match of matches) {
+        const row = findTournamentRound(match, cached.rows);
+        if (row) { match.tournament.round = row.round; match.bestOf ||= row.bestOf; }
+      }
+    } catch (error) { console.warn(`[events] bracket round unavailable for ${page}: ${error.message}`); }
+  }
+  return parsed;
+}
+async function addMatchTiers(parsed, includeRounds = true) {
   let tournaments = [];
   try { tournaments = (await loadLiquipediaTournaments()).tournaments || []; } catch {}
-  const tiers = new Map(tournaments.map(item=>[normalizeEventPlayerName(item.name), normalizedTournamentTier(item.tier)]));
-  const apply = match => ({ ...match, tournament:{ ...match.tournament, tier:tiers.get(normalizeEventPlayerName(match.tournament?.name)) || '' } });
-  return { upcoming:parsed.upcoming.map(apply), completed:parsed.completed.map(apply) };
+  const apply = match => {
+    const parent = resolveTournament(match.tournament, tournaments);
+    return { ...match, tournament: { ...match.tournament, mainName: parent?.name || match.tournament?.name || '', tier: normalizedTournamentTier(parent?.tier) } };
+  };
+  const result = { upcoming:parsed.upcoming.map(apply), completed:parsed.completed.map(apply) };
+  return includeRounds ? addMatchRounds(result) : result;
 }
 
 function announceMatchTransitions(previous, next) {
@@ -2818,8 +2866,8 @@ async function loadLiquipediaMatchesCache() {
   try {
     const cached = JSON.parse(await readFile(liquipediaMatchesCachePath, 'utf8'));
     if (cached && Array.isArray(cached.upcoming) && Array.isArray(cached.completed)) {
-      liquipediaMatchesCache = cached;
-      rebuildLiquipediaLivePlayerCache(cached);
+      liquipediaMatchesCache = { ...cached, ...await addMatchTiers(cached, false) };
+      rebuildLiquipediaLivePlayerCache(liquipediaMatchesCache);
     }
   } catch (error) {
     if (error?.code !== 'ENOENT') console.warn('[events] cached matches unavailable:', error.message);
@@ -2832,7 +2880,7 @@ async function refreshLiquipediaMatches() {
   liquipediaMatchesRefreshPromise = (async () => {
     await loadLiquipediaMatchesCache();
     const cachedAt = Date.parse(liquipediaMatchesCache?.fetchedAt || 0);
-    if (Number.isFinite(cachedAt) && Date.now() - cachedAt < liquipediaMatchesRefreshInterval) return liquipediaMatchesCache;
+    if (Number.isFinite(cachedAt) && Date.now() - cachedAt < liquipediaMatchesRefreshInterval) return addMatchRounds(liquipediaMatchesCache);
     const sourceText = '<div data-aoe2cn-section="upcoming">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=upcoming|limit=50|filterbuttons-game=Age of Empires II}}</div><div data-aoe2cn-section="recent">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=recent|limit=50|filterbuttons-game=Age of Empires II}}</div>';
     const form = new URLSearchParams({ action: 'parse', text: sourceText, title: 'Liquipedia:Upcoming and ongoing matches', prop: 'text', format: 'json', formatversion: '2' });
     const payload = await queueLiquipediaParse(async () => {
@@ -2892,14 +2940,16 @@ function nextBeijingHour(hour, now=Date.now()) {
 }
 
 function scheduleMatchPreview() {
-  const target=nextBeijingHour(18);
+  const target=Math.min(nextBeijingHour(6),nextBeijingHour(18));
   setTimeout(async()=>{
     try {
       const data=await refreshLiquipediaMatches();
       const start=Date.now(), end=start+12*60*60_000;
       const matches=(data?.upcoming || []).filter(match=>match.timestamp*1000>=start && match.timestamp*1000<end)
         .map(match=>({...match,tier:normalizedTournamentTier(match.tournament?.tier)})).filter(match=>match.tier);
-      realtimeChat.announceSchedule({day:chinaDayKey(new Date()),matches});
+      const scheduled = new Date(target);
+      const hour = new Date(target+8*60*60_000).getUTCHours();
+      realtimeChat.announceSchedule({day:`${chinaDayKey(scheduled)}:${hour}`,matches});
     } catch(error) { console.warn('[realtime-chat] match preview failed:',error.message); }
     scheduleMatchPreview();
   },Math.max(1000,target-Date.now())).unref();

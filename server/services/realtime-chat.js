@@ -157,7 +157,12 @@ export function createRealtimeChat({ path, now = Date.now } = {}) {
       const rows = (Array.isArray(matches) ? matches : []).map(match => {
         const time = new Date(match.timestamp * 1000).toLocaleTimeString('zh-CN', { timeZone:'Asia/Shanghai', hour:'2-digit', minute:'2-digit', hour12:false });
         const opponents = match.opponents.map(item=>clean(item?.name || '待定')).slice(0,2);
-        return `${time} ${match.tier}级 ${opponents[0]} vs ${opponents[1]}`;
+        const tournament = clean(match.tournament?.round
+          ? `${match.tournament.mainName || match.tournament.name} - ${match.tournament.round}`
+          : match.tournament?.name || match.tournament?.mainName || '未命名赛事');
+        const bestOf = Number(match.bestOf);
+        const format = Number.isInteger(bestOf) && bestOf > 0 ? `BO${bestOf}｜` : '';
+        return `${time} ${match.tier}级｜${tournament}｜${format}${opponents[0]} vs ${opponents[1]}`;
       });
       const content = rows.length ? `未来12小时比赛预告：${rows.join('；')}` : '未来12小时暂无 S级、A级或B级比赛';
       return announceSystem({ content, key:`match-preview:${day}`, repeatMs:36 * 60 * 60_000 });

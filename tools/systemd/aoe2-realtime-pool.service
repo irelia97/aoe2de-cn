@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh active AoE2 realtime profile pool
+After=aoe2de.service network-online.target
+Wants=aoe2de.service network-online.target
+
+[Service]
+Type=oneshot
+User=aoe2
+Group=aoe2
+WorkingDirectory=/opt/aoe2de-cn
+ExecStart=/usr/bin/node /opt/aoe2de-cn/scripts/refresh-realtime-pool.mjs
+TimeoutStartSec=30min
