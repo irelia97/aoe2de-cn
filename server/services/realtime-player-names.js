@@ -50,8 +50,8 @@ export function createVerifiedRealtimeNames({readFile, cacheDir}) {
       }
       const profile=cached.data?.profile;
       if(profile?.player?.verified!==true || !profile.player.name || Number(profile.player.platform_id)!==3 || !/^\d+$/.test(String(profile.player.id)))return;
-      const item={name:profile.player.name,canonicalProfileId:String(profile.player.id),savedAt:Number(cached.data.savedAt)||0};
-      for(const account of profile.accounts || []) {
+      const item={name:profile.player.name,canonicalProfileId:String(profile.player.id),team:typeof profile.player.team==='string'?profile.player.team.trim():'',savedAt:Number(cached.data.savedAt)||0};
+      for(const account of [{id:profile.player.id,platform:'steam'},...(profile.accounts || [])]) {
         const key=String(account.id || '');
         if(account.platform!=='steam'||!/^\d+$/.test(key))continue;
         if(!result.has(key)||result.get(key).savedAt<item.savedAt)result.set(key,item);

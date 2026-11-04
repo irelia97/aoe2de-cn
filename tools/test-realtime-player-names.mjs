@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {cleanRealtimePlayerName,createVerifiedRealtimeNames,realtimePlayerNameOverrides,realtimePlayerIdentityOverrides,realtimePinnedProfileIds} from '../server/services/realtime-player-names.js';
+import {createRealtimeService} from '../server/services/realtime-service.js';
 test('requested Chinese names and PiggyKitty alternate accounts share display identities',()=>{
   assert.equal(realtimePlayerNameOverrides.get('7576082'),'徐泽');
   assert.equal(realtimePlayerNameOverrides.get('11493710'),'徐泽');
@@ -23,4 +24,26 @@ test('verified AoE2Recs identity unifies alternate Steam accounts using newest c
   const names=await load(['1','2','4']);
   assert.equal(names.get('1').name,'Vivi');assert.equal(names.get('2').name,'Vivi');assert.equal(names.get('2').canonicalProfileId,'10');assert.equal(names.has('3'),false);
   await load(['1','2','4']);assert.equal(reads,3);
+});
+
+test('certified team is shared by the main profile and its alternate accounts',async()=>{
+  const load=createVerifiedRealtimeNames({cacheDir:'/cache',readFile:async()=>JSON.stringify({savedAt:1,profile:{
+    player:{verified:true,id:10,name:'XuanLv',team:'CN ZhongSheng',platform_id:3},
+    accounts:[{id:20,platform:'steam'},{id:30,platform:'steam'}]
+  }})});
+  const names=await load(['10']);
+  for(const id of ['10','20','30'])assert.equal(names.get(id).team,'CN ZhongSheng');
+});
+
+test('realtime team column uses certified teams rather than account clan labels',async()=>{
+  class Socket{constructor(){this.readyState=1;}addEventListener(){}close(){}}
+  const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache');},writeFile:async()=>{},
+    localProfileDetails:()=>({player:{name:'Player',team:'QingY'}}),getMediaCache:async()=>({live:[]}),
+    loadRlReference:async()=>new Map([['42',{canonicalProfileId:'10'}]]),
+    loadVerifiedRealtimeNames:async ids=>{assert.ok(ids.includes('10'));return new Map([['42',{name:'Verified',canonicalProfileId:'10',team:'CN ZhongSheng'}]]);},
+    fetchPersonalLeaderboardStats:async()=>[],fetchLatestWorldsEdgeMatchOnce:async()=>null,forceChinaCountry:(_,c)=>c});
+  await service.startRealtimeWebSockets(['42','43']);
+  const payload=await service.refreshRealtimePayload(['42','43']);
+  assert.equal(payload.states[0].player.team,'CN ZhongSheng');
+  assert.equal(payload.states[1].player.team,'');
 });

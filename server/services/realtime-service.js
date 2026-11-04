@@ -309,7 +309,9 @@ export function createRealtimeService(deps) {
     const ratingMap = realtimeRatings.get(activeProfileIds);
     const realtimeReferences = await loadRlReference();
     const nameIds = states.flatMap(state => [state.profileId,...(state.match?.players||[]).map(p=>p.profileId),...(state.queue?.players||[]).map(p=>p.profileId),...(state.cancellation?.players||[]).map(p=>p.profileId),...(state.lobby?.players||[]).map(p=>p.profileId)]);
-    const verifiedNames = deps.loadVerifiedRealtimeNames ? await deps.loadVerifiedRealtimeNames(nameIds) : new Map();
+    const canonicalIds = nameIds.map(id=>realtimePlayerIdentityOverrides.get(String(id)) || realtimeReferences.get(String(id))?.canonicalProfileId).filter(Boolean);
+    const verifiedNames = deps.loadVerifiedRealtimeNames ? await deps.loadVerifiedRealtimeNames([...nameIds,...canonicalIds]) : new Map();
+    const teams = deps.loadPlayerTeams ? await deps.loadPlayerTeams(profileIds,verifiedNames) : new Map(profileIds.map(id=>[String(id),verifiedNames.get(String(id))?.team || '']));
     const displayName = (id, name, clan='') => {
       const verified = verifiedNames.get(String(id));
       const reference = realtimeReferences.get(String(id));
@@ -359,7 +361,7 @@ export function createRealtimeService(deps) {
       const queue = state.queue ? { ...state.queue, players: (state.queue.players || []).map(p => ({ ...p, country:forceChinaCountry(p.profileId,p.country || ''), originalName:p.name, name:displayName(p.profileId,p.name,p.clan), rating1v1: ratingMap.get(String(p.profileId)) ?? null })) } : undefined;
       const cancellation = state.cancellation ? {...state.cancellation,players:(state.cancellation.players||[]).map(p=>({...p,name:displayName(p.profileId,p.name)}))} : undefined;
       if (state.lobby) state = { ...state, lobby:{...state.lobby, players:(state.lobby.players||[]).map(player=>({...player,country:forceChinaCountry(player.profileId,player.country || ''),name:displayName(player.profileId,player.name),rating:ratingMap.get(String(player.profileId))??null,ratingMode:'rm_1v1'}))} };
-      return { ...state, ...(queue ? { queue } : {}), ...(cancellation?{cancellation}:{}), match: ratedMatch, identity: realtimePlayerIdentityOverrides.get(String(state.profileId)) || verifiedNames.get(String(state.profileId))?.canonicalProfileId || reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), originalName:playerName, name:displayName(state.profileId,playerName,profile.team), team: profile.team || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
+      return { ...state, ...(queue ? { queue } : {}), ...(cancellation?{cancellation}:{}), match: ratedMatch, identity: realtimePlayerIdentityOverrides.get(String(state.profileId)) || verifiedNames.get(String(state.profileId))?.canonicalProfileId || reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), originalName:playerName, name:displayName(state.profileId,playerName,profile.team), team: teams.get(String(state.profileId)) || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
     });
     return { source, checkedAt: new Date().toISOString(), states: enrichedStates };
   }
@@ -777,5 +779,5 @@ export function createRealtimeService(deps) {
     };
   }
 
-  return { normalizeRealtimeLatestMatch, refreshRealtimePayload, readCachedRealtimeLatestMatch, fetchRealtimeStates, getCachedPayload, getRealtimeStatus, startRealtimeWebSockets, realtimeWebSocketsHealthy };
+  return { normalizeRealtimeLatestMatch, refreshRealtimePayload, readCachedRealtimeLatestMatch, fetchRealtimeStates, getCachedPayload, getRealtimeStatus, startRealtimeWebSockets, realtimeWebSocketsHealthy, refreshEnrichment:scheduleRealtimeSocketPublish };
 }

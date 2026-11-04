@@ -38,6 +38,7 @@ import { parseYoutubeWatchMetadata } from './server/services/youtube-live-metada
 import { appendNewTournamentResults, parseTournamentResultsHtml, tournamentResultCategories } from './server/services/liquipedia-tournament-results.js';
 import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 import { fetchKickLive } from './server/services/kick-live.js';
+import { createPlayerTeams } from './server/services/player-teams.js';
 const execFileAsync = promisify(execFile);
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
@@ -1833,6 +1834,22 @@ function normalizeCompanionMatches(payload) {
   }).sort((a, b) => Number(b.started) - Number(a.started));
 }
 
+const loadVerifiedPlayerProfiles = createVerifiedRealtimeNames({readFile,cacheDir:aoe2RecsProfileCacheDir});
+const playerTeams = createPlayerTeams({
+  readFile,writeFile,rename,cachePath:join(dataDir,'player-teams.json'),
+  loadProfile:async id=>{
+    const profile=await fetchAoE2RecsProfileOnce(id);
+    await writeAoE2RecsProfileCache(id,profile);
+    return profile;
+  },
+  onChange:()=>realtimeService.refreshEnrichment()
+});
+async function loadPlayerTeams(ids, verifiedProfiles) {
+  const references=await loadRlReference();
+  const canonicalIds=ids.map(id=>references.get(String(id))?.canonicalProfileId).filter(Boolean);
+  const verified=verifiedProfiles || await loadVerifiedPlayerProfiles([...ids,...canonicalIds]);
+  return playerTeams.getTeams(ids,verified,references);
+}
 const profileService = createProfileService({
   getProfileDb: () => profileDb,
   leaderboardCache,
@@ -1856,7 +1873,8 @@ const profileMatchesService = createMatchesService({ fetchUpstreamWithRateLimit,
 const { fetchWorldsEdgeMatchesOnce:fetchProfileMatchesOnce, fetchLatestWorldsEdgeMatchOnce:fetchLatestProfileMatchOnce } = profileMatchesService;
 
 const realtimeService = createRealtimeService({
-  loadVerifiedRealtimeNames: createVerifiedRealtimeNames({ readFile, cacheDir:aoe2RecsProfileCacheDir }),
+  loadVerifiedRealtimeNames: loadVerifiedPlayerProfiles,
+  loadPlayerTeams,
   realtimePayloadPath: join(dataDir, 'realtime-payload.json'),
   readFile,
   writeFile,
@@ -3217,6 +3235,8 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       const profile = localProfileDetails(profileId);
       if (!profile) throw new Error('本地资料库中没有该选手');
       const rlReference = (await loadRlReference()).get(String(profileId)) || null;
+      const teams=await loadPlayerTeams([profileId]);
+      profile.player={...profile.player,team:teams.get(profileId) || ''};
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300' });
       return res.end(JSON.stringify({ ...profile, rlReference, cached: true, stale: false, source: 'profile-dump' }));
     } catch (error) {
@@ -3533,6 +3553,7 @@ httpServer.listen(port, '127.0.0.1', () => {
   leaderboardDumpSummary.start();
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
   ensureSiteTrafficState().then(() => scheduleSiteDailyArchive()).catch(error => console.warn('[stats] daily archive startup failed:', error.message));
+  playerTeams.start();
   let lastRealtimeApiFallbackAt = Date.now();
   const refreshRealtimeOnServer = async () => {
     try {

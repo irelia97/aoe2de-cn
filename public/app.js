@@ -3664,7 +3664,7 @@ function renderCurrentRoute(selectedPlayer = null) {
   try { localStorage.setItem(lastProfileIdStorageKey, currentProfileId); } catch { /* Storage may be disabled. */ }
   if (selectedPlayer) {
     document.querySelector('#profileIdentityName').textContent = selectedPlayer.name || `玩家 ${profileId}`;
-    document.querySelector('#profileIdentityMeta').innerHTML = `${profileCountryMarkup(selectedPlayer.country)}<span class="profile-country-separator">·</span><span class="profile-team-inline">${escapeHtml(selectedPlayer.clan || '暂无战队')}</span>`;
+    document.querySelector('#profileIdentityMeta').innerHTML = `${profileCountryMarkup(selectedPlayer.country)}<span class="profile-country-separator">·</span><span class="profile-team-inline">正在获取战队…</span>`;
   }
   loadProfileLeaderboards(profileId);
   loadAoE2RecsProfile(profileId, selectedPlayer?.name || history.state?.name || '');
