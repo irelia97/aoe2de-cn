@@ -81,6 +81,42 @@ themeTabs?.addEventListener('click', event => {
   if (button) applyTheme(button.dataset.themeValue);
 });
 applyTheme(document.documentElement.dataset.theme || 'dark', false);
+const siteShareButton = document.querySelector('#siteShareButton');
+const siteShareStatus = document.querySelector('#siteShareStatus');
+let siteShareStatusTimer;
+function showSiteShareStatus(message) {
+  clearTimeout(siteShareStatusTimer);
+  siteShareStatus.textContent = message;
+  siteShareStatus.hidden = false;
+  siteShareStatusTimer = setTimeout(() => { siteShareStatus.hidden = true; }, 3000);
+}
+async function copySiteShareUrl(url) {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(url); return; }
+  } catch {}
+  const field = document.createElement('textarea');
+  field.value = url;
+  field.setAttribute('readonly', '');
+  field.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.append(field);
+  try {
+    field.select();
+    if (!document.execCommand('copy')) throw new Error('Copy unavailable');
+  } finally { field.remove(); siteShareButton?.focus(); }
+}
+siteShareButton?.addEventListener('click', async () => {
+  if (siteShareButton.disabled) return;
+  siteShareButton.disabled = true;
+  try {
+    if (navigator.share) {
+      try { await navigator.share({ title: document.title, url: location.href }); return; }
+      catch (error) { if (error.name === 'AbortError') return; }
+    }
+    await copySiteShareUrl(location.href);
+    showSiteShareStatus('页面链接已复制');
+  } catch { showSiteShareStatus('复制未成功，请复制浏览器地址分享'); }
+  finally { siteShareButton.disabled = false; }
+});
 const lazyDetails = new IntersectionObserver(entries => {
   for (const entry of entries) {
     if (!entry.isIntersecting) continue;

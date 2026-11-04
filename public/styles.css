@@ -1687,3 +1687,10 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 .realtime-status-activity.is-lobby>span[aria-hidden="true"]{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;font-size:13px;line-height:1}
 .page-realtime .realtime-status-activity.is-lobby{color:#f279c6}html[data-resolved-theme="light"] .page-realtime .realtime-status-activity.is-lobby{color:#ad216f}
 .page-realtime .realtime-lobby-join{color:inherit;text-decoration:none}.page-realtime .realtime-lobby-join:hover{text-decoration:underline}
+#leaderboard>.topbar>.breadcrumbs{display:none}
+.topbar-share{position:relative;display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;color:var(--muted,#a9a18f);font-size:11px;line-height:1.5}
+.topbar-share-button{display:inline-flex;flex:none;align-items:center;justify-content:center;gap:5px;padding:7px 9px;border:1px solid #8b78534d;border-radius:5px;background:transparent;color:var(--text,#eadfca);font:inherit;font-weight:600;white-space:nowrap;cursor:pointer}
+.topbar-share-button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.topbar-share-button:hover{border-color:#b99b68;background:#b99b681a}.topbar-share-button:focus-visible{outline:2px solid #b99b68;outline-offset:3px}.topbar-share-button:disabled{opacity:.65;cursor:wait}
+.topbar-share-status{position:absolute;left:0;top:calc(100% + 7px);z-index:50;max-width:280px;padding:7px 10px;border:1px solid #8b78534d;border-radius:5px;background:var(--bg,#101310);color:var(--text,#eadfca);box-shadow:0 4px 14px #0003;font-size:12px;white-space:nowrap}.topbar-share-status[hidden]{display:none}
+@media(min-width:901px){#leaderboard>.topbar>.topbar-share{grid-column:1;grid-row:1;justify-self:start}#leaderboard>.topbar>.top-right{min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end;gap:4px 10px}#leaderboard>.topbar .daily-usage{max-width:100%;flex-wrap:wrap;justify-content:flex-end;gap:2px 8px}#leaderboard>.topbar .theme-tabs{flex-shrink:0}#leaderboard>.topbar .theme-tabs button{white-space:nowrap}}

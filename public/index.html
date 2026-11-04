@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.onload=null;this.media='all'" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=event-results-v27" />
+  <link rel="stylesheet" href="/styles.css?v=event-results-v28" />
   <link rel="stylesheet" href="/civilizations.css?v=22" />
   <link rel="stylesheet" href="/civilization-combobox.css?v=3" />
   <link rel="stylesheet" href="/tech-tree.css?v=25" />
@@ -36,7 +36,7 @@
     </aside>
 
     <main id="leaderboard">
-      <header class="topbar"><div class="breadcrumbs">数据中心 <span>/</span> <b>天梯榜单</b></div><form id="profileSearchForm" class="profile-search-form topbar-search"><label class="sr-only" for="profileSearchInput">输入玩家昵称</label><div id="player-search" class="profile-search-input-wrap"><input id="profileSearchInput" name="q" type="search" minlength="2" maxlength="80" placeholder="输入玩家昵称" autocomplete="off" required /><div id="profileSearchSuggestions" class="profile-suggestions" role="listbox" aria-label="玩家候选" hidden></div></div><div id="profileSearchMeta" class="sr-only" aria-live="polite"></div></form><div class="top-right"><div class="daily-usage" aria-label="今日网站使用情况"><span>今日使用人数 <b id="todayUsers">—</b></span><span>今日浏览次数 <b id="todayViews">—</b></span></div><span class="top-divider"></span><div class="theme-tabs" id="themeTabs" role="group" aria-label="网页色调"><button type="button" data-theme-value="light">白天</button><button type="button" data-theme-value="dark">夜间</button></div><span class="top-divider"></span><span class="live-label"><i></i> LIVE DATA</span></div></header>
+      <header class="topbar"><div class="breadcrumbs">数据中心 <span>/</span> <b>天梯榜单</b></div><div class="topbar-share"><button type="button" id="siteShareButton" class="topbar-share-button" aria-label="分享当前页面网址"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4"/></svg><span>分享</span></button><span>喜欢的话就分享给其他帝友吧</span><span id="siteShareStatus" class="topbar-share-status" role="status" aria-live="polite" hidden></span></div><form id="profileSearchForm" class="profile-search-form topbar-search"><label class="sr-only" for="profileSearchInput">输入玩家昵称</label><div id="player-search" class="profile-search-input-wrap"><input id="profileSearchInput" name="q" type="search" minlength="2" maxlength="80" placeholder="输入玩家昵称" autocomplete="off" required /><div id="profileSearchSuggestions" class="profile-suggestions" role="listbox" aria-label="玩家候选" hidden></div></div><div id="profileSearchMeta" class="sr-only" aria-live="polite"></div></form><div class="top-right"><div class="daily-usage" aria-label="今日网站使用情况"><span>今日使用人数 <b id="todayUsers">—</b></span><span>今日浏览次数 <b id="todayViews">—</b></span></div><span class="top-divider"></span><div class="theme-tabs" id="themeTabs" role="group" aria-label="网页色调"><button type="button" data-theme-value="light">白天</button><button type="button" data-theme-value="dark">夜间</button></div><span class="top-divider"></span><span class="live-label"><i></i> LIVE DATA</span></div></header>
       <section class="intro"><div class="intro-copy"><div class="eyebrow"><span></span> RANKED LADDER <span class="eyebrow-line"></span></div><div class="intro-title-line"><h1>天梯<span>榜单</span></h1><img class="leaderboard-title-art" src="/assets/title.png" alt="" aria-hidden="true"></div><p>榜单只收录前2000名选手</p></div></section>
 
       <section class="stats-strip">
@@ -145,7 +145,7 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=event-results-v86" defer></script>
+  <script src="/app.js?v=event-results-v87" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');
