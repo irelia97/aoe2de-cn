@@ -2707,7 +2707,10 @@ function realtimeStateIsActive(state) {
 }
 function realtimeStatusActivity(state) {
   if (state?.status === 'lobby') {
-    return `<span class="realtime-status-activity is-lobby"><span aria-hidden="true">🏠</span><span>大厅房间 ${escapeHtml(state.lobby?.name || '未命名房间')}</span></span>`;
+    const label = `大厅房间 ${escapeHtml(state.lobby?.name || '未命名房间')}`;
+    const id = String(state.lobby?.id || '');
+    const text = /^[1-9]\d*$/.test(id) ? `<a class="realtime-lobby-join" href="aoe2de://0/${id}" title="在游戏内加入大厅房间">${label}</a>` : `<span>${label}</span>`;
+    return `<span class="realtime-status-activity is-lobby"><span aria-hidden="true">🏠</span>${text}</span>`;
   }
   if (state?.status === 'cancelled') {
     const players = state.cancellation?.players || [];
@@ -2881,7 +2884,9 @@ function renderRealtimeCards(payload) {
       const lobby=state.lobby;
       const players=Array.isArray(lobby.players)?lobby.players:[];
       const rows=players.map((player,index)=>realtimePlayerRow(player,index)).join('');
-      return `<article class="realtime-match-card"><div class="realtime-match-top"><span aria-hidden="true">🏠</span><strong>大厅房间 ${escapeHtml(lobby.name || '未命名房间')}</strong></div><div class="realtime-match-players">${rows}</div><div class="realtime-match-tags"><span>🏠 大厅房间</span><span>◇ ${escapeHtml(mapDisplayName(lobby.map || '未知地图'))}</span><span>▣ ${escapeHtml(realtimeServerName(lobby.server || ''))}</span></div></article>`;
+      const title = `大厅房间 ${escapeHtml(lobby.name || '未命名房间')}`;
+      const heading = /^[1-9]\d*$/.test(String(lobby.id || '')) ? `<a class="realtime-lobby-join" href="aoe2de://0/${lobby.id}" title="在游戏内加入大厅房间">${title}</a>` : title;
+      return `<article class="realtime-match-card"><div class="realtime-match-top"><span aria-hidden="true">🏠</span><strong>${heading}</strong></div><div class="realtime-match-players">${rows}</div><div class="realtime-match-tags"><span>🏠 大厅房间</span><span>◇ ${escapeHtml(mapDisplayName(lobby.map || '未知地图'))}</span><span>▣ ${escapeHtml(realtimeServerName(lobby.server || ''))}</span></div></article>`;
     }
     const match=state.match;
     const players=Array.isArray(match.players)?match.players:[];
