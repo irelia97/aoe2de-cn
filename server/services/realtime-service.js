@@ -69,6 +69,18 @@ export function createRealtimeService(deps) {
     }
   }
   const cancelledPlayers = new Map();
+  const cancellationDuration = 3 * 60 * 1000;
+  function rememberCancellation(profileId, cancellation) {
+    const remaining = Number(cancellation.cancelledAt) + cancellationDuration - Date.now();
+    if (remaining <= 0) return;
+    cancelledPlayers.set(profileId,cancellation);
+    const timer = setTimeout(() => {
+      if (cancelledPlayers.get(profileId) !== cancellation) return;
+      cancelledPlayers.delete(profileId);
+      scheduleRealtimeSocketPublish();
+    },remaining);
+    timer.unref?.();
+  }
   let queueSocket, queueReconnectTimer;
   function queueState(profileId) {
     if (queueSocket?.readyState !== 1) return null;
@@ -118,7 +130,7 @@ export function createRealtimeService(deps) {
               const profileId = String(id);
               if (members.has(profileId) && realtimeSocketProfileIds.includes(profileId)) {
                 queueGrace.delete(profileId);
-                cancelledPlayers.set(profileId, { matchId: prior.matchId, cancelledAt: Date.now(), players: (prior.players || []).map(p => ({ profileId:String(p.profileId), name:p.name || '' })) });
+                rememberCancellation(profileId, { matchId: prior.matchId, cancelledAt: Date.now(), players: (prior.players || []).map(p => ({ profileId:String(p.profileId), name:p.name || '' })) });
                 changed = true;
               }
             }
@@ -258,7 +270,7 @@ export function createRealtimeService(deps) {
       }
       const cancelled = cancelledPlayers.get(String(state.profileId));
       if (cancelled) {
-        if (state.status === 'game' && Number(state.match?.started)*1000 > cancelled.cancelledAt) cancelledPlayers.delete(String(state.profileId));
+        if (Date.now() >= Number(cancelled.cancelledAt) + cancellationDuration || (state.status === 'game' && Number(state.match?.started)*1000 > cancelled.cancelledAt)) cancelledPlayers.delete(String(state.profileId));
         else return { profileId:String(state.profileId), status:'cancelled', match:null, cancellation:cancelled };
       }
       if (!queued) {
@@ -628,7 +640,7 @@ export function createRealtimeService(deps) {
     visibilityGrace.restore((cachedPayload?.states || []).filter(state => ids.includes(String(state.profileId))));
     for (const state of Array.isArray(cachedPayload?.states) ? cachedPayload.states : []) {
       if (state.queueGrace?.until > Date.now()) rememberQueueGrace({ id:state.queueGrace.queueId, players:[{profileId:state.profileId}] }, state.queueGrace.until);
-      if (state.status === 'cancelled' && state.cancellation && ids.includes(String(state.profileId))) cancelledPlayers.set(String(state.profileId), state.cancellation);
+      if (state.status === 'cancelled' && state.cancellation && ids.includes(String(state.profileId))) rememberCancellation(String(state.profileId), state.cancellation);
       if (state.graceUntil > Date.now() && state.match) {
         recentGames.set(String(state.profileId), { state, endedAt: state.graceUntil - gracePeriod });
       }
