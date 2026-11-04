@@ -2748,7 +2748,9 @@ function realtimeStatusActivity(state) {
   const oneVsOne = leaderboard.includes('1V1') || (players.length === 2 && teamIds.size === 2);
   const teamGame = leaderboard.includes('TG') || players.length > 2;
   let label = map;
-  if (oneVsOne) {
+  if (!leaderboard || leaderboard === 'UNRANKED') {
+    label = `${map} 大厅局`;
+  } else if (oneVsOne) {
     const opponent = players.find(player => String(player.profileId) !== String(state.profileId) && (!own || String(player.team) !== String(own.team))) || players.find(player => String(player.profileId) !== String(state.profileId));
     if (opponent) label = `${map} vs ${opponent.name || `玩家 ${opponent.profileId || ''}`}`;
   } else if (teamGame) {
