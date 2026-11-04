@@ -2722,7 +2722,8 @@ function realtimeStatusActivity(state) {
     const queue = state.queue;
     const players = queue.players || [];
     let label;
-    let icon = '<i class="realtime-queue-spinner" aria-hidden="true"></i>';
+    const queueKey = escapeHtml(`${state.profileId}:${queue.id || ''}`);
+    let icon = `<i class="realtime-queue-spinner" data-queue-key="${queueKey}" aria-hidden="true"></i>`;
     if (state.status === 'queueing') {
       const teammates = players.filter(p => String(p.profileId) !== String(state.profileId));
       const teammateNames = teammates.map(p => p.name || `玩家 ${p.profileId || '未知'}`).join(' + ');
@@ -2784,6 +2785,10 @@ document.fonts?.ready.then(alignRealtimeStatusActivity);
 function renderRealtimeStatus(states) {
   const target = document.querySelector('#realtimeStatusRows');
   if (!target) return;
+  const spinnerPhases = new Map([...target.querySelectorAll('.realtime-queue-spinner')].map(icon => {
+    const animation = icon.getAnimations()[0];
+    return [icon.dataset.queueKey, { startTime:animation?.startTime, currentTime:animation?.currentTime }];
+  }));
   const visible = (Array.isArray(states) ? states : []).filter(state => realtimeStateIsActive(state) || state?.status === 'lobby' || state?.status === 'cancelled' || state?.queue || state?.live?.url || Number(state?.graceUntil) > Date.now());
   const identityMap = new Map();
   const priority = state => [
@@ -2832,6 +2837,13 @@ function renderRealtimeStatus(states) {
     const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${realtimePlatformIconMarkup(state.live.platform)}${escapeHtml(state.live.title || '正在直播')}</a>` : '';
     return `<tr><td>${rating}</td><td><a class="realtime-status-player" title="${name}" href="/profile/${encodeURIComponent(String(state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td><span class="realtime-status-tournament" title="${escapeHtml(tournamentName)}">${tournament || '—'}</span></td><td>${live}</td></tr>`;
   }).join('');
+  for (const icon of target.querySelectorAll('.realtime-queue-spinner')) {
+    const previous = spinnerPhases.get(icon.dataset.queueKey);
+    const animation = icon.getAnimations()[0];
+    if (!previous || !animation) continue;
+    if (previous.startTime != null) animation.startTime = previous.startTime;
+    else if (previous.currentTime != null) animation.currentTime = previous.currentTime;
+  }
   alignRealtimeStatusActivity();
 }
 function realtimeGroupedPlayers(match) {
