@@ -42,7 +42,7 @@ test('lobby status is published, disappears into five-minute grace and yields to
   const {Socket,sockets,send}=fakeSockets();
   const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache');},writeFile:async()=>{},
     localProfileDetails:()=>null,getMediaCache:async()=>({live:[]}),loadRlReference:async()=>new Map(),
-    fetchPersonalLeaderboardStats:async()=>[],fetchLatestWorldsEdgeMatchOnce:async()=>null,forceChinaCountry:(_,c)=>c});
+    fetchPersonalLeaderboardStats:async()=>[],fetchLatestWorldsEdgeMatchOnce:async()=>null,forceChinaCountry:(id,c)=>String(id)==='42'?'cn':c});
   await service.startRealtimeWebSockets(['42']);
   const lobby=sockets.find(socket=>socket.url.includes('handler=lobbies'));
   const queue=sockets.find(socket=>socket.url.includes('handler=queueing'));
@@ -50,8 +50,10 @@ test('lobby status is published, disappears into five-minute grace and yields to
   send(lobby,[{type:'lobbyAdded',data:{matchId:100,name:'测试大厅'}},{type:'slotAdded',data:{matchId:100,slot:0,profileId:42}}]);
   assert.equal((await state()).status,'lobby');
   assert.equal((await state()).lobby.name,'测试大厅');
+  assert.equal((await state()).lobby.players[0].country,'cn');
   send(queue,[{type:'queueingAdded',data:{id:'q1',status:'queueing',players:[{profileId:42}]}}]);
   assert.equal((await state()).status,'queueing');
+  assert.equal((await state()).queue.players[0].country,'cn');
   send(queue,[{type:'queueingRemoved',data:{id:'q1',reason:'left'}}]);
   assert.equal((await state()).status,'lobby');
   send(lobby,[{type:'lobbyRemoved',data:{matchId:100}}]);
