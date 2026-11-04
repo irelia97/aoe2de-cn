@@ -83,8 +83,6 @@ themeTabs?.addEventListener('click', event => {
 applyTheme(document.documentElement.dataset.theme || 'dark', false);
 const siteShareButton = document.querySelector('#siteShareButton');
 const siteShareStatus = document.querySelector('#siteShareStatus');
-const siteShareMenu = document.querySelector('#siteShareMenu');
-const siteWechatDialog = document.querySelector('#siteWechatDialog');
 let siteShareStatusTimer;
 function showSiteShareStatus(message) {
   clearTimeout(siteShareStatusTimer);
@@ -106,61 +104,14 @@ async function copySiteShareUrl(url) {
     if (!document.execCommand('copy')) throw new Error('Copy unavailable');
   } finally { field.remove(); siteShareButton?.focus(); }
 }
-function setSiteShareMenuOpen(open) {
-  siteShareMenu.hidden = !open;
-  siteShareButton.setAttribute('aria-expanded', String(open));
-}
-siteShareButton?.addEventListener('click', () => {
-  const target = new URL('https://connect.qq.com/widget/shareqq/index.html');
-  target.search = new URLSearchParams({url:location.href,title:document.title,summary:'喜欢的话就分享给其他帝友吧'});
-  siteShareMenu.querySelector('[data-share-target="qq"]').href = target.href;
-  clearTimeout(siteShareStatusTimer);
-  siteShareStatus.hidden = true;
-  setSiteShareMenuOpen(siteShareMenu.hidden);
-});
-siteShareMenu?.addEventListener('click', async event => {
-  const option = event.target.closest('[data-share-target]');
-  if (!option) return;
-  const platform = option.dataset.shareTarget;
-  setSiteShareMenuOpen(false);
-  if (platform === 'qq') return;
-  if (platform === 'wechat') {
-    const preview = document.querySelector('#siteWechatQr');
-    preview.textContent = '正在生成二维码…';
-    document.querySelector('#siteWechatCopy').textContent = '复制链接';
-    siteWechatDialog.showModal();
-    try {
-      const {default:qrcode} = await import('/vendor/qrcode-generator/qrcode.js?v=2.0.4');
-      const code = qrcode(0, 'M');
-      code.addData(location.href);
-      code.make();
-      preview.innerHTML = code.createSvgTag({cellSize:5,margin:20,scalable:true});
-    } catch { preview.textContent = '二维码暂时无法生成，请复制链接分享'; }
-    return;
-  }
+siteShareButton?.addEventListener('click', async () => {
+  if (siteShareButton.disabled) return;
+  siteShareButton.disabled = true;
   try {
-    await copySiteShareUrl(location.href);
-    const label = {bilibili:'B站',douyin:'抖音'}[platform];
-    showSiteShareStatus(label ? `链接已复制，可粘贴到${label}分享` : '页面链接已复制');
-  } catch { showSiteShareStatus('复制未成功，请复制浏览器地址分享'); }
-});
-document.addEventListener('click', event => {
-  if (siteShareMenu && !event.target.closest('.topbar-share')) setSiteShareMenuOpen(false);
-});
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && siteShareMenu && !siteShareMenu.hidden) {
-    setSiteShareMenuOpen(false);
-    siteShareButton.focus();
-  }
-});
-document.querySelector('#siteWechatClose')?.addEventListener('click', () => siteWechatDialog.close());
-siteWechatDialog?.addEventListener('close', () => siteShareButton.focus());
-document.querySelector('#siteWechatCopy')?.addEventListener('click', async event => {
-  const button = event.currentTarget;
-  try {
-    await copySiteShareUrl(location.href);
-    button.textContent = '链接已复制';
-  } catch { button.textContent = '请复制浏览器地址分享'; }
+    await copySiteShareUrl('https://aoe2cn.cc');
+    showSiteShareStatus('网址 aoe2cn.cc 已复制');
+  } catch { showSiteShareStatus('复制未成功，请手动复制 aoe2cn.cc'); }
+  finally { siteShareButton.disabled = false; }
 });
 const lazyDetails = new IntersectionObserver(entries => {
   for (const entry of entries) {
