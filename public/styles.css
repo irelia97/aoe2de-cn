@@ -1687,6 +1687,7 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 .realtime-status-activity.is-lobby>span[aria-hidden="true"]{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;font-size:13px;line-height:1}
 .page-realtime .realtime-status-activity.is-lobby{color:#f279c6}html[data-resolved-theme="light"] .page-realtime .realtime-status-activity.is-lobby{color:#ad216f}
 .page-realtime .realtime-lobby-join{color:inherit;text-decoration:none}.page-realtime .realtime-lobby-join:hover{text-decoration:underline}
+.page-realtime .realtime-status-table td:nth-child(3){font-size:12px}.player-team-link{color:inherit;text-decoration:none}.player-team-link:hover{text-decoration:underline}
 #leaderboard>.topbar>.breadcrumbs{display:none}
 .topbar-share{position:relative;display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;color:var(--muted,#a9a18f);font-size:11px;line-height:1.5}
 .topbar-share-copy{color:#efa277;font-family:"STKaiti","KaiTi","楷体",serif;font-size:15px;font-weight:700;line-height:1.45;text-wrap:balance}html[data-resolved-theme="light"] .topbar-share-copy{color:#9c482c}

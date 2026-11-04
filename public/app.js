@@ -1516,8 +1516,8 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
   const meta = document.querySelector('#profileIdentityMeta');
   if (meta) {
     const country = profileCountryMarkup(player.country_code);
-    const team = player.team || '暂无战队';
-    meta.innerHTML = `${country}<span class="profile-country-separator">·</span><span class="profile-team-inline">${escapeHtml(team)}</span>`;
+    const team = playerTeamMarkup(player.team) || '暂无战队';
+    meta.innerHTML = `${country}<span class="profile-country-separator">·</span><span class="profile-team-inline">${team}</span>`;
   }
   renderProfileIdentityLinks(profile.accounts, profileId);
   renderProfileIdentityReference(profile.rlReference || null);
@@ -2814,6 +2814,17 @@ function alignRealtimeStatusActivity() {
 }
 window.addEventListener('resize', alignRealtimeStatusActivity);
 document.fonts?.ready.then(alignRealtimeStatusActivity);
+function playerTeamMarkup(value) {
+  const name = String(value || '').trim();
+  const teams = new Map([
+    ['team vitality',['Vitality','Team%20Vitality']],
+    ['onimaru esports',['Oni','Onimaru%20Esports']],
+    ['cn zhongsheng',['CNZS','CN%20ZhongSheng']],
+    ['white wolf palace',['WWP','White%20Wolf%20Palace']]
+  ]);
+  const team = teams.get(name.toLowerCase().replace(/\s+/g,' '));
+  return team ? `<a class="player-team-link" href="https://liquipedia.net/ageofempires/${team[1]}" title="${escapeHtml(name)}" target="_blank" rel="noopener noreferrer">${team[0]}</a>` : escapeHtml(name);
+}
 function renderRealtimeStatus(states) {
   const target = document.querySelector('#realtimeStatusRows');
   if (!target) return;
@@ -2855,7 +2866,7 @@ function renderRealtimeStatus(states) {
     const numericRating = Number(player.rating);
     const rating = player.rating !== null && player.rating !== undefined && Number.isFinite(numericRating) ? numericRating.toLocaleString('zh-CN') : '—';
     const name = escapeHtml(player.name || `玩家 ${state.profileId || ''}`);
-    const team = escapeHtml(player.team || '');
+    const team = playerTeamMarkup(player.team);
     const tournamentValue = state.match?.tournament || state.match?.event || state.match?.eventName || '';
     const tournamentName = eventTournamentMainName(typeof tournamentValue === 'string' ? { name:tournamentValue } : tournamentValue).replace(/\s+[-–—]\s+Top\s*\d+\s*$/i, '');
     const tournamentUrl = typeof tournamentValue === 'object'
