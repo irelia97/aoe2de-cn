@@ -3282,6 +3282,15 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     const limit = Math.min(100, Math.max(20, Number(url.searchParams.get('limit') || 100)));
     const progressive = url.searchParams.get('progressive') === '1' && offset === 0;
     try {
+      if (url.searchParams.get('snapshot') === '1' && offset === 0) {
+        // Return the whole stored window before making any latest-match query.
+        // A cold profile needs one full history request, never a 20-match prefetch.
+        const cached = await readWorldsEdgeMatchesCache(profileId);
+        const snapshot = cached?.matches?.length ? cached : await getWorldsEdgeMatches(profileId, 1);
+        res.writeHead(200, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store' });
+        return res.end(JSON.stringify({ matches:snapshot.matches.slice(0,100), hasMore:false,
+          cached:Boolean(cached?.matches?.length), stale:Boolean(snapshot.stale), savedAt:snapshot.savedAt }));
+      }
       if (progressive) {
         let initial = await readWorldsEdgeMatchesCache(profileId);
         const cachedFirst = Boolean(initial?.matches?.length);

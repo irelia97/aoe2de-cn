@@ -1313,156 +1313,73 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
 }
 async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDetailsRequestId) {
   const more = document.querySelector('#profileMatchesMore');
+  if (more) { more.hidden = true; more.onclick = null; }
   const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
   const refreshStatus = (phase, hasMatches = false) => {
     if (!isCurrent()) return;
-    const text = phase === 'refreshing' ? '正在刷新…' : phase === 'updated' ? '' : phase === 'stale' ? '暂未刷新，显示旧数据' : hasMatches ? '刷新失败，保留旧数据' : '刷新失败，请稍后重试';
+    const text = phase === 'refreshing' ? '正在检查最新对局…' : phase === 'updated' ? '' : phase === 'stale' ? '暂未刷新，显示旧数据' : hasMatches ? '刷新失败，保留旧数据' : '刷新失败，请稍后重试';
     const target = document.querySelector('#profileMatchesRefreshStatus');
     if (target) { target.hidden = phase === 'updated'; target.textContent = text; target.dataset.state = phase; }
     for (const selector of ['#profileMatchesBody','#profileRecentModeChart']) document.querySelector(selector)?.setAttribute('aria-busy',String(phase === 'refreshing'));
   };
-  refreshStatus('refreshing');
-  // Match history is sourced exclusively from AoE2 Companion. AoE2Recs profile
-  // payloads may contain a partial history without per-player ratingDiff.
   let matches = [];
-  let hasMore = false;
-  let visibleCount = 20;
-  let loading = false;
-  const localMatches = readProfileMatchesLocalCache(profileId);
-  const localFresh = Boolean(localMatches && Date.now() - localMatches.savedAt < profileMatchesLocalCacheTtl);
-  const applyMatches = () => {
-    currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
-    currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
-    currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
-    renderProfileModeCharts();
-    if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
-    renderProfileLastMatchFromMatch(matches[0]);
-  };
-  if (localMatches) {
-    matches = localMatches.matches;
-    applyMatches();
-  }
   const render = () => {
     if (!isCurrent()) return;
-    renderProfileMatches(profile, matches, visibleCount);
-    if (more) {
-      more.hidden = visibleCount >= filterProfileMatches(matches).length && !hasMore;
-      more.disabled = loading;
-      more.textContent = loading ? '加载中…' : '显示更多';
-    }
-  };
-  const matchFilter = document.querySelector('#profileMatchesFilter');
-  if (matchFilter) matchFilter.onchange = () => { visibleCount = 20; render(); };
-  const fetchPage = async (offset, limit = 100, progressive = false) => {
-    const suffix = progressive ? '&progressive=1' : '';
-    const response = await fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}&offset=${offset}&limit=${limit}${suffix}`, { cache: 'no-store' });
-    if (!response.ok) throw new Error('近期对局请求失败');
-    return response.json();
-  };
-  if (localMatches) render();
-  if (more) more.onclick = async () => {
-    if (!isCurrent()) return;
-    if (loading) return;
-    if (visibleCount < filterProfileMatches(matches).length) {
-      visibleCount = Math.min(visibleCount + 20, filterProfileMatches(matches).length);
-      render();
-      return;
-    }
-    if (!hasMore) return;
-    loading = true;
-    render();
-    try {
-      const page = await fetchPage(matches.length, 100);
-      if (!isCurrent()) return;
-      const incoming = Array.isArray(page.matches) ? page.matches : [];
-      const known = new Set(matches.map(match => String(match.id)));
-      matches = matches.concat(incoming.filter(match => !known.has(String(match.id))));
-      hasMore = Boolean(page.hasMore);
-      visibleCount = Math.min(visibleCount + 20, filterProfileMatches(matches).length);
-    } catch {
-      hasMore = false;
-    } finally {
-      loading = false;
-      render();
-    }
-  };
-  if (!localFresh) try {
-    const first = await fetchPage(0, 100, true);
-    if (!isCurrent()) return;
-    matches = Array.isArray(first.matches) ? first.matches : [];
     currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
     currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
     currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
     renderProfileModeCharts();
     if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
-    // Render the first upstream batch immediately while the server completes
-    // the cache refresh and watermark scan in the background.
-    hasMore = true;
-    visibleCount = 20;
     renderProfileLastMatchFromMatch(matches[0]);
+    renderProfileMatches(profile, matches, 100);
+  };
+  const matchFilter = document.querySelector('#profileMatchesFilter');
+  if (matchFilter) matchFilter.onchange = render;
+  const fetchHistory = async suffix => {
+    const response = await fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}${suffix}`, { cache:'no-store', signal:AbortSignal.timeout(20_000) });
+    if (!response.ok) throw new Error('近期对局请求失败');
+    const data = await response.json();
+    if (!Array.isArray(data.matches)) throw new Error('近期对局格式无效');
+    return data;
+  };
+  // Always obtain and display the complete 100-match snapshot first. Only then
+  // check the latest match; never start a latest lookup or 20-match prefetch first.
+  try {
+    const snapshot = await fetchHistory('&offset=0&limit=100&snapshot=1');
+    if (!isCurrent()) return;
+    matches = snapshot.matches.slice(0,100);
     render();
-
-    // Replace the initial batch with the completed cached 100-match window as
-    // soon as the background refresh finishes.
-    try {
-      const complete = await fetchPage(0, 100);
-      if (!isCurrent()) return;
-      matches = Array.isArray(complete.matches) ? complete.matches : matches;
-      if (!complete.stale) saveProfileMatchesLocalCache(profileId, matches);
-      currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
-      currentProfileRecentStats = profileRecentStatsByLeaderboard(matches, profileId);
-      currentProfileRecentModeCounts = profileRecentModeCounts(matches, profileId);
-      renderProfileModeCharts();
-      if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
-      hasMore = false;
-      renderProfileLastMatchFromMatch(matches[0]);
+    refreshStatus('refreshing');
+    const data = await fetchHistory('&latest=1');
+    if (!isCurrent()) return;
+    const latest = data.matches[0];
+    const changed = latest && String(latest.id) !== String(matches[0]?.id);
+    if (latest) {
+      matches = [latest,...matches.filter(match => String(match.id) !== String(latest.id))].slice(0,100);
       render();
+    }
+    if (changed && !data.stale) {
+      const complete = await fetchHistory('&offset=0&limit=100');
+      if (!isCurrent()) return;
+      if (!complete.stale) matches = complete.matches.slice(0,100);
+      render();
+      if (!complete.stale) saveProfileMatchesLocalCache(profileId,matches);
       refreshStatus(complete.stale ? 'stale' : 'updated',matches.length > 0);
-    } catch {
-      // The initial 20 matches remain visible if the background refresh fails.
-      refreshStatus('failed',matches.length > 0);
+    } else {
+      if (!data.stale) saveProfileMatchesLocalCache(profileId,matches);
+      refreshStatus(data.stale ? 'stale' : 'updated',matches.length > 0);
     }
   } catch {
-    // Do not fall back to AoE2Recs matches: they may omit per-player ratingDiff.
-    if (isCurrent()) {
-      if (matches.length) render();
-      else {
-        currentProfileRecentModeCounts = new Map();
-        renderProfileModeCharts();
-        const body = document.querySelector('#profileMatchesBody');
-        if (body) body.innerHTML = '';
-      }
-      refreshStatus('failed',matches.length > 0);
+    if (!isCurrent()) return;
+    if (!matches.length) {
+      const local = readProfileMatchesLocalCache(profileId);
+      matches = local?.matches || [];
+      render();
     }
+    refreshStatus('failed',matches.length > 0);
   }
-  if (localMatches && localFresh) {
-    render();
-    await fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}&latest=1`, { cache: 'no-store' })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error('刷新对局失败')))
-      .then(async data => {
-        if (!isCurrent()) return;
-        if (!Array.isArray(data?.matches)) throw new Error('近期对局格式无效');
-        const latest = Array.isArray(data?.matches) ? data.matches[0] : null;
-        if (latest) {
-          const known = new Set(matches.map(match => String(match.id)));
-          matches = [latest, ...matches.filter(match => String(match.id) !== String(latest.id))].slice(0, 100);
-          applyMatches(); render();
-          if (!data.stale && !known.has(String(latest.id))) {
-            const complete = await fetchPage(0,100);
-            if (!isCurrent()) return;
-            matches = Array.isArray(complete.matches) ? complete.matches : matches;
-            applyMatches(); render();
-            if (!complete.stale) saveProfileMatchesLocalCache(profileId,matches);
-            refreshStatus(complete.stale ? 'stale' : 'updated',matches.length > 0);
-            return;
-          }
-          if (!data.stale) saveProfileMatchesLocalCache(profileId,matches);
-        }
-        refreshStatus(data.stale ? 'stale' : 'updated',matches.length > 0);
-      }).catch(() => refreshStatus('failed',matches.length > 0));
-  }
-
 }
+
 function loadProfileAccounts(profileId, requestId, attempt = 0) {
   const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
   if(!attempt)setProfileMessage(profileSectionLoadingMarkup());
@@ -1658,9 +1575,15 @@ function renderMedia(data, showAllVideos = false) {
   }
 }
 function loadMedia(showAllVideos = false) {
-  if (mediaRequest) return mediaRequest;
-  mediaRequest = fetch('/api/media', { cache: 'default' }).then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败'))).then(data => { renderMedia(data, showAllVideos); return data; }).catch(() => { renderMedia({ videos: [], live: [] }, showAllVideos); }).finally(() => { mediaRequest = null; });
-  return mediaRequest;
+  if (!mediaRequest) mediaRequest = fetch('/api/media', { cache: 'default', signal:AbortSignal.timeout(20_000) })
+    .then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败')))
+    .finally(() => { mediaRequest = null; });
+  return mediaRequest.then(data => {
+    if (/^\/media(?:\/videos)?\/?$/.test(location.pathname)) renderMedia(data, /^\/media\/videos\/?$/.test(location.pathname));
+    return data;
+  }).catch(() => {
+    if (/^\/media(?:\/videos)?\/?$/.test(location.pathname)) renderMedia({ videos:[], live:[] }, /^\/media\/videos\/?$/.test(location.pathname));
+  });
 }
 let replayParserModule = null;
 let replayAnalysisLoaded = false;
@@ -2825,7 +2748,8 @@ function playerTeamMarkup(value) {
     ['white wolf palace',['WWP','White%20Wolf%20Palace']],
     ['vietnam legends',['Vietnam','Vietnam%20Legends']],
     ['nocturna esports',['NOC','Nocturna%20eSports']],
-    ['old school',['OS+','Old%20School']]
+    ['old school',['OS+','Old%20School']],
+    ['taiwan aoe gamer',['TAG','Taiwan%20Aoe%20Gamer']]
   ]);
   const team = teams.get(name.toLowerCase().replace(/\s+/g,' '));
   return team ? `<a class="player-team-link" href="https://liquipedia.net/ageofempires/${team[1]}" title="${escapeHtml(name)}" target="_blank" rel="noopener noreferrer">${team[0]}</a>` : escapeHtml(name);
@@ -3466,7 +3390,14 @@ document.querySelector('#eventsTournamentFilter')?.addEventListener('change', ev
   renderEventsTournaments();
 });
 
+let currentRoutePath = '';
+let routeRenderSequence = 0;
 function renderCurrentRoute(selectedPlayer = null) {
+  const routeSequence = ++routeRenderSequence;
+  if (currentRoutePath !== location.pathname) {
+    window.scrollTo({ top:0, behavior:'instant' });
+    currentRoutePath = location.pathname;
+  }
   recordCurrentPageView();
   const match = location.pathname.match(/^\/profile(?:\/(\d+))?\/?$/);
   const isProfilePage = Boolean(match);
@@ -3553,14 +3484,14 @@ function renderCurrentRoute(selectedPlayer = null) {
   if (isTechTreePage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/tech-tree.js?v=81').then(module => module.mountTechTree(document.querySelector('#tech-tree-page')))
+    import('/tech-tree.js?v=82').then(module => routeSequence === routeRenderSequence && module.mountTechTree(document.querySelector('#tech-tree-page')))
       .catch(() => { document.querySelector('#tech-tree-page').textContent='科技树加载失败，请刷新页面重试。'; });
     return;
   }
   if (isCivilizationsPage) {
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/civilizations.js?v=27').then(module => module.mountCivilizations(document.querySelector('#civilizations-page'), {
+    import('/civilizations.js?v=27').then(module => routeSequence === routeRenderSequence && module.mountCivilizations(document.querySelector('#civilizations-page'), {
       civName: civilizationNameZh, mapName: mapDisplayName, civImage: aoe2CivilizationImageUrl
     })).catch(() => { document.querySelector('#civilizations-page').textContent='民族统计加载失败，请刷新页面重试。'; });
     return;
@@ -3595,7 +3526,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     window.scrollTo({top:0,behavior:'auto'});
     profileDetailsRequestId++;
     clearTimeout(profileDetailsTimeout);
-    import('/event-results.js?v=13').then(module=>module.mountEventResults(document.querySelector('#event-results-page')))
+    import('/event-results.js?v=13').then(module=>routeSequence === routeRenderSequence && module.mountEventResults(document.querySelector('#event-results-page')))
       .catch(()=>{document.querySelector('#event-results-page').textContent='赛事结果加载失败，请刷新页面重试。';});
     return;
   }
@@ -3650,7 +3581,10 @@ function renderCurrentRoute(selectedPlayer = null) {
     const aliasesButton = document.querySelector('#profileAliasesButton');
     if (aliasesButton) aliasesButton.hidden = true;
     setProfileAccountsModal(false);
-    if (currentProfileId) return;
+    if (currentProfileId) {
+      history.replaceState({ ...(history.state || {}), profileId:currentProfileId }, '', `/profile/${encodeURIComponent(currentProfileId)}`);
+      return renderCurrentRoute();
+    }
     let savedProfileId = '';
     try { savedProfileId = localStorage.getItem(lastProfileIdStorageKey) || ''; } catch { /* Storage may be disabled. */ }
     if (/^\d+$/.test(savedProfileId)) {

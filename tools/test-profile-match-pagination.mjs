@@ -1,37 +1,19 @@
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-
-const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
-const start=source.indexOf('async function loadWorldsEdgeMatches(');
-const code=source.slice(start,source.indexOf('\nfunction loadProfileAccounts',start));
-const matches=Array.from({length:100},(_,id)=>({id,category:id%2?'lobby':'rm_1v1'}));
-const more={},filter={value:'rm_1v1'};
-let complete, count=0, requests=0;
-const pending=new Promise(resolve=>{complete=resolve;});
-const context={
-  document:{querySelector:selector=>selector==='#profileMatchesMore'?more:selector==='#profileMatchesFilter'?filter:null},
-  location:{pathname:'/profile/197964'},profileDetailsRequestId:1,
-  readProfileMatchesLocalCache:()=>null,profileMatchesLocalCacheTtl:600000,
-  profileRecentResultsByLeaderboard:()=>new Map(),profileRecentStatsByLeaderboard:()=>new Map(),profileRecentModeCounts:()=>new Map(),
-  renderProfileModeCharts:()=>{},renderProfileLeaderboards:()=>{},renderProfileLastMatchFromMatch:()=>{},saveProfileMatchesLocalCache:()=>{},
-  currentProfileLeaderboardRows:[],
-  filterProfileMatches:items=>filter.value==='all'?items:items.filter(m=>m.category===filter.value),
-  renderProfileMatches:(_,items,limit)=>{count=context.filterProfileMatches(items).slice(0,limit).length;},
-  fetch:async()=>{requests++;return requests===1?{ok:true,json:async()=>({matches,hasMore:false})}:pending;},
-};
-vm.createContext(context);vm.runInContext(code,context);
-const task=context.loadWorldsEdgeMatches('197964',{},1);
-// The button must work before the background 100-match refresh resolves.
-assert.equal(typeof more.onclick,'function');
-await new Promise(resolve=>setImmediate(resolve));
-assert.equal(count,20);
-await more.onclick();assert.equal(count,40);
-await more.onclick();assert.equal(count,50);
-filter.value='lobby';filter.onchange();assert.equal(count,20);
-await more.onclick();assert.equal(count,40);
-complete({ok:true,json:async()=>({matches,hasMore:false})});await task;
-assert.equal(count,40);
-await more.onclick();assert.equal(count,50);assert.equal(more.hidden,true);
-filter.value='all';filter.onchange();await more.onclick();assert.equal(count,40);
-console.log('Filtered pagination and pending background refresh passed');
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+const source=readFileSync(new URL('../server.js',import.meta.url),'utf8');
+const start=source.indexOf("      if (url.searchParams.get('snapshot')");
+const end=source.indexOf('      if (progressive)',start);
+const code=`async function run(){${source.slice(start,end)}}`;
+for(const cached of [true,false])test(`${cached?'warm':'cold'} snapshot returns all 100 matches before any latest lookup`,async()=>{
+ let fullCalls=0;
+ const matches=Array.from({length:100},(_,i)=>({id:100-i}));
+ const snapshot={matches,savedAt:1};
+ const context={url:new URL('http://localhost/api/profile-matches?snapshot=1'),offset:0,profileId:'42',
+  readWorldsEdgeMatchesCache:async()=>cached?snapshot:null,
+  getWorldsEdgeMatches:async()=>{fullCalls++;return snapshot;},
+  res:{writeHead(){},end:value=>JSON.parse(value)}};
+ vm.createContext(context);vm.runInContext(code,context);
+ const result=await context.run();assert.equal(result.matches.length,100);assert.equal(result.cached,cached);assert.equal(fullCalls,cached?0:1);
+});

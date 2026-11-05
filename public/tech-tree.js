@@ -405,7 +405,9 @@ export async function mountTechTree(root) {
       const next=cache.get(selected.id) || await json(`/tech-tree-data/civs/${selected.id}.json`);
       if (sequence!==loadSequence) return;
       cache.set(selected.id,next); tree=next; civilization=selected;
-      const url=new URL(location.href);url.searchParams.set('civ',selected.id);url.searchParams.delete('node');history.replaceState(history.state,'',url);
+      if (!root.hidden && /^\/tech-tree\/?$/.test(location.pathname)) {
+        const url=new URL(location.href);url.searchParams.set('civ',selected.id);url.searchParams.delete('node');history.replaceState(history.state,'',url);
+      }
       renderCivilization();render();scroll.scrollLeft=0;
 
     } catch {
