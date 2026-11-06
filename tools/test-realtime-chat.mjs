@@ -32,11 +32,12 @@ try {
   assert.equal(chat.announceLive({ name: 'Clearlove', url: notice.url }).kind, 'system');
   assert.equal(chat.announceLiveEnd({ name: 'Clearlove', url: notice.url }).content, 'Clearlove 已结束直播');
   assert.equal(chat.announceLiveEnd({ name: 'Clearlove', url: notice.url }), null);
+  assert.equal(chat.announceLiveEnd({ name:'Clearlove', url:'https://www.twitch.tv/clearlove' }), null);
   const match={id:'match-1',tournament:{name:'测试杯',url:'https://liquipedia.net/ageofempires/Test'},opponents:[{name:'Yo'},{name:'Vivi'}],score:['3','2']};
   assert.match(chat.announceMatch({phase:'start',match,tier:'S'}).content,/S级赛事开始/);
   assert.equal(chat.announceMatch({phase:'start',match,tier:'S'}),null);
   assert.match(chat.announceMatch({phase:'end',match,tier:'S'}).content,/3–2/);
-  assert.match(chat.announceSchedule({day:'2026-10-27',matches:[{timestamp:clock/1000+3600,tier:'A',opponents:[{name:'A'},{name:'B'}]}]}).content,/未来12小时比赛预告/);
+  assert.match(chat.announceSchedule({day:'2026-10-27',matches:[{timestamp:clock/1000+3600,tier:'A',opponents:[{name:'A'},{name:'B'}]}]}).content,/未来24小时比赛预告/);
   clock += 15 * 24 * 60 * 60_000;
   assert.equal(chat.rename({ name: '新昵称', ip: 'a' }).nickname, '新昵称');
   assert.equal(chat.list().find(item => item.id === first.id)?.author, '新昵称'); // history is retained for thirty days

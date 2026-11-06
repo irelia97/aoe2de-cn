@@ -1,20 +1,27 @@
-export function createLobbyListener({ WebSocket, onChange }) {
+import { splitRealtimeProfiles } from './realtime-profile-groups.js';
+function createLobbyShard({ WebSocket, onChange }) {
   const rooms = new Map();
   let socket, retry, profileIds = new Set(), stopped = true;
+  let connectedAt=null,lastMessageAt=null,messagesReceived=0,reconnectCount=0;
   const watched = room => [...room.slots.values()].some(player => profileIds.has(String(player.profileId)));
   function connect() {
     if (stopped || !WebSocket) return;
+    // Profile-filtered lobby streams omit room metadata and other slots.
+    // Subscribe to full rooms and shard monitored-player ownership locally.
     const current = new WebSocket('wss://socket.aoe2companion.com/listen?handler=lobbies');
     socket = current;
     current.addEventListener('open', () => {
       if (socket !== current) return;
       rooms.clear();
+      connectedAt=new Date().toISOString();
       onChange();
     });
     current.addEventListener('message', event => {
       if (socket !== current) return;
       let messages;
       try { messages = JSON.parse(String(event.data)); } catch { return; }
+      lastMessageAt=new Date().toISOString();
+      messagesReceived+=Array.isArray(messages)?messages.length:1;
       let changed = false;
       for (const message of Array.isArray(messages) ? messages : [messages]) {
         const data = message?.data;
@@ -47,6 +54,7 @@ export function createLobbyListener({ WebSocket, onChange }) {
     current.addEventListener('error', () => console.warn('[realtime] lobbies connection error'));
     current.addEventListener('close', () => {
       if (socket !== current || stopped) return;
+      reconnectCount++;
       rooms.clear(); onChange();
       retry = setTimeout(connect,5000); retry.unref?.();
     });
@@ -73,6 +81,26 @@ export function createLobbyListener({ WebSocket, onChange }) {
       }
       return null;
     },
-    status() { return { connected:socket?.readyState===1, roomCount:rooms.size }; }
+    roomIds() { return [...rooms.keys()]; },
+    status() { return { connected:socket?.readyState===1, profileCount:profileIds.size, roomCount:rooms.size, connectedAt,lastMessageAt,messagesReceived,reconnectCount }; }
+  };
+}
+
+
+export function createLobbyListener({ WebSocket, onChange }) {
+  let groups=[];
+  return {
+    start(ids) {
+      this.stop();
+      groups=splitRealtimeProfiles(ids).map((ids,index)=>({index,ids,listener:createLobbyShard({WebSocket,onChange})}));
+      for(const group of groups)group.listener.start(group.ids);
+    },
+    stop() { for(const group of groups)group.listener.stop();groups=[]; },
+    state(profileId) {return groups.find(group=>group.ids.includes(String(profileId)))?.listener.state(profileId)||null;},
+    status() {
+      const statuses=groups.map(group=>({group:group.index+1,...group.listener.status()}));
+      return {connected:statuses.length>0&&statuses.every(group=>group.connected),socketCount:groups.length,
+        roomCount:new Set(groups.flatMap(group=>group.listener.roomIds())).size,groups:statuses};
+    }
   };
 }

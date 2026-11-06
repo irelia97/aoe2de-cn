@@ -53,3 +53,8 @@ html[data-resolved-theme="light"] .events-results-link:hover{background:transpar
 html[data-resolved-theme="light"] .event-results-top{background:#f1dfbd;color:#60441f}
 html[data-resolved-theme="light"] .event-results-tabs button.selected{background:#f1dfbd;color:#60441f}
 @media(max-width:620px){.event-results-page{padding-top:24px}.event-results-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.event-results-tabs :is(button,a){padding:0 7px}.event-results-filters label{min-width:100%}.event-results-year-card>header{padding:11px 13px}.event-results-top{right:14px;bottom:14px}.events-tabs .events-results-link{margin-left:8px}}
+
+.event-result-category{flex:none;padding:2px 5px;border:1px solid var(--line);border-radius:3px;color:var(--muted);font-size:10px;font-weight:600;white-space:nowrap}
+
+.event-results-table{table-layout:auto}
+@media(max-width:620px){.event-results-tabs .events-results-link{grid-column:span 2;margin-left:0}}

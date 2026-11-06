@@ -47,3 +47,15 @@ test('uncertified account clan information never becomes a certified team',async
   assert.equal((await f.cache.getTeams(['42'])).get('42'),'');await flush();
   assert.equal((await f.cache.getTeams(['42'])).get('42'),'');
 });
+
+
+test('reused full-profile cache keeps its original fetch time for team expiry',async()=>{
+  let requests=0,savedAt;
+  const f=fixture(async()=>{requests++;return {cacheSavedAt:savedAt,player:{id:42,platform_id:3,verified:true,team:'Cached Team'},accounts:[]};});
+  savedAt=f.now()-14*24*60*60_000;
+  await f.cache.getTeams(['42']);await flush();
+  assert.equal(requests,1);
+  f.advance(24*60*60_000-1);
+  assert.equal((await f.cache.getTeams(['42'])).get('42'),'Cached Team');await flush();assert.equal(requests,1);
+  f.advance(1);await f.cache.getTeams(['42']);await flush();assert.equal(requests,2);
+});

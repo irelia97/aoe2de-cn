@@ -1,8 +1,8 @@
 # AOE2DE-CN 项目交接文档
 
-更新时间：2026-10-26（北京时间）
+更新时间：2026-11-05（北京时间）
 
-优先阅读第 10 节（2026-10-26 最新交接）。第 1～9 节保留为历史记录；其中的房间号、服务、算法、图标和缓存版本可能已过期，冲突时以第 10 节及实际运行文件为准。
+优先阅读文末第 12 节（2026-11-05 最新交接）。此前各节均为历史记录；部署方式、Git 状态、版本号、监听池、通知和缓存规则如有冲突，以第 12 节及本机、线上实际文件为准。用户当前要求：代码不推送。
 
 ## 1. 项目与线上环境
 
@@ -509,3 +509,314 @@ journalctl -u aoe2-civilization-stats.service -n 60 --no-pager
 - 网站未单独提供详情入口的精锐单位明确继承对应基础单位收益；仍按当前文明科技树过滤不可研究科技。
 - 新增 `tools/build-seicing-benefit-map.py` 供以后重新采集，以及 `tools/test-benefit-map.mjs` 验证页面完整性、科技映射和所有可用单位/建筑覆盖率。
 - 验证：来源页 212/212、失败 0；来源科技 191/191；可用单位与建筑 287/287；科技树既有测试 16/16。
+
+
+## 12. 最新交接：2026-11-05（优先阅读）
+
+### 12.1 当前授权、代码与线上状态
+
+- 用户最新明确要求：**代码不推送**。本轮直播通知、服务器名称与大厅样式修改没有提交、没有推送；不要因为此前曾授权推送而继续推送。等待新的明确推送指令。
+- 本机工作区：`E:/Codex_Project/AOE2DE-CN`；分支 `main`；远端 `https://github.com/irelia97/aoe2de-cn.git`。
+- 最后已提交且已推送：`5e7e164`，说明“先显示完整百场对局再检查最新比赛并修复页面切换”。本机 `origin/main` 也为该提交。
+- **线上已包含本轮未提交改动**。不能仅凭上述提交号判断线上内容，也不能用仓库版本覆盖掉未提交文件。后续先查看本机差异，再比较线上文件。
+- 当前未提交的已跟踪文件：`public/app.js`、`public/index.html`、`public/styles.css`、`server.js`、`server/services/realtime-chat.js`、`tools/test-realtime-chat.mjs`。新增未跟踪文件：`server/services/live-notifications.js`、`tools/test-live-notifications.mjs`。此次交接文档修改也应保留在本地。
+- `HANDOFF.md` 已被 Git 跟踪，即使 `.gitignore` 中也写了它，修改仍会显示为工作区差异。不要误认为它必定被忽略，不要自动暂存、提交。
+- 服务器 `root@103.42.182.205`，应用目录 `/opt/aoe2de-cn`；SSH 私钥路径 `C:/Users/22270/.ssh/aoe2cn_server_ed25519`，不要在交接文档或输出中记录密码、私钥内容。
+- 主服务 `aoe2de.service`（端口 3000）；后台服务 `aoe2-background.service`（端口 3001）。此次只重启主服务，后台服务没有重启；最后检查两者均 active。
+- 只读健康检查：服务器本机访问 `http://127.0.0.1:3000/api/internal/health` 与 `http://127.0.0.1:3001/health`。`/api/health` 不是当前健康接口。主服务刚重启时需等待监听池恢复后再判断。
+- 当前前端缓存标记：`app.js?v=event-results-v97`、`styles.css?v=event-results-v33`；主脚本动态加载 `tech-tree.js?v=82`。以后变更对应静态资源须更新引用版本。
+
+### 12.2 本轮最后完成：直播结束提示重复（已上线，未提交）
+
+- 已从正式聊天数据库只读查询确认：例如 T90 于北京时间 11 月 5 日 04:25、04:27 分别产生 Twitch、YouTube 的结束消息；Cloud、JonSlow、TWest、MembTV 等也有同类记录。
+- 根因：直播卡片按主播选一个优先平台（Twitch 优先于 YouTube 等）。Twitch 下播但另一个平台仍在线时，卡片切换平台；旧结束逻辑按 URL 判断，先误报 Twitch 结束，再在另一平台下播时报一次结束。
+- 新增 `server/services/live-notifications.js`，导出 `liveNotificationChanges(previous,current,failedSourceKeys)`；用直播源相同、标准化主播名相同或关联 profileIds 相交判断同一主播。切换显示平台不生成开播或下播通知；全部离线后只生成一次结束通知；失败源不直接触发下播。多个源同轮变动也合并通知。
+- `server.js` 的 `refreshMediaLive` 使用该辅助模块分别发送 started/ended 通知，保留直播采集、平台优先级与失败宽限的既有逻辑。
+- `realtime-chat.js` 的结束通知去重键从纯 URL 改为主播名优先（无名称才用 URL），仍有 10 分钟的数据库去重，跨平台调用不会重复。
+- 没有删除历史聊天记录，没有往正式聊天区发测试消息。上述问题已通过模拟状态转换和聊天服务测试，不要宣称已经等待某个真实主播再次下播验证。
+- 测试 `tools/test-live-notifications.mjs` 覆盖平台切换、最后平台离线、同轮多源、无账号元数据、关联账号、请求失败和不同主播。原 `tools/test-realtime-chat.mjs` 增加跨 URL 的结束消息去重断言。
+
+### 12.3 本轮最后完成：大厅样式与服务器翻译（已上线，未提交）
+
+- `public/app.js` 的 `realtimeServerName` 增加 `chilecentral` → **智利中部**。这是网页展示映射，未改动斗鱼 Python 命令监听器或后台弹幕的独立翻译表。
+- 大厅状态文字设为 12px，与游戏中、队列等状态一致；保持既定粉色（深色 `#f279c6`，浅色 `#ad216f`），没有改成其它已有状态颜色。
+- 大厅房子图标缩为 12×12 图标框，文字单行省略；游戏中状态的圆圈也拆为单独的 12×12 图标框，再接文字。两者使用相同间距，文字左起点一致、垂直居中。
+- `realtimeStatusActivity` 的游戏中链接现在包含 `.realtime-game-icon` 和 `.realtime-game-label` 两个 span。后续修改需保留观战链接及赛事副标题，勿只为样式丢失点击功能。
+- 线上浏览器加载真实资源后，插入仅本浏览器可见的预览行作测量：大厅/游戏中文字均 12px，文字左起点均为 78.75px；已查看截图确认。预览没有写入服务器数据。
+- 截图 `output/lobby-alignment-live.png`（本地忽略目录，不提交）。
+- 直播通知及实时相关测试最后一轮 43 项通过；主脚本语法检查与差异空白检查通过。
+- 服务器本轮备份（相对于应用目录）：`.cache/deploy-backups/live-notices-20261105.tar.gz`（主服务与聊天模块）、`live-notices-ui-20261105.tar.gz`（主脚本与 HTML）、`lobby-alignment-20261105.tar.gz`（样式）。回滚应按这些备份覆盖范围处理，注意新增的辅助模块不在旧版本备份内。
+
+### 12.4 已推送的百场对局与页面切换修复（5e7e164）
+
+- 用户最终要求很明确：**先取完整 100 场并显示出来，然后才查询是否有最新一局**。不要恢复“先取 20 场再补 100 场”，不要先查询最新一局后再显示整个列表。
+- 新接口模式：`GET /api/profile-matches?id=...&offset=0&limit=100&snapshot=1`。
+- snapshot 有服务端缓存时直接返回完整缓存窗口，不先查询最新一局；无缓存时一次取完整历史窗口。实际不足 100 场的账号按真实条数返回。
+- 前端 `loadWorldsEdgeMatches` 首先请求 snapshot，绘制完整窗口（不再只显示前 20 场），随后请求同接口 `latest=1`。若出现新 match ID，立即插入顶部，再请求普通的完整窗口补齐期间可能遗漏的其它新对局；最多显示最新 100 场。
+- 最新查询失败时保留已显示的历史并注明刷新失败；服务端 stale 回退不当作新鲜数据保存。切换玩家后，旧请求结果不能覆盖新玩家页面。
+- 原 progressive 接口分支为兼容仍存在，但当前主页面不再使用它；不要误把旧测试或注释当现行主流程。
+- 页面切换问题已复现：从 `/profile/ID` 离开后点侧栏返回 `/profile`，旧代码见 currentProfileId 就直接 return，导致原玩家未重新加载，且异步请求因路径检查被忽略。现将 `/profile` 替换为完整原玩家地址并重新渲染。
+- 增加路由序号，过期的动态模块导入不再激活已离开的页面；切换路径时回到顶部。科技树晚返回的文明请求不再给其它页面 URL 加 civ 参数；媒体加载完成后按当前页面路径渲染，而不是用发请求时的旧模式。
+- 战队新增显示简称 `Taiwan Aoe Gamer` → **TAG**（保留 Liquipedia 链接）。
+- 测试：`tools/test-profile-navigation.mjs` 用本地 HTTP + Playwright 验证完整 100 场、最新查询顺序、返回资料页、TAG 与过期模块导入；`test-profile-refresh-status.mjs`、`test-profile-match-pagination.mjs` 覆盖前后端窗口与失败保留。该批玩家资料、战队、实时测试共 67 项通过。
+- 线上真实 Yo（197964）验证首次显示 100 场，之后才查询最新一场；离开再返回无需 F5，仍显示 100 场，未出现页面脚本异常。
+- 该批服务器备份 `.cache/deploy-backups/profile-window-20261105.tar.gz`。
+
+### 12.5 AoE2Recs 403 与账号/曾用名回退：仍需跟进
+
+- 已确认服务器访问 AoE2Recs dashboard 及 WebSocket 握手接口时得到 Cloudflare 403/“Just a moment...”页面；这是上游拒绝自动访问，不等于本站宕机或该玩家被封。
+- 已推送 `d0eab22`：新增 `server/services/profile-accounts.js`；优先服务端历史缓存（含关联账号缓存），不可用时返回本地已知账号。完整缓存 TTL 48 小时，过期后台刷新。前端显示“完整资料暂不可用，以下为本地已知账号；曾用名待补全。”，缺失曾用名显示“暂未获取”，不能错误显示“无”。部分结果前端每 5 秒重读，最多再读 4 次。
+- 缓存读取现在只要求 profile.accounts 数组，不再要求同时含 matches。
+- `refreshAoE2RecsProfile` 已取消原先 10 次重试；同 profile 有请求合并；后台回退读取器有每 profile 60 秒间隔；`fetchAoE2RecsProfileOnce` 连接失败后共享 60 秒冷却。
+- **尚未实现全局并发 1 队列或请求间隔**，不能说已完全串行。批量任务在首次失败前仍可能同时启动多个 profile 的后台请求。
+- 用户问过“是不是之前一次性太多请求”。核查日志：北京时间 11 月 4 日 22:51:08 已有首次观察到的连接失败；23:28 一分钟内有 61 条失败日志，11 月 5 日 01:59 有 42 条。失败日志数不等于请求数，旧逻辑每 profile 会重试多次；失败早于那轮批量日志，**不能证明批量请求就是最初 403 的原因**，但并发控制存在缺口，可能加重限制。
+- `scripts/refresh-realtime-pool.mjs` 对旧于 48 小时的源资料仍会调用本地 `/api/profile-accounts`。该接口立即返回旧数据后可启动后台刷新，所以外层看似串行并不代表上游串行。后续可评估共享全局队列、延长冷却，以及移除活跃筛选中非必需的别名刷新；这些还没做，不要写成已完成。
+- 不要绕过验证码或采取隐蔽代理等方式。上游恢复前，未缓存的完整曾用名仍可能取不到。
+
+### 12.6 当前监听、队列与大厅规则（保留，勿回退）
+
+- 当前监听池最近确认 151 个账号，账户活跃窗口为 **45 天**，主号与小号同样适用；不是 3 个月，也不是旧版 149/160 个数量。池文件 `.cache/realtime-profile-pool.json`，源名单 `config/players_pool.txt`。
+- 服务器 `aoe2-realtime-pool.timer` 每周三北京时间 04:00 执行 `aoe2-realtime-pool.service`，`Persistent=true`，脚本 `scripts/refresh-realtime-pool.mjs`；本次已重新读取定时器确认。不要使用不存在的 `aoe2-realtime-pool-refresh.timer` 名称。
+- 匹配状态使用 match-updated 分组 WSS（4 组）；queueing、lobbies 使用各自的 WSS。状态前端每 1.5 秒检查版本，避免轮询相互取消；后台才向上游查询。
+- 单人队列只显示“队列中”；TG 队列括号内显示其它组队玩家的统一昵称，以 ` + ` 连接。旋转圈 4 秒一周，重绘时继承动画进度，不能转一部分就重置。
+- 匹配成功：两人为 1v1（不加 1v1 前缀），多于两人为 TG；对手选 1v1 分数最高者，TG 显示其名字加“队”；没有地图显示“未知地图”。用户已要求删除按 match ID 补查地图的逻辑，不要恢复。
+- 沙漏上下旋转后停 2 秒再旋转。队列、匹配、游戏中、逃跑、大厅颜色分别区分。
+- matched 后 cancelled 的逃跑提示只针对上游指定的 profileIds：狗作为左侧图标，1v1“逃跑 vs 对手名”，TG“逃跑 TG”。无新状态时最多保留 3 分钟，新状态可立即替换。
+- 所有状态从有变无统一保留 5 分钟宽限；有直播的行不移除。队列无更新过期时间也已从 10 分钟改为 5 分钟，过期前按现有逻辑复核。
+- 新增的“缺失游戏状态恢复”仅在 match WSS 首连/重连时触发（`realtime-recovery.js`），不要重新挂到大厅离开、queue started 或其它高频触发点。原有已知比赛重连校验、定期校验及队列过期复核保留。
+- 大厅房间点击 `aoe2de://0/房间ID` 加入；进行中比赛 `aoe2de://1/比赛ID` 观战。大厅右侧卡片也显示全部房内玩家，与普通卡片共同按 RM 1v1 平均分排序，赛事卡片优先。
+- 分数从缓存立即返回，后台补充，不阻塞大厅状态发布；不要为等待全部分数又拖慢大厅出现。
+- 用户曾要求停止临时长时间监测，不要自动恢复监测测试或重置所有连接来观察个别选手。
+
+### 12.7 战队、直播、比赛预告与其它需保留的约定
+
+- 战队统一使用 AoE2Recs 认证资料，不取游戏公会 clan（例如旋律原 clan=QingY，认证队伍为 CN ZhongSheng）。共享缓存 `.cache/player-teams.json`，15 天更新，查询先返回缓存，失败保留旧值并退避 24 小时；实时战队列与玩家资料使用同一来源。
+- 简称映射：Team Vitality→Vitality、Onimaru Esports→Oni、CN ZhongSheng→CNZS、White Wolf Palace→WWP、Vietnam Legends→Vietnam、Nocturna eSports→NOC、Old School→OS+、Taiwan Aoe Gamer→TAG；保留对应 Liquipedia 链接，实时战队列 12px。
+- 身份与小号统一显示逻辑在 `realtime-player-names.js`；用户指定的中文显示名、去前缀规则、排除名单和 45 天活跃筛选不要被恢复成原始 ID。dogao 已收录，Monoz 及活跃小号已收录；用户仅询问过 Mr.Bean，并未明确要求添加，勿擅自扩大池。
+- DK2（14818947）、小霸王神登（665227）、三坛海会大神（10974135、9793367）等强制中国的规则在 `country-overrides.js`，实时、搜索、资料等共用。
+- Monoz 外文直播有 Twitch 和 Kick：`https://kick.com/monoz_aoe`。Kick 使用 v1 channel API 提取真实封面，旧 v2 封面可能 403；不要恢复旧失效源。
+- 直播约 2 分钟刷新；视频抓取有独立排程与限流，不要因为直播问题触发全量视频抓取。
+- 比赛预告在状态栏与聊天区之间，上下间距各 10px，有 S/A/B 级比赛才显示；06:00～18:00 标题“白天比赛预告(B级以上)”，18:00～次日 06:00“夜间比赛预告(B级以上)”。每天 06:00、18:00 的通知排程保留。
+- 预告保留实际中文阶段（1/4决赛、半决赛、决赛）和 BO3/BO5 等；状态栏赛事名及赛事筛选选项去掉 Top32 一类阶段后缀。预告过时 15 分钟后才移除。
+- 有赛事信息时，实时游戏状态不额外显示“大厅局”；普通非排位仍显示。不要把“大厅房间”（尚未开始）与“大厅局”（已开始）混为一谈。
+- 顶栏分享仅保留复制 `https://aoe2cn.cc`；“喜欢的话就分享给其他帝友吧”用醒目楷体与暖橙色。QQ/微信/抖音/B站菜单及二维码依赖已按用户要求移除，勿恢复。
+- 大厅局统计入口隐藏、停止获取，但实现保留（`lobbyStatsEnabled:false`），不能删除实现。
+
+### 12.8 下次接手检查清单
+
+1. 先读本节，运行 `git status --short` 与 `git diff`，保留当前已上线但未提交的改动。没有新的明确指令，不 commit/push。
+2. 比较待改本地文件与线上文件，备份后再部署；不要只按远端 main 覆盖线上。
+3. 只运行与新改动相关的必要检查。当前已通过的通知/实时测试可用 `node --test --test-reporter=dot tools/test-live-notifications.mjs tools/test-realtime-chat.mjs tools/test-realtime-*.mjs`；玩家资料测试含 Playwright，需要已安装的 Chromium。
+4. 静态资源更新引用版本；后端新增模块要随 `server.js` 一起发布，检查语法、文件权限；仅按必要范围重启服务。
+5. 检查 active/内部健康接口及浏览器，不向正式聊天发测试通知，不清空账号、历史比赛或直播缓存。
+6. `output/` 下截图、临时预览、归档均不提交。历史本地清理归档位于 `output/archive-cleanup-20261105-004714/`；服务器旧探针已移入 `.cache/deploy-backups/archived-probes-20261105/`，不用重新运行。
+
+
+### 12.9 2026-11-05 后续：AoE2Recs 请求收敛与页面规则
+
+- 用户仍要求代码不推送；本轮未提交、未推送。以下补充覆盖12.5中“尚无全局队列”的旧记录。
+- 新增 `server/services/aoe2recs-request-gate.js`，网站进程所有 AoE2Recs 账号/曾用名、认证战队、头像回退请求统一通过该模块；并发1，每次请求结束后至少间隔10秒，合并同profile请求，最多32个待处理任务（含当前任务）。
+- 任一资料请求失败后清空等待队列并拒绝排队任务，首次全局暂停15分钟，连续失败依次30分钟、1小时、2小时、4小时、最高6小时；成功后重置。没有定时自动重试积压任务，后续正常业务请求在冷却结束后才可尝试。
+- 冷却状态原子写入 `.cache/aoe2recs-request-cooldown.json`，服务重启继续遵守。不要为测试而清除该文件或重启服务试探上游。
+- 底层单次WebSocket仍有20秒超时，握手就绪后只发送一次profile查询，去除旧的1.5秒重复发送；迟到消息忽略。战队刷新改为复用 `refreshAoE2RecsProfile` 的同账号请求合并及缓存写入。
+- `profile-accounts.js` 相同profile后台刷新间隔改为15分钟。完整旧缓存仍可返回，失败不覆盖、不清空缓存。
+- `scripts/refresh-realtime-pool.mjs` 不再调用 `/api/profile-accounts` 触发资料刷新；只读现有账号缓存。保留本地关联表、旧候选名单与45天官方排位活跃核验，未手动执行名单更新。
+- 本地测试9项通过；服务器运行相关可用测试通过；模拟覆盖跨账号串行/间隔、同账号合并、首个失败清空批量队列、冷却跨重启、指数退避上限与成功重置、队列容量。未以大量真实请求验证；不宣称403已经解除。
+- 服务器备份 `.cache/deploy-backups/aoe2recs-gate-20261105.tar.gz` 包含原server.js、profile-accounts.js、名单脚本；新增gate模块需跟随server.js发布。仅重启主服务，网站及后台健康检查正常。
+- 页面后续变动：战队新增12个已核实词条映射；其它名称使用液体百科Special:Search，不捏造独立词条。实时栏战队去首尾Team/Esports/The，保留既有简称。
+- 状态栏和预告卡片刷新保留仍有效的文字选中，预告内容无变化不重建节点；不暂停数据更新。预告标题仅“比赛预告”。
+- 预告窗口已扩大到未来24小时，开赛后15分钟保留；S/A/B级或opponents标记CN/China/中国的比赛均入选，未定级显示“未定级”。共享筛选 `public/realtime-schedule.js`；每天北京时间06:00和18:00通知同步采用24小时窗口，聊天显示过滤兼容旧12小时及新24小时预告。
+- 当前前端 `app.js?v=schedule-24h-v103`。后续部署保留所有本地、线上未提交成果。
+
+
+### 12.10 2026-11-05：15天缓存与用户要求的三天暂停（覆盖12.9相应参数）
+
+- 用户指定账号/曾用名、认证战队、头像缓存均为15天，优先提供已有缓存，超过期限才向上游刷新；失败继续保留旧资料。AoE2Recs全局串行间隔改为3秒，失败指数退避保持。
+- `server.js`、`profile-accounts.js` 与浏览器资料缓存TTL改为15天；战队本已15天，战队补充读取优先复用仍新鲜的完整资料缓存，并保留原始savedAt，避免错误延长缓存寿命。
+- `avatar-cache.js` TTL=15天（健康状态ttlHours=360），加载既有24小时元数据时按原updatedAt重新计算15天期限，未清空或伪造下载时间。头像图片HTTP缓存15天，头像地址API按剩余有效秒数缓存。
+- **用户要求当前停止访问AoE2Recs三天**：线上暂停从北京时间2026-11-05 15:08:17开始，至 **2026-11-08 15:08:17（北京时间）**。所有账号、战队、头像回退的AoE2Recs请求在此期间被统一入口拒绝，不会连接上游。Steam等其它来源不受影响。
+- `.cache/aoe2recs-request-cooldown.json` 新增独立 `pausedUntil` 字段；手动暂停不受故障退避6小时上限裁剪，服务重启仍保留。不要清除该字段、覆写暂停状态、提前重启试探上游或手动恢复请求。到期后后续正常业务请求才可能触发访问。
+- 线上已读取真实暂停文件，通过模拟transport验证请求被拒绝且上游调用0次；无真实AoE2Recs验证请求。内部健康接口正常，Yo/徐泽主号账号接口返回完整缓存且stale=false。
+- 前端脚本缓存版本 `profile-cache-15d-v104`。服务器备份 `.cache/deploy-backups/recs-15d-pause-20261105.tar.gz`；原冷却JSON备份 `.cache/aoe2recs-request-cooldown.before-pause-20261105.json`。恢复旧备份时仍须遵守这次72小时暂停，不得因此提前访问。
+- 新增/调整测试覆盖15天精确边界、旧头像元数据迁移、战队缓存复用原始时间、3秒串行间隔、72小时暂停跨重启以及到期恢复。代码未提交、未推送。
+
+
+### 12.11 2026-11-05：实时状态战队/赛事列隐藏
+
+- 战队、赛事表头各加“隐藏”按钮。隐藏整列表头和数据单元格，按原宽度比例把空间分配给剩余列，DOM列索引保持以兼容样式和文字选中恢复逻辑。
+- 表格上方仅在有隐藏列时出现“显示战队”“显示赛事”恢复按钮；窄屏横向滚动时工具栏横向固定可见。手机表格最小宽度随隐藏列缩小（全显1050px，同时隐藏两列750px）。
+- 浏览器 `aoe2de:realtime-hidden-columns` 保存个人选择，自动刷新、重载及页面往返保留；不改变服务端数据。
+- 静态资源版本：app.js=`realtime-columns-v105`，styles.css=`realtime-columns-v34`。备份 `.cache/deploy-backups/realtime-columns-20261105.tar.gz`，仅发布三个静态文件，无服务重启；仍遵守AoE2Recs三天暂停。
+- 桌面1440px/手机390px浏览器检查隐藏/恢复、宽度重分配、刷新和重载保留及手机恢复按钮可见性通过。截图、临时测试在output忽略目录，不提交。代码未提交、未推送。
+
+
+### 12.12 2026-11-05：列开关改用双箭头
+
+- 按用户要求，去除按钮上的“隐藏”“显示”文字，表头使用朝内双箭头收起，恢复入口使用列名与朝外双箭头展开；保留title/aria-label说明与键盘操作。隐藏列、宽度分配、浏览器记忆逻辑不变。
+- 前端app引用版本 `realtime-column-arrows-v106`（脚本内容未改变），CSS `realtime-column-arrows-v35`。仅上传HTML/CSS，不重启服务、不触碰AoE2Recs暂停。
+- 桌面/手机交互检查通过；备份 `.cache/deploy-backups/realtime-column-arrows-20261105.tar.gz`。未提交、未推送。
+
+
+### 12.13 2026-11-05：单粗箭头在原表头折叠（覆盖12.11/12.12交互）
+
+- 用户提供灰底白色单个粗箭头参考图，并要求折叠后列名与箭头不移到其它位置。已移除上方恢复工具栏，战队/赛事列名与同一个切换按钮始终保留在原表头；展开态箭头朝左，折叠态朝右，点击原按钮切换。
+- 折叠隐藏数据内容，表头保留48 CSS px宽度，腾出其余空间分给可见列。保持六个单元格索引，兼容现有样式/文字选中恢复；浏览器仍用原隐藏列偏好键，兼容已保存选择。ResizeObserver跟随表格容器宽度调整，手机两列均折叠最小宽846 CSS px。
+- 脚本版本 `realtime-column-toggle-v107`，CSS `realtime-column-toggle-v36`；备份 `.cache/deploy-backups/column-toggle-in-place-20261105.tar.gz`。三个静态文件部署，无服务重启、不改AoE2Recs暂停。
+- 桌面/手机验证列名和按钮保留、反向箭头原位切换、列宽分配、刷新重载记忆通过；仅本地output保存截图/检查脚本。未提交、未推送。
+
+
+### 12.14 2026-11-05：直播列同样可折叠
+
+- 直播列新增与战队/赛事相同的单粗箭头原位切换，折叠保留列名和按钮，仅隐藏内容；按剩余列权重分配空间。
+- 偏好键保持 `aoe2de:realtime-hidden-columns`，新增合法值live，兼容原有team/tournament选择；宽度重算和手机最小宽同步考虑直播列。
+- 资源版本app=`realtime-live-toggle-v108`、CSS=`realtime-live-toggle-v37`；备份 `.cache/deploy-backups/live-column-toggle-20261105.tar.gz`。仅发布静态文件、不重启服务、不更改AoE2Recs暂停。桌面/手机切换、列名保留、刷新重载记忆检查通过，未提交、未推送。
+
+
+### 12.15 2026-11-05：赛事结果等级/分类多选
+
+- `public/event-results.js` 分类按钮由单选tab改成aria-pressed多选按钮，默认仍S级；点击加入/再次点击取消，新增“全部”一键选择6个分类，全部取消时显示选择提示。搜索作用于所选分类合并结果，切换不清空搜索。
+- URL沿用category参数，多个值用逗号（如s,a,b），兼容旧单分类链接；空category保留空选择，无参数默认S。重新加载/重新进入恢复URL选择。
+- 分类缓存独立保存并合并进行中请求；快速切换不让旧响应覆盖当前选择。某分类失败/202等待时保留其它已加载分类，202按服务器提示重试。
+- 多选在赛事名前显示等级/分类标记。单独资格赛仍用6列表格；与其它分类同选时使用8列、冠军/晋级者共用一列，保留晋级者信息。
+- 对赛事结果表显式table-layout:auto，避免多选标记加入后被全局固定表格布局挤窄；手机返回链接跨两格，不溢出。
+- 资源：app=`event-results-multiselect-v109`，动态event-results.js=`14`，event-results.css=`12`。备份 `.cache/deploy-backups/results-multiselect-20261105.tar.gz`，仅发布4个静态文件，无服务重启；AoE2Recs暂停不变。代码未提交、未推送。
+- 本地隔离浏览器测试 `tools/test-event-results-multiselect.mjs` 覆盖组合选择/取消/全部、搜索、请求合并、URL重载、空选择、资格赛混合、部分失败与202重试；现有赛事解析6项通过。线上1440px/390px确认S/A同时选中、真实合并313项及布局。截图output忽略目录不提交。
+
+
+### 12.16 2026-11-05：状态诊断日志与队列单行
+
+- 用户要求后续记录状态异常的依据。新增 `server/services/realtime-trace.js`，主服务journal中前缀 `[realtime-trace]` 后接JSON；只记录关键ID/状态/时间，不保存完整上游响应、账号登录信息或玩家昵称。
+- `queue-event` 记录被监听账号相关queueing事件类型、队列ID、matchId、匹配状态、移除原因及profileIds；`state-change` 记录实际发布缓存时账号状态前后变化（身份、比赛/队列/大厅ID、直播与宽限标志），无变化的刷新不重复记录；启动先记录state-baseline。
+- `validation` 记录periodic/reconnect等复核来源、查询账号、原比赛ID/开始时间、上游返回比赛ID/开始结束时间/abandoned/live/计算状态，以及keep/remove-different-match/remove-inactive-match决定；查询异常另有validation-error。比赛结束WSS事件另有match-ended-event。
+- 历史ACCM问题：日志确认北京时间22:24:20复核移除518907136，22:30/22:31同一局又被保留。旧日志缺少当时具体返回内容，不能宣称已确定接口为何判失效或已修复根因。本轮仅增强日志，不修改移除/恢复规则。
+- 队列样式由flex-wrap:wrap改成nowrap，图标保留固定宽度，TG长队友名单在同一行省略；匹配成功队列同样单行，游戏中赛事副标题原换行规则保留。样式版本queue-single-line-v38，主脚本引用仍event-results-multiselect-v109。
+- 本地日志/实时队列/重连/恢复/过期/逃跑/大厅/宽限测试27项通过，服务器新日志测试2项通过；浏览器验证120/240/400px及手机队列图标与文字垂直中心一致、单行省略。已看到真实队列、状态变化和复核日志；无人工正式聊天/弹幕测试。
+- 发布realtime-service.js与新增trace模块、HTML/CSS，重启主服务（日志接入所需），后台服务未重启。健康检查通过，AoE2Recs pausedUntil仍有效。备份 `.cache/deploy-backups/realtime-trace-queue-line-20261105.tar.gz`，新模块不在原版本备份内。未提交、未推送。
+
+
+### 12.17 2026-11-05：队列刷新延迟核查（只读，未改规则）
+
+- 按用户要求比对新增trace日志：近期89个profile/queueId/status首次出现至首次发布样本，最小359ms，中位512ms，95分位571ms，最大3213ms（最慢两条同次启动期事件）。不能将重复queueingUpdated到较晚同状态回退的时间误当作首次发布耗时；先前出现的27/33秒统计混入了这种情况。
+- 浏览器可见页约10秒检查：版本请求常规1.5秒间隔，请求耗时361～1327ms，表格重绘间隔1314～1749ms，实时接口无失败。仅短时检查，未启动长期监测、未新增WSS连接或重置现有连接。
+- 确认一处回退：518913105于北京时间22:59:46收到match-ended-event（finished字段22:59:29），同局队列m_518913105直到22:59:57才收到reason=started的移除通知，间隔约11.1秒；结束事件移除game后，残留matched队列使页面中间回到“匹配成功”。这是两个通道状态清理时序不一致，并非队列消息收到后排队33秒才处理。
+- 另5232543/518917081在23:22:11由aoe2companion-latest来源发布game→matched，23:22:19恢复game；尚未进一步证明该次API返回的具体历史比赛，不能臆测相同根因。状态回退规则本次未修改。
+- 玩家实际开始排队到上游推送的耗时缺少客户端时间对照，不能承诺这一段延迟；当前1条常驻队列WSS未见需要增加相同订阅连接的证据。
+
+
+### 12.18 2026-11-06：队列总延迟与Yo匹配Sebastian核查、图标间距
+
+- 用户明确反馈从实际入队到网页至少慢10秒。先前0.5秒仅是本站收到事件到发布的耗时，不能当作总延迟。
+- 只读核对两个当前队列的queueingSince与首次queueingAdded日志：q_8kyhc3来源16:37:37.298Z，本站16:37:43.594Z收到，相差6296ms；q_8kyhrh来源16:40:37.324Z、本站16:40:44.427Z，相差7103ms。这是来源记录到本站接收，尚不包括游戏内实际点排队到来源识别的时间，也不代表每条都如此。
+- Yo(197964)对Sebastian(2783660)，比赛518930207：北京时间00:35:54.085收到Yo队列q_8kyh2r、00:35:54.577发布队列；00:37:13.325两人原队列收到reason=started移除，00:37:13.845变无状态，00:37:41.212/213才发布游戏中。日志中没有关联这两人的matched事件；旧日志在账号关联筛选后才记录，不能证明原始流绝对没发或完全排除本站丢弃不完整消息，不能补造对手/匹配状态。
+- 在现有queue-event日志补充queueingSince、matchedAt和upstreamAgeMs。队列中无players、无法关联的m_消息新记queue-unattributed，仅记录字段名/ID，每队列首次记录，去重集上限500。没有增加WSS连接或定期额外抓取。
+- `/api/realtime/status` 新增queueing诊断：connected、connectedAt、lastMessageAt、lastRelevantEventAt、messagesReceived、unattributedMatchedEvents、entries。刚部署后真实连接正常、消息持续到达；不能据当时未关联计数0断言Yo旧问题已修复。
+- 用户截图“沙漏离文字很远”根因：上一轮nowrap改动让文字span flex填满剩余宽度，但继承父级text-align:center。现span显式text-align:left，与图标固定4 CSS px间距，单行省略保持；CSS版本queue-icon-gap-v39。
+- 本地相关实时测试27项通过，新增不完整matched消息诊断与随后完整消息恢复断言；服务器队列/trace测试通过。浏览器120/240/500px实际量测首字符至图标间距<=8屏幕px、左对齐及单行通过。
+- 备份 `.cache/deploy-backups/queue-timing-gap-20261106.tar.gz`，发布realtime-service、HTML/CSS，重启主服务以启用诊断；后台未重启。健康检查正常，AoE2Recs暂停到11月8日15:08仍有效。代码未提交、未推送。
+
+
+### 12.19 2026-11-06：队列和大厅各4条常驻WSS（覆盖旧单连接记录）
+
+- 用户明确要求队列/大厅各拆4条并发。当前151账号按38/38/38/37分组，比赛match-updated仍4条；总常驻连接12条。新增 `server/services/realtime-profile-groups.js` 共用分组方法，账号不足4时只建立非空组，5账号也可正确分4组。
+- 队列连接使用handler=queueing&profile_ids=各组账号；每组独立entries、重连定时器和诊断。任何一组open/close不清空其它组状态；跨组组队保留完整players，但逃跑/宽限/清理只操作本组拥有账号。5分钟过期复核保持一次共享快照，分别更新各组缓存。
+- 大厅同样4连接、本地4组独立拥有账号与rooms。**线上实证：大厅WSS带profile_ids只推该玩家slot，丢失lobbyAdded元数据与其它slots**，因此最终大厅各连接保留完整handler=lobbies事件流，再本地按组处理，不使用profile_ids。不得再次恢复大厅profile_ids过滤。四条大厅会收到重复的完整流，不能声称已减少大厅上游带宽。
+- 线上验证Lyx房518940048在取消大厅过滤后恢复房名6666、地图African Clearing和完整8名玩家；四条大厅均收到完整快照/后续事件。组间同大厅各自保存副本，status.roomCount按房ID去重。
+- `/api/realtime/status` 保留原socketCount表示4条比赛连接，新增totalSocketCount=12。queueing、lobbies分别含socketCount=4及各组健康、profileCount、消息/重连计数。队列旧聚合lastMessageAt等字段兼容保留。
+- 分组更换时关闭旧socket/重连定时器，旧连接迟到open/message/close不会改新组缓存。新增 `tools/test-realtime-socket-groups.mjs` 验证151平衡分组、5人分组、跨组队列/取消、重连隔离、旧连接回调忽略、完整大厅/其它组不受清空影响。
+- 本地相关实时测试30项通过，服务器相关测试通过；线上12连接全部正常，主站/后台健康检查正常，AoE2Recs暂停仍有效。此项增加并发，**尚未用实际入队时间对照证明总延迟降低**，不能保证解决上游漏发或延迟。
+- 备份 `.cache/deploy-backups/queue-lobby-four-wss-20261106.tar.gz`（原realtime-service/realtime-lobbies）；新增分组helper部署需随模块发布。仅重启主服务，前端资源版本不变；未提交、未推送。
+
+### 12.20 2026-11-06：服务器 Chrome 人工验证及资料读取接入
+
+- 用户通过临时 SSH/noVNC 查看并手动完成服务器官方 Google Chrome 验证。服务器独立 HTTP 仍403，但同一已验证浏览器内 WebSocket 成功读回 Yo(197964)及5个关联账号；迁移为常驻服务后再次读取成功。
+- 新增 aoe2recs-browser.js，经本机9228 CDP使用服务器正常Chrome会话；不导出Cookie，不自动点击验证码。每次读取后回到about:blank，防止Dashboard持续订阅；识别验证页时保留页面等待人工，失败沿用缓存和退避。
+- 主服务资料transport已改用浏览器；原15天缓存、全局串行3秒间隔、失败冷却和独立pausedUntil均保留。内部健康检查新增profileBrowser计数。暂停仍到北京时间2026-11-08 15:08:17，尚未授权提前解除。
+- 常驻服务 aoe2recs-browser.service，脚本tools/start-aoe2recs-browser.sh；官方Chrome默认沙箱启用，专用aoe2用户。配置目录.cache/aoe2recs-browser-profile仅服务器保存，9228仅127.0.0.1监听。原临时人工浏览器/VNC服务已停止；以后验证失效需重新提供临时远程画面人工处理，不能保证验证永久有效。
+- 已部署server.js、新模块、启动脚本和systemd单元；主服务重启，后台未重启，三项服务健康。主服务启动后浏览器requests=0、页面about:blank，暂停文件未改。备份.cache/deploy-backups/aoe2recs-browser-20261106.tar.gz仅包含旧server.js；新模块/单元回滚需单独处理。
+- 浏览器客户端成功/串行/验证页保留/错误清理测试，原请求门禁4项、账号5项、战队5项、头像3项测试通过。未提交、未推送。
+
+### 12.21 2026-11-06：用户授权提前恢复 AoE2Recs 自动更新
+
+- 用户明确选择“现在恢复，保留15天缓存和3秒请求间隔”。已将服务器门禁状态pausedUntil设为0，保留其它状态，重启主服务载入；覆盖12.20中原11月8日暂停期限。
+- 服务器常驻Chrome再次读取Yo资料及5个关联账号成功；网站账号接口返回5账号、cached=true/stale=false/partial=false，缓存优先正常。主服务、后台及浏览器均active。
+- 15天有效期、全局串行3秒间隔、失败退避保持，未强制批量刷新名单、未提交或推送。
+
+### 12.22 2026-11-06：账号无有效资料不触发全局冷却
+
+- 用户指出无小号/查无资料不应处罚冷却。transport对无有效选手资料及浏览器空资料使用AOE2RECS_PROFILE_UNAVAILABLE；门禁仅拒绝当前账号、保留3秒间隔并继续其它队列，不累计失败或丢弃其它账号。连接失败/超时/人工验证等仍保留原退避。
+- 针对2975748测试误触发的旧冷却按原blockedUntil和failures精确匹配后清除，pausedUntil保持0。已部署三个模块并重启主服务，后台未重启。
+- 门禁5项及浏览器客户端测试通过，新增断言无资料后另一账号成功、间隔3000ms、failures/blockedUntil均0。备份.cache/deploy-backups/aoe2recs-profile-no-cooldown-20261106.tar.gz。未提交、未推送。
+
+### 12.23 2026-11-06：关联账号查询状态明确区分
+
+- 实际核对2975748上游响应found=false/player=null，无accounts字段；表示资料未收录，不能解释成已证明没有小号。
+- transport对明确found=false生成notFound标记并缓存15天；账号reader保留本地账号，输出not-found，不触发全局冷却。格式异常仍是unavailable；首次后台查询loading；有效账号列表仅当前账号为single-account，其它为complete。旧资料获取失败继续保留。
+- 页面分别显示查询中、来源暂未收录、暂无其他关联账号、获取失败。仅loading每5秒重查最多4次；不再对明确未收录反复轮询。app资源版本profile-account-status-v110。
+- 已部署server.js/profile-accounts.js/app.js/index.html并重启主服务，后台未重启。线上2975748由loading转not-found，failures=0/blockedUntil=0，三个服务active。账号7项、门禁5项及四种页面文案/轮询断言通过。
+- 备份.cache/deploy-backups/profile-account-status-20261106.tar.gz。未提交、未推送。
+
+### 12.24 2026-11-06：点击查看别名才请求账号资料
+
+- 用户要求进入资料页不自动查询别名。移除loadAoE2RecsProfile中的loadProfileAccounts调用，打开别名弹窗时才调用；关闭弹窗后忽略返回并停止后续轮询。基本资料渲染不再覆盖弹窗中的账号查询结果。
+- 15天缓存/请求门禁保持；头像与战队等独立资料原逻辑不变。app版本profile-alias-on-click-v111。只部署app.js/index.html，无需重启服务。
+- 隔离执行测试确认进入资料页不查询别名、打开弹窗才查询、关闭不请求；四状态文案/轮询测试通过。线上HTML版本及服务active确认。备份.cache/deploy-backups/profile-alias-on-click-20261106.tar.gz。未提交、未推送。
+
+### 12.25 2026-11-06：100局快照按20局逐次展示（覆盖12.4显示规则）
+
+- 用户澄清：进入先获取100局，仅展示20局；每次点击再展示20局，至100局结束。保留完整snapshot先于latest检查的顺序与百局统计；不请求更早历史、不改服务端分页接口。
+- loadWorldsEdgeMatches保留100局数组，visibleCount初始20，每点击+20，达到筛选后记录数隐藏按钮；切换筛选回到20局。最新检查失败仍保留已加载记录。
+- 修正12.24误将对局isCurrent与别名弹窗hidden绑定的回归；历史对局与别名弹窗独立。
+- 浏览器测试实际验证20/40/60/80/100展示、点击不增加请求、100局后隐藏、离开返回重置20；刷新状态5项、服务端快照2项和别名按需测试通过。仅部署app.js/index.html，版本profile-history-more-v112，无服务重启。备份.cache/deploy-backups/profile-history-local-pages-20261106.tar.gz。未提交、未推送。
+
+### 12.26 2026-11-06：人工重新验证后，改读资料页自身的数据连接
+
+- 原页面HTTP200不能证明资料可用。服务器直接打开/profile/182749确实403验证页；用户通过临时服务器画面再次人工验证，确认页面Account/Aliases表格实际显示8行。
+- aoe2recs-browser.js不再page.evaluate新建额外WebSocket。每次导航/profile/ID，仅被动监听该网页自行建立的dashboard/api连接收到的cls13资料；保留原始账号/曾用名数组，避免将含逗号的昵称误拆分。不自动处理验证码、不导出Cookie。成功后仍回about:blank停止背景流量。
+- 服务器实测：182749 Dragonstar，5936ms、8账号54曾用名；25657100 缀夜星真可爱，9162ms、2账号18曾用名。已写入服务器15天资料缓存；线上账号接口均complete/partial=false/stale=false。15天缓存、3秒间隔与失败保护不变，无法保证未来不再次要求人工验证。
+- 已部署浏览器模块并重启主服务；后台未重启。人工验证及成功读取后按原时间戳精确清除已诊断的403冷却，pausedUntil仍0。临时aoe2recs-verification-viewer服务已停止，用户可关闭手动SSH转发窗口。
+- 原生页面消息捕获、串行、验证码页面保留、失败清理测试通过，门禁5项及账号7项通过。主站/后台健康，主服务与常驻浏览器active；缓存接口不触发新的浏览器请求。
+- 备份.cache/deploy-backups/aoe2recs-native-page-20261106.tar.gz。未提交、未推送。
+
+### 12.27 2026-11-06：关联账号跳转接入站内玩家路由
+
+- 用户反馈别名弹窗点击其它账号后天梯页转圈，F5才显示。原账号链接为普通/profile/ID锚点，无站内路由接管。新增同源玩家链接委托处理，调用已有routeToPlayerProfile，立即切换资料页、关闭弹窗并使旧请求失效；保留新窗口/修饰键/下载等原生行为。历史对局中的玩家链接同步适用。
+- 浏览器测试实际打开别名弹窗点击另一账号，确认URL切换、资料页显示20场、弹窗关闭、performance.timeOrigin未变（未重载文档），后退恢复原玩家；现有100局按20局展示及页面切换测试通过。未在改动前稳定复现用户所见转圈，不能断言已证明其完整根因。
+- 仅部署app.js/index.html，版本profile-account-route-v113，无服务重启，线上版本/active确认。备份.cache/deploy-backups/profile-account-route-20261106.tar.gz。未提交、未推送。
+
+### 12.28 2026-11-06：白天模式折叠箭头配色
+
+- 白天模式战队/赛事/直播折叠按钮由深灰白箭头改为浅米棕底、深棕箭头；hover与键盘焦点同步暖色。按钮尺寸/箭头原位/展开折叠行为及夜间配色保持。
+- 本地Chrome渲染三列按钮截图检查通过，按钮宽16px不变。仅发布styles.css/index.html，CSS版本light-column-toggle-v40，无服务重启。备份.cache/deploy-backups/light-column-toggle-20261106.tar.gz，未提交、未推送。
+
+### 12.29 2026-11-06：按用户要求停止两个斗鱼监听
+
+- 已停止douyu-command-listener.service（753676/Yo）及douyu-command-listener-1029928.service（1029928/226575），均inactive/dead、MainPID=0。此为用户要求“先停止”，仅systemctl stop，原开机enabled配置未修改；不要擅自启动。其它主站/后台服务未更改。
+
+### 12.30 2026-11-06：恢复艾瑞莉婭丶直播区来源
+
+- 用户澄清恢复的是直播区艾瑞莉婭丶，提供B站房间3760981。已在map/aoc-selected-streamers.json为玩家211246恢复bilibili链接https://live.bilibili.com/3760981，部署并重启主服务载入缓存配置。
+- 服务器B站房间信息接口code=0、room_id=3760981、live_status=0，标题“D一会儿”；目前未开播，因此直播区无直播卡片属正常，开播后按原2分钟检测出现。
+- 两个斗鱼命令监听仍inactive，未恢复。备份.cache/deploy-backups/selected-streamers-before-irelia-20261106.json。未提交、未推送。
+
+### 12.31 2026-11-06：艾瑞莉娅主小号同时加入实时监测
+
+- 用户指定主账号1458474及小号211246。直播配置rl改为两账号（主号在前），共用B站3760981；realtime-player-names增加统一显示名“艾瑞莉娅”及主号身份1458474，防止小号作为另一玩家重复展示。
+- 两ID加入config/players_pool.txt及服务器当前池ids/candidateIds/sourceIds，周更继续作为来源候选，沿用45天活跃筛选规则。当前池151→153，分组39/38/38/38；12条WSS健康，比赛/队列/大厅各4。已部署并重启主服务；两个斗鱼监听仍inactive。
+- 实时名称5项测试通过。备份.cache/deploy-backups/irelia-realtime-20261106.tar.gz。未提交、未推送。
+
+### 12.32 2026-11-06：直播封面主号分数及非活跃积分
+
+- 艾瑞莉娅直播配置ratingProfileId=1458474，封面仅取主号1v1/团队分数；rl仍包含1458474和211246，实时监听/直播关联不变。其它主播默认仍取关联账号中对应模式的最高分。
+- fetchLivePlayerLeaderboardStats不再要求rank>0；保留有效正积分，非活跃rank归null。封面有积分就显示，无有效排名时省略#排名，不能因不活跃隐藏积分。仅使用上游保留的rating，不将历史最高分冒充当前积分。
+- 测试验证rank=-1/0的1888/2100积分保留、无排名不显示#、有效排名继续显示、零分不展示、主号配置保留小号关联。已部署server.js/app.js/index.html/直播配置并重启主服务，后台正常，斗鱼两监听仍停止。版本live-inactive-rating-v114。
+- 备份.cache/deploy-backups/live-inactive-rating-20261106.tar.gz。未提交、未推送。
+
+### 12.33 2026-11-06：直播封面团队积分标签改回TG
+
+- 按用户要求，直播封面团队积分标签由“团队”恢复“TG”，1v1不变。仅发布app.js/index.html，版本live-tg-label-v115，无服务重启。线上Chrome检查LilyBear卡片TG 1,566正常显示。
+- 备份.cache/deploy-backups/live-tg-label-20261106.tar.gz。未提交、未推送。
+
+### 12.34 2026-11-06：本次统一提交推送授权
+
+- 用户明确要求将本轮累计改动合并整理后推送仓库；仅授权这一次。后续改动不得自动提交推送，需用户重新明确要求。
+- 推送前fetch确认main与origin/main一致，无分支分歧。79项实时监听/账号缓存/头像战队/资料导航与分页/直播积分等检查通过，赛事多选浏览器测试另行通过。改动包含12.5之后累计已部署功能和运维文档；运行缓存、账号Cookie/浏览器配置和output临时文件不纳入提交。

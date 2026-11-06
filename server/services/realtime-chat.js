@@ -1,3 +1,4 @@
+import { scheduleTierLabel } from '../../public/realtime-schedule.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -139,7 +140,8 @@ export function createRealtimeChat({ path, now = Date.now } = {}) {
     announceLiveEnd(live) {
       const author = clean(live?.name || '选手').slice(0, 40) || '选手';
       const url = String(live?.url || '');
-      return announceSystem({ content: `${author} 已结束直播`, key: `live-end:${url}`, repeatMs: 10 * 60_000 });
+      const identity = live?.name ? `streamer:${clean(live.name).toLowerCase()}` : url;
+      return announceSystem({ content: `${author} 已结束直播`, key: `live-end:${identity}`, repeatMs: 10 * 60_000 });
     },
     announceMatch({ phase, match, tier }) {
       const opponents = Array.isArray(match?.opponents) ? match.opponents.map(item=>clean(item?.name || '待定')).slice(0, 2) : [];
@@ -162,9 +164,9 @@ export function createRealtimeChat({ path, now = Date.now } = {}) {
           : match.tournament?.name || match.tournament?.mainName || '未命名赛事');
         const bestOf = Number(match.bestOf);
         const format = Number.isInteger(bestOf) && bestOf > 0 ? `BO${bestOf}｜` : '';
-        return `${time} ${match.tier}级｜${tournament}｜${format}${opponents[0]} vs ${opponents[1]}`;
+        return `${time} ${scheduleTierLabel(match)}｜${tournament}｜${format}${opponents[0]} vs ${opponents[1]}`;
       });
-      const content = rows.length ? `未来12小时比赛预告：${rows.join('；')}` : '未来12小时暂无 S级、A级或B级比赛';
+      const content = rows.length ? `未来24小时比赛预告：${rows.join('；')}` : '未来24小时暂无B级及以上或有中国选手参赛的比赛';
       return announceSystem({ content, key:`match-preview:${day}`, repeatMs:36 * 60 * 60_000 });
     },
     close() { db.close(); }

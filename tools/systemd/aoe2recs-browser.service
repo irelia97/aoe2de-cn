@@ -1,0 +1,20 @@
+[Unit]
+Description=AoE2Recs verified profile browser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aoe2
+Group=aoe2
+WorkingDirectory=/opt/aoe2de-cn
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1365x900x24 -nolisten tcp" /bin/bash /opt/aoe2de-cn/tools/start-aoe2recs-browser.sh
+Restart=on-failure
+RestartSec=10
+MemoryHigh=512M
+MemoryMax=768M
+TasksMax=256
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

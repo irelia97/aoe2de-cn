@@ -80,4 +80,13 @@ test('queue states apply only to monitored players, merge maps, and clear on rem
   send([{type:'queueingRemoved',data:{id:'q8',reason:'left'}}]);
   assert.equal((await state()).status,'offline');
   assert.equal((await state()).queue,undefined);
+  send([{type:'queueingAdded',data:{id:'m_unattributed',status:'matched',matchId:100,matchedAt:new Date().toISOString()}}]);
+  const diagnostics=service.getRealtimeStatus().queueing;
+  assert.equal(diagnostics.connected,true);
+  assert.equal(diagnostics.unattributedMatchedEvents,1);
+  assert.ok(diagnostics.lastMessageAt);
+  assert.equal((await state()).queue,undefined);
+  send([{type:'queueingUpdated',data:{id:'m_unattributed',status:'matched',matchId:100,players:[{profileId:42},{profileId:88}]}}]);
+  assert.equal((await state()).status,'matched');
+
 });

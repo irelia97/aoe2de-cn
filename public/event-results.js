@@ -15,21 +15,67 @@ const peopleMarkup = entries => {const list=Array.isArray(entries)?entries:[];re
 
 export function mountEventResults(root) {
   if (mounted.has(root)) return mounted.get(root).activate();
-  root.innerHTML = `<div class="events-hero event-results-hero"><div><div class="section-kicker">AOE II TOURNAMENT ARCHIVE</div><h2>赛事结果</h2><p>S / A / B / C 级赛事、表演赛与资格赛（未收录周赛月赛等）</p></div></div><div class="event-results-controls"><div class="event-results-tabs" role="tablist" aria-label="赛事分类">${categories.map(([id,label])=>`<button type="button" role="tab" data-results-category="${id}" aria-selected="false">${label}</button>`).join('')}<a class="events-results-link" href="/events" data-events-route>返回赛事信息</a></div><div class="event-results-filters"><label>搜索赛事<input id="eventResultsSearch" type="search" placeholder="赛事、地点或选手" autocomplete="off"></label></div></div><div class="event-results-status" id="eventResultsStatus" role="status" aria-live="polite"></div><div class="event-results-years" id="eventResultsYears"></div><div class="events-attribution">数据来源：<a id="eventResultsSource" href="https://liquipedia.net/ageofempires/Age_of_Empires_II/S-Tier_Tournaments" target="_blank" rel="noopener noreferrer">Liquipedia</a>，依据 <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener noreferrer">CC BY-SA 3.0</a> 使用。页面按来源数据定期更新，赛事结果以 Liquipedia 实际录入为准。</div><button type="button" class="event-results-top" id="eventResultsTop" aria-label="返回页面顶部" title="返回顶部">↑<span>顶部</span></button>`;
+  root.innerHTML = `<div class="events-hero event-results-hero"><div><div class="section-kicker">AOE II TOURNAMENT ARCHIVE</div><h2>赛事结果</h2><p>S / A / B / C 级赛事、表演赛与资格赛（未收录周赛月赛等）</p></div></div><div class="event-results-controls"><div class="event-results-tabs" role="group" aria-label="赛事等级与分类，可多选">${[['all','全部'],...categories].map(([id,label])=>`<button type="button" data-results-category="${id}" aria-pressed="false">${label}</button>`).join('')}<a class="events-results-link" href="/events" data-events-route>返回赛事信息</a></div><div class="event-results-filters"><label>搜索赛事<input id="eventResultsSearch" type="search" placeholder="赛事、地点或选手" autocomplete="off"></label></div></div><div class="event-results-status" id="eventResultsStatus" role="status" aria-live="polite"></div><div class="event-results-years" id="eventResultsYears"></div><div class="events-attribution">数据来源：<a id="eventResultsSource" href="https://liquipedia.net/ageofempires/Age_of_Empires_II/S-Tier_Tournaments" target="_blank" rel="noopener noreferrer">Liquipedia</a>，依据 <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener noreferrer">CC BY-SA 3.0</a> 使用。页面按来源数据定期更新，赛事结果以 Liquipedia 实际录入为准。</div><button type="button" class="event-results-top" id="eventResultsTop" aria-label="返回页面顶部" title="返回顶部">↑<span>顶部</span></button>`;
   const find = selector => root.querySelector(selector);
   const snapshots = new Map();
-  let category='s',query='',requestSequence=0,retryTimer=null;
+  let selectedCategories=new Set(['s']),query='',requestSequence=0,retryTimer=null;
+  const pending=new Map(),waiting=new Map(),failures=new Map();
+  const selectedIds=()=>categories.map(([id])=>id).filter(id=>selectedCategories.has(id));
+  const parseCategories=value=>{if(value===null)return new Set(['s']);const ids=String(value).split(',').filter(id=>categoryIds.has(id));return new Set(ids.length?ids:value===''?[]:['s']);};
   const setStatus = message => {find('#eventResultsStatus').textContent=message;};
-  const updateAddress = () => {if(/^\/events\/results\/?$/.test(location.pathname)){const url=new URL(location.href);if(category==='s')url.searchParams.delete('category');else url.searchParams.set('category',category);history.replaceState(history.state,'',url);}};
-  const syncCategoryButtons = () => root.querySelectorAll('[data-results-category]').forEach(button=>{const selected=button.dataset.resultsCategory===category;button.classList.toggle('selected',selected);button.setAttribute('aria-selected',String(selected));});
-  const rowMarkup = (row,qualifier) => {const href=String(row.url||'').startsWith('https://liquipedia.net/ageofempires/')?row.url:'';const logo=safeAsset(row.logo)?`<img class="event-result-logo" src="${escape(row.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'';const name=href?`<a href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(row.name)}</a>`:escape(row.name);const locationFlags=(row.locationFlags||[]).map(flag=>flagMarkup(flag)).join('');const placement=qualifier?peopleMarkup(row.qualifiedEntries):peopleMarkup(row.winnerEntries);const runner=qualifier?'':`<td class="event-results-placement">${peopleMarkup(row.runnerUpEntries)}</td><td>${row.score?`<strong class="event-result-score">${escape(row.score)}</strong>`:'—'}</td>`;return `<tr><td class="event-results-name"><span class="event-results-name-inner">${logo}<span>${name}</span></span></td><td>${escape(translateDates(row.dates))}</td><td>${escape(row.prize||'—')}</td><td class="event-results-location-cell"><span class="event-result-location">${locationFlags}<span>${escape(translatePlace(row.location))}</span></span></td><td>${escape(row.participants||'—')}</td><td class="event-results-placement">${placement}</td>${runner}</tr>`;};
-  const render = () => {syncCategoryButtons();const snapshot=snapshots.get(category),qualifier=category==='qualifier';if(!snapshot){find('#eventResultsYears').innerHTML='<div class="event-results-message">正在读取赛事表……</div>';return;}const search=query.trim().toLocaleLowerCase();const filtered=snapshot.rows.filter(row=>!search||[row.name,row.location,translatePlace(row.location),row.winner,row.runnerUp,row.qualified].some(value=>String(value||'').toLocaleLowerCase().includes(search)));const groups=new Map();for(const row of filtered){const year=row.year||'年份未知';if(!groups.has(year))groups.set(year,[]);groups.get(year).push(row);}find('#eventResultsYears').innerHTML=filtered.length?[...groups].sort(([left],[right])=>Number(right)-Number(left)).map(([year,rows])=>`<section class="event-results-year-card"><header><h3>${escape(year)} 年</h3><span>${rows.length} 项赛事</span></header><div class="event-results-table-wrap"><table class="event-results-table"><thead><tr><th>赛事</th><th>日期</th><th>奖金</th><th>地点</th><th>人数</th>${qualifier?'<th>晋级者</th>':'<th>冠军</th><th>亚军</th><th>比分</th>'}</tr></thead><tbody>${rows.map(row=>rowMarkup(row,qualifier)).join('')}</tbody></table></div></section>`).join(''):'<div class="event-results-message">没有符合条件的赛事</div>';const updated=new Date(snapshot.fetchedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});setStatus(`${filtered.length} 项赛事 · ${groups.size} 个年份 · 来源更新于 ${updated}${snapshot.stale?' · 正在同步新数据':''}`);find('#eventResultsSource').href=snapshot.sourceUrl;};
-  const load = async () => {clearTimeout(retryTimer);const selected=category,sequence=++requestSequence;if(snapshots.has(selected)){render();return;}setStatus('正在读取赛事表……');render();try{const response=await fetch(`/api/tournament-results?category=${encodeURIComponent(selected)}`,{cache:'default'});const result=await response.json();if(sequence!==requestSequence)return;if(response.status===202){setStatus('正在同步 Liquipedia 赛事表，请稍候……');retryTimer=setTimeout(()=>{if(!root.hidden&&selected===category)void load();},Math.max(10,Number(result.retryAfterSeconds)||30)*1000);return;}if(!response.ok||!Array.isArray(result.rows))throw new Error(result.error||'赛事表读取失败');snapshots.set(selected,result);render();}catch(error){if(sequence!==requestSequence)return;setStatus(`赛事表暂时无法读取：${error.message}`);find('#eventResultsYears').innerHTML='<div class="event-results-message">加载失败，请切换分类或刷新页面重试。</div>';}};
-  root.addEventListener('click',event=>{const tab=event.target.closest('[data-results-category]');if(tab){category=tab.dataset.resultsCategory;query='';find('#eventResultsSearch').value='';updateAddress();void load();}});
+  const updateAddress = () => {if(/^\/events\/results\/?$/.test(location.pathname)){const url=new URL(location.href),value=selectedIds().join(',');if(value==='s')url.searchParams.delete('category');else url.searchParams.set('category',value);history.replaceState(history.state,'',url);}};
+  const syncCategoryButtons = () => root.querySelectorAll('[data-results-category]').forEach(button=>{const id=button.dataset.resultsCategory,selected=id==='all'?selectedCategories.size===categoryIds.size:selectedCategories.has(id);button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected));});
+  const rowMarkup = (row,qualifier) => {const href=String(row.url||'').startsWith('https://liquipedia.net/ageofempires/')?row.url:'';const logo=safeAsset(row.logo)?`<img class="event-result-logo" src="${escape(row.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'';const name=href?`<a href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(row.name)}</a>`:escape(row.name);const locationFlags=(row.locationFlags||[]).map(flag=>flagMarkup(flag)).join('');const placement=row.resultCategory==='qualifier'?peopleMarkup(row.qualifiedEntries):peopleMarkup(row.winnerEntries);const runner=qualifier?'':`<td class="event-results-placement">${peopleMarkup(row.runnerUpEntries)}</td><td>${row.score?`<strong class="event-result-score">${escape(row.score)}</strong>`:'—'}</td>`;return `<tr><td class="event-results-name"><span class="event-results-name-inner">${selectedCategories.size>1?`<small class="event-result-category">${escape(categories.find(([id])=>id===row.resultCategory)?.[1]||'')}</small>`:''}${logo}<span>${name}</span></span></td><td>${escape(translateDates(row.dates))}</td><td>${escape(row.prize||'—')}</td><td class="event-results-location-cell"><span class="event-result-location">${locationFlags}<span>${escape(translatePlace(row.location))}</span></span></td><td>${escape(row.participants||'—')}</td><td class="event-results-placement">${placement}</td>${runner}</tr>`;};
+  const render = () => {
+    syncCategoryButtons();
+    const ids=selectedIds(),loaded=ids.filter(id=>snapshots.has(id)),qualifier=ids.length===1&&ids[0]==='qualifier';
+    const search=query.trim().toLocaleLowerCase();
+    const rows=loaded.flatMap(id=>snapshots.get(id).rows.map(row=>({...row,resultCategory:id})));
+    const filtered=rows.filter(row=>!search||[row.name,row.location,translatePlace(row.location),row.winner,row.runnerUp,row.qualified].some(value=>String(value||'').toLocaleLowerCase().includes(search)));
+    const groups=new Map();
+    for(const row of filtered){const year=row.year||'年份未知';if(!groups.has(year))groups.set(year,[]);groups.get(year).push(row);}
+    const placementTitle=qualifier?'晋级者':ids.includes('qualifier')?'冠军 / 晋级者':'冠军';
+    find('#eventResultsYears').innerHTML=filtered.length?[...groups].sort(([left],[right])=>Number(right)-Number(left)).map(([year,rows])=>`<section class="event-results-year-card"><header><h3>${escape(year)} 年</h3><span>${rows.length} 项赛事</span></header><div class="event-results-table-wrap"><table class="event-results-table"><thead><tr><th>赛事</th><th>日期</th><th>奖金</th><th>地点</th><th>人数</th><th>${placementTitle}</th>${qualifier?'':'<th>亚军</th><th>比分</th>'}</tr></thead><tbody>${rows.map(row=>rowMarkup(row,qualifier)).join('')}</tbody></table></div></section>`).join(''):`<div class="event-results-message">${!ids.length?'请选择至少一个等级或分类':loaded.length?'没有符合条件的赛事':ids.some(id=>pending.has(id)||waiting.has(id))?'正在读取赛事表……':'加载失败，请重新选择分类或刷新页面重试。'}</div>`;
+    const dates=loaded.map(id=>Date.parse(snapshots.get(id).fetchedAt)).filter(Number.isFinite);
+    const updated=dates.length?new Date(Math.min(...dates)).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    const messages=[`${filtered.length} 项赛事 · ${groups.size} 个年份`];
+    if(updated)messages.push(`来源更新于 ${updated}`);
+    if(ids.some(id=>pending.has(id)))messages.push('正在读取其它所选分类……');
+    if(ids.some(id=>waiting.has(id)||snapshots.get(id)?.stale))messages.push('正在同步新数据');
+    for(const id of ids.filter(id=>failures.has(id)))messages.push(`${categories.find(([key])=>key===id)[1]}暂时无法读取：${failures.get(id)}`);
+    setStatus(messages.join(' · '));
+    find('#eventResultsSource').href=ids.length===1&&snapshots.get(ids[0])?.sourceUrl||'https://liquipedia.net/ageofempires/Portal:Tournaments';
+  };
+  const fetchCategory = id => {
+    if(pending.has(id))return pending.get(id);
+    failures.delete(id);waiting.delete(id);
+    const task=(async()=>{
+      try {
+        const response=await fetch(`/api/tournament-results?category=${encodeURIComponent(id)}`,{cache:'default'});
+        const result=await response.json();
+        if(response.status===202){waiting.set(id,Math.max(10,Number(result.retryAfterSeconds)||30)*1000);return;}
+        if(!response.ok||!Array.isArray(result.rows))throw new Error(result.error||'赛事表读取失败');
+        snapshots.set(id,result);
+      } catch(error){failures.set(id,error.message);}
+    })().finally(()=>pending.delete(id));
+    pending.set(id,task);return task;
+  };
+  const load = async () => {
+    clearTimeout(retryTimer);
+    const sequence=++requestSequence,ids=selectedIds();
+    const tasks=ids.filter(id=>!snapshots.has(id)).map(fetchCategory);
+    render();
+    await Promise.all(tasks);
+    if(sequence!==requestSequence)return;
+    render();
+    const delays=selectedIds().filter(id=>waiting.has(id)).map(id=>waiting.get(id));
+    if(delays.length)retryTimer=setTimeout(()=>{if(!root.hidden&&/^\/events\/results\/?$/.test(location.pathname))void load();},Math.min(...delays));
+  };
+  root.addEventListener('click',event=>{const button=event.target.closest('[data-results-category]');if(!button)return;const id=button.dataset.resultsCategory;if(id==='all')selectedCategories=new Set(categoryIds);else if(selectedCategories.has(id)){selectedCategories.delete(id);}else selectedCategories.add(id);updateAddress();void load();});
   find('#eventResultsSearch').addEventListener('input',event=>{query=event.target.value;render();});
   find('#eventResultsTop').addEventListener('click',()=>window.scrollTo({top:0,behavior:'smooth'}));
   const updateTopButton=()=>find('#eventResultsTop').classList.toggle('visible',!root.hidden&&window.scrollY>600);
   window.addEventListener('scroll',updateTopButton,{passive:true});
-  const controller={activate(){const requested=new URLSearchParams(location.search).get('category')||'s';const next=categoryIds.has(requested)?requested:'s';if(next!==category){category=next;query='';find('#eventResultsSearch').value='';}updateAddress();syncCategoryButtons();updateTopButton();void load();}};
+  const controller={activate(){selectedCategories=parseCategories(new URLSearchParams(location.search).get('category'));updateAddress();syncCategoryButtons();updateTopButton();void load();}};
   mounted.set(root,controller);controller.activate();return controller;
 }

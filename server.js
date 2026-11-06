@@ -1,3 +1,7 @@
+import { chromium } from 'playwright';
+import { createAoE2RecsBrowser } from './server/services/aoe2recs-browser.js';
+import { createAoE2RecsRequestGate } from './server/services/aoe2recs-request-gate.js';
+import { qualifiesForSchedule } from './public/realtime-schedule.js';
 import { BoundedCache } from './server/services/bounded-cache.js';
 import { createCivilizationStats, parseCivilizationFilters } from './server/services/civilization-stats.js';
 import { createBackgroundClient } from './server/services/background-client.js';
@@ -28,6 +32,7 @@ import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 import { createLeaderboardDumpSummary } from './server/services/leaderboard-dump-summary.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
 import { createRealtimeChat } from './server/services/realtime-chat.js';
+import { liveNotificationChanges } from './server/services/live-notifications.js';
 import { recentFeedback } from './server/services/feedback-feed.js';
 import { createFeedbackLikes } from './server/services/feedback-likes.js';
 import { createMatchesService } from './server/services/matches-service.js';
@@ -171,9 +176,22 @@ const ladderOrder = Object.keys(leaderboardSchedules).map(Number);
 const cacheWaiters = new Map();
 const aoe2RecsProfileCache = new BoundedCache(512);
 const aoe2RecsProfileRefreshes = new Map();
-let aoe2RecsProfileBlockedUntil = 0;
+const aoe2RecsGateStatePath = join(dataDir, 'aoe2recs-request-cooldown.json');
+const aoe2RecsBrowser = createAoE2RecsBrowser({ connect:() => chromium.connectOverCDP('http://127.0.0.1:9228', { timeout:10_000 }) });
+const fetchAoE2RecsProfileOnce = createAoE2RecsRequestGate({
+  request: fetchAoE2RecsProfileTransport,
+  readState: async () => {
+    try { return JSON.parse(await readFile(aoe2RecsGateStatePath, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  },
+  saveState: async state => {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(`${aoe2RecsGateStatePath}.tmp`, JSON.stringify(state), 'utf8');
+    await rename(`${aoe2RecsGateStatePath}.tmp`, aoe2RecsGateStatePath);
+  }
+});
 const gameAssetRefreshes = new Map();
-const aoe2RecsProfileCacheTtl = 48 * 60 * 60_000;
+const aoe2RecsProfileCacheTtl = 15 * 24 * 60 * 60_000;
 const worldsEdgeMatchCacheDir = join(dataDir, 'worldsedge-matches');
 const worldsEdgeMatchCacheTtl = 10 * 60_000;
 const worldsEdgeMatchCache = new BoundedCache(512);
@@ -268,6 +286,7 @@ async function loadSelectedStreamers() {
         url: String(url),
         name: player.name || '',
         rl: Array.isArray(player.rl) ? player.rl.map(String) : [],
+        ratingProfileId: /^\d+$/.test(String(player.ratingProfileId || '')) ? String(player.ratingProfileId) : null,
         isCN: Boolean(player.isCN),
         sourceOrder
       })));
@@ -1081,8 +1100,8 @@ async function fetchLivePlayerLeaderboardStats(rlIds) {
       if (profileId != null) profileByStatGroup.set(Number(group.id), String(profileId));
     }
     const select = leaderboardId => (Array.isArray(payload.leaderboardStats) ? payload.leaderboardStats : [])
-      .filter(stat => Number(stat.leaderboard_id) === leaderboardId && Number(stat.rank) > 0 && Number.isFinite(Number(stat.rating)))
-      .map(stat => ({ profileId: profileByStatGroup.get(Number(stat.statgroup_id)) || null, rating: Number(stat.rating), rank: Number(stat.rank) }))
+      .filter(stat => Number(stat.leaderboard_id) === leaderboardId && Number(stat.rating) > 0 && Number.isFinite(Number(stat.rating)))
+      .map(stat => ({ profileId: profileByStatGroup.get(Number(stat.statgroup_id)) || null, rating: Number(stat.rating), rank: Number(stat.rank) > 0 ? Number(stat.rank) : null }))
       .sort((a, b) => b.rating - a.rating || a.rank - b.rank)[0] || null;
     const data = { randomMap1v1: select(3), randomMapTeam: select(4) };
     livePlayerStatsCache.set(key, { savedAt: Date.now(), data });
@@ -1125,7 +1144,7 @@ async function fetchMediaLive() {
           mediaLiveSourceTimeout,
           `直播源 ${source.name || source.platform || source.url}`
         );
-        return { ...item, name: source.name, rl: source.rl || [], isCN: source.isCN, sourceOrder: source.sourceOrder };
+        return { ...item, name: source.name, rl: source.rl || [], ratingProfileId:source.ratingProfileId, isCN: source.isCN, sourceOrder: source.sourceOrder };
       } catch (error) {
         console.warn(`[media] live source failed: ${source.name || source.platform}`, error.message);
         return { __failed: true, platform: source.platform || '', url: source.url || '', name: source.name || '', sourceOrder: source.sourceOrder };
@@ -1143,10 +1162,10 @@ async function fetchMediaLive() {
   }
   const enriched = [];
   for (const item of selected.values()) {
-    const { rl, ...publicItem } = item;
+    const { rl, ratingProfileId, ...publicItem } = item;
     const profileIds = (Array.isArray(rl) ? rl : []).map(String).filter(id => /^\d+$/.test(id));
     try {
-      const leaderboards = await fetchLivePlayerLeaderboardStats(rl);
+      const leaderboards = await fetchLivePlayerLeaderboardStats(ratingProfileId ? [ratingProfileId] : rl);
       enriched.push(leaderboards ? { ...publicItem, profileIds, leaderboards } : { ...publicItem, profileIds });
     } catch (error) {
       console.warn(`[media] live player stats failed: ${item.name || item.id}`, error.message);
@@ -1287,22 +1306,14 @@ function refreshMediaLive() {
       return a.isCN ? -1 : 1;
     });
     const previousLive = Array.isArray(mediaCache.data.live) ? mediaCache.data.live : [];
-    const previousLiveProfiles = new Set(previousLive.flatMap(item => Array.isArray(item.profileIds) ? item.profileIds.map(String) : []));
-    const previousLiveSources = new Set(previousLive.map(item => `${item.platform || ''}|${item.url || ''}`));
+    const notices = liveNotificationChanges(previousLive, merged, failedSourceKeys);
     const now = Date.now();
     mediaCache.data.live = merged;
-    for (const item of merged) {
-      const ids = Array.isArray(item.profileIds) ? item.profileIds.map(String) : [];
-      const alreadyLive = ids.length ? ids.some(id => previousLiveProfiles.has(id)) : previousLiveSources.has(`${item.platform || ''}|${item.url || ''}`);
-      if (!alreadyLive) {
-        try { realtimeChat.announceLive(item); } catch (error) { console.warn('[realtime-chat] live notice failed:', error.message); }
-      }
+    for (const item of notices.started) {
+      try { realtimeChat.announceLive(item); } catch (error) { console.warn('[realtime-chat] live notice failed:', error.message); }
     }
-    for (const item of previousLive) {
-      const key = `${item.platform || ''}|${item.url || ''}`;
-      if (!mergedKeys.has(key) && !failedSourceKeys.has(key)) {
-        try { realtimeChat.announceLiveEnd(item); } catch (error) { console.warn('[realtime-chat] live end notice failed:', error.message); }
-      }
+    for (const item of notices.ended) {
+      try { realtimeChat.announceLiveEnd(item); } catch (error) { console.warn('[realtime-chat] live end notice failed:', error.message); }
     }
     mediaCache.data.liveUpdatedAt = new Date(now).toISOString();
     mediaCache.data.nextLiveRefreshAt = new Date(now + mediaLiveRefreshInterval).toISOString();
@@ -1840,9 +1851,11 @@ const loadVerifiedPlayerProfiles = createVerifiedRealtimeNames({readFile,cacheDi
 const playerTeams = createPlayerTeams({
   readFile,writeFile,rename,cachePath:join(dataDir,'player-teams.json'),
   loadProfile:async id=>{
-    const profile=await fetchAoE2RecsProfileOnce(id);
-    await writeAoE2RecsProfileCache(id,profile);
-    return profile;
+    const cached = await readAoE2RecsProfileCache(id);
+    if (cached?.profile && Date.now() - Number(cached.savedAt || 0) < aoe2RecsProfileCacheTtl) {
+      return { ...cached.profile, cacheSavedAt: cached.savedAt };
+    }
+    return refreshAoE2RecsProfile(id);
   },
   onChange:()=>realtimeService.refreshEnrichment()
 });
@@ -2062,50 +2075,13 @@ async function writeAoE2RecsProfileCache(profileId, profile) {
   return cached;
 }
 
-function fetchAoE2RecsProfileOnce(profileId) {
-  if(Date.now()<aoe2RecsProfileBlockedUntil)return Promise.reject(new Error('AoE2Recs 暂时无法连接，稍后重试'));
-  return new Promise((resolve, reject) => {
-    let socket;
-    let settled = false;
-    let requestSent = false;
-    let sendTimer;
-    let sends = 0;
-    const timeout = setTimeout(() => finish(new Error('AoE2Recs 资料请求超时')), 20_000);
-    const finish = (error, profile) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      clearInterval(sendTimer);
-      try { socket?.close(); } catch {}
-      if(error && /WebSocket|连接|超时/.test(error.message))aoe2RecsProfileBlockedUntil=Date.now()+60000;
-      error ? reject(error) : resolve(profile);
-    };
-    try { socket = new WebSocket('wss://aoe2recs.com/dashboard/api/'); }
-    catch (error) { finish(error); return; }
-    socket.addEventListener('error', () => finish(new Error('AoE2Recs WebSocket 连接失败')));
-    socket.addEventListener('close', () => { if (!settled) finish(new Error('AoE2Recs WebSocket 已关闭')); });
-    socket.addEventListener('message', event => {
-      let message;
-      try { message = JSON.parse(String(event.data)); } catch { return; }
-      if (!requestSent && (message.cls === 8 || message.cls === 3)) {
-        requestSent = true;
-        const sendProfileRequest = () => {
-          if (settled || socket.readyState !== WebSocket.OPEN || sends >= 3) {
-            clearInterval(sendTimer);
-            return;
-          }
-          sends += 1;
-          try { socket.send(JSON.stringify({ profile_id: Number(profileId) })); } catch (error) { finish(error); }
-        };
-        sendProfileRequest();
-        sendTimer = setInterval(sendProfileRequest, 1_500);
-      }
-      if (message.cls === 13) {
-        const profile = sanitizeAoE2RecsProfile(message.data);
-        profile ? finish(null, profile) : finish(new Error('AoE2Recs 返回的资料格式无效'));
-      }
-    });
-  });
+async function fetchAoE2RecsProfileTransport(profileId) {
+  const raw = await aoe2RecsBrowser.read(profileId);
+  const data = raw?.person && typeof raw.person === 'object' ? raw.person : raw;
+  if (data?.found === false) return { notFound:true, accounts:[], player:null, avatar:'', matches:[] };
+  const profile = sanitizeAoE2RecsProfile(raw);
+  if (!profile) throw Object.assign(new Error('AoE2Recs 未提供该账号的有效资料'), { code:'AOE2RECS_PROFILE_UNAVAILABLE' });
+  return profile;
 }
 
 async function refreshAoE2RecsProfile(profileId) {
@@ -2958,9 +2934,9 @@ function scheduleMatchPreview() {
   setTimeout(async()=>{
     try {
       const data=await refreshLiquipediaMatches();
-      const start=Date.now(), end=start+12*60*60_000;
+      const start=Date.now(), end=start+24*60*60_000;
       const matches=(data?.upcoming || []).filter(match=>match.timestamp*1000>=start && match.timestamp*1000<end)
-        .map(match=>({...match,tier:normalizedTournamentTier(match.tournament?.tier)})).filter(match=>match.tier);
+        .filter(qualifiesForSchedule).map(match=>({...match,tier:match.tournament?.tier || ''}));
       const scheduled = new Date(target);
       const hour = new Date(target+8*60*60_000).getUTCHours();
       realtimeChat.announceSchedule({day:`${chinaDayKey(scheduled)}:${hour}`,matches});
@@ -3023,7 +2999,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   if (url.pathname === '/api/internal/health') {
     if (!isInternalIp(protectionIp)) return sendNoStoreJson(res, 404, { error: 'Not found' });
     const worker = await background.health();
-    return sendNoStoreJson(res, 200, { ok: true, uptime: process.uptime(), background: worker, caches: { avatars: avatarCache.stats(), personalStats: personalStatsCache.stats(), livePlayerStats: livePlayerStatsCache.stats(), profiles: aoe2RecsProfileCache.stats(), matches: worldsEdgeMatchCache.stats() } });
+    return sendNoStoreJson(res, 200, { ok: true, uptime: process.uptime(), background: worker, profileBrowser:aoe2RecsBrowser.stats(), caches: { avatars: avatarCache.stats(), personalStats: personalStatsCache.stats(), livePlayerStats: livePlayerStatsCache.stats(), profiles: aoe2RecsProfileCache.stats(), matches: worldsEdgeMatchCache.stats() } });
   }
   if (url.pathname === '/api/replay-analysis/status') {
     const jobId = url.searchParams.get('jobId') || '';
@@ -3505,7 +3481,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     const bytes = match ? await avatarCache.image(match[1]) : null;
     if (!bytes) { res.writeHead(404, { 'cache-control': 'no-store' }); return res.end(); }
     const etag = `"${match[1]}"`;
-    const headers = { 'content-type': `image/${match[2]}`, 'cache-control': 'public, max-age=86400', etag, 'x-content-type-options': 'nosniff' };
+    const headers = { 'content-type': `image/${match[2]}`, 'cache-control': 'public, max-age=1296000', etag, 'x-content-type-options': 'nosniff' };
     if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
     res.writeHead(200, { ...headers, 'content-length': bytes.length });
     return res.end(bytes);
@@ -3520,7 +3496,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     if (!key) { res.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify({ error: '找不到可用头像' })); }
     try {
       const entry = await avatarCache.get(key);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': entry.expires > Date.now() ? 'private, max-age=86400' : 'no-cache' });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': entry.expires > Date.now() ? `private, max-age=${Math.max(0, Math.floor((entry.expires - Date.now()) / 1000))}` : 'no-cache' });
       return res.end(JSON.stringify({ avatar: `/api/avatar-image/${entry.hash}.${entry.type.split('/')[1]}`, expires: entry.expires }));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });

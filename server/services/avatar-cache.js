@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, rename, writeFile, stat, rm, utimes } from 'n
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const AVATAR_TTL = 24 * 60 * 60_000;
+export const AVATAR_TTL = 15 * 24 * 60 * 60_000;
 
 export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, now = Date.now }) {
   const entries = new Map();
@@ -19,6 +19,7 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
         if (/^(steam|profile):\d+$/.test(entry.key) && /^[a-f0-9]{64}$/.test(entry.hash)
           && Number.isFinite(entry.updatedAt) && Number.isFinite(entry.expires)) {
           await stat(join(directory, entry.hash));
+          entry.expires = entry.updatedAt + AVATAR_TTL;
           entries.set(entry.key, entry);
         }
       } catch {}
@@ -91,7 +92,7 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
       for (const [key, entry] of entries) {
         if (entry.expires <= now() && !(retryAt.get(key) > now())) await refresh(key).catch(() => {});
       }
-      // A full day of grace keeps existing browser references valid after a refresh.
+      // A full cache lifetime of grace keeps existing browser references valid after a refresh.
       const referenced = new Set([...entries.values()].map(entry => entry.hash));
       let bytes = 0;
       for (const name of await readdir(directory)) {
@@ -111,7 +112,7 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
   timer.unref();
   return {
     get, refreshDue, ready, close: () => clearInterval(timer),
-    stats: () => ({ ...counters, entries: entries.size, pending: pending.size, ttlHours: 24 }),
+    stats: () => ({ ...counters, entries: entries.size, pending: pending.size, ttlHours: AVATAR_TTL / (60 * 60_000) }),
     async image(hash) {
       if (!/^[a-f0-9]{64}$/.test(hash)) return null;
       await ready;

@@ -282,10 +282,14 @@
     },
     {
       "name": "艾瑞莉婭丶",
+      "ratingProfileId": "1458474",
       "rl": [
+        "1458474",
         "211246"
       ],
-      "live_links": {},
+      "live_links": {
+        "bilibili": ["https://live.bilibili.com/3760981"]
+      },
       "isCN": true
     },
     {

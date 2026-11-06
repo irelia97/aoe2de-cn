@@ -1,3 +1,5 @@
+import { splitRealtimeProfiles } from './realtime-profile-groups.js';
+import { createRealtimeTrace } from './realtime-trace.js';
 import { readQueueSnapshot } from './queue-snapshot.js';
 import { createVisibilityGrace } from './realtime-visibility-grace.js';
 import { createLobbyListener } from './realtime-lobbies.js';
@@ -26,6 +28,7 @@ export function createRealtimeService(deps) {
     onMatchPreparing = () => {}
   } = deps;
 
+  const trace = createRealtimeTrace();
   const notificationTasks = new Map();
   const lobbyListener = createLobbyListener({ WebSocket, onChange:() => scheduleRealtimeSocketPublish() });
   const recovery = createRealtimeRecovery({
@@ -41,21 +44,22 @@ export function createRealtimeService(deps) {
     }
   });
   const realtimeRatings = createRealtimeRatings({ fetchStats:fetchPersonalLeaderboardStats, onChange:() => scheduleRealtimeSocketPublish() });
-  const queueEntries = new Map();
+  const queueSocketGroups = new Map();
   let queueRecheckPromise = null, nextQueueRecheckAt = 0;
   async function recheckExpiredQueues() {
     if (queueRecheckPromise || Date.now() < nextQueueRecheckAt) return;
-    const expired = [...queueEntries].filter(([,entry]) => Date.now()-entry.seenAt > 300000);
+    const expired = [...queueSocketGroups.values()].flatMap(group=>[...group.entries].map(([id,entry])=>[group,id,entry])).filter(([,,entry])=>Date.now()-entry.seenAt>300000);
     if (!expired.length) return;
     const generation = realtimeSocketGeneration;
-    const ids = [...new Set(expired.flatMap(([,entry]) => (entry.data.players||[]).map(p=>String(p.profileId))).filter(id=>realtimeSocketProfileIds.includes(id)))];
+    const ids = [...new Set(expired.flatMap(([group,,entry]) => (entry.data.players||[]).map(p=>String(p.profileId)).filter(id=>group.ids.includes(id))))];
     if (!ids.length) return;
     nextQueueRecheckAt = Date.now()+60000;
     queueRecheckPromise = Promise.resolve().then(()=>deps.readQueueSnapshot ? deps.readQueueSnapshot(ids) : readQueueSnapshot(WebSocket,ids)).then(rows=>{
       if (generation !== realtimeSocketGeneration) return;
-      for (const [id,entry] of expired) {
+      for (const [group,id,entry] of expired) {
+        const queueEntries=group.entries;
         if (queueEntries.get(id) !== entry) continue;
-        const monitored=(entry.data.players||[]).filter(p=>ids.includes(String(p.profileId)));
+        const monitored=(entry.data.players||[]).filter(p=>group.ids.includes(String(p.profileId)));
         const matching=rows.filter(row=>['queueing','matched'].includes(row.status)&&(row.players||[]).some(p=>monitored.some(m=>String(m.profileId)===String(p.profileId))));
         queueEntries.delete(id);
         for (const row of matching) {
@@ -94,9 +98,11 @@ export function createRealtimeService(deps) {
     },remaining);
     timer.unref?.();
   }
-  let queueSocket, queueReconnectTimer;
+  const unattributedQueueIds = new Set();
   function queueState(profileId) {
-    if (queueSocket?.readyState !== 1) return null;
+    const group=[...queueSocketGroups.values()].find(group=>group.ids.includes(String(profileId)));
+    if (group?.socket?.readyState !== 1) return null;
+    const queueEntries=group.entries;
     const now = Date.now();
     for (const [id, entry] of queueEntries) {
       if (now - entry.seenAt > 300000) void recheckExpiredQueues();
@@ -106,19 +112,40 @@ export function createRealtimeService(deps) {
     }
     return null;
   }
-  function connectQueueSocket() {
+  function connectQueueSocket(group) {
     if (!WebSocket) return;
     const generation = realtimeSocketGeneration;
-    const socket = new WebSocket('wss://socket.aoe2companion.com/listen?handler=queueing');
-    queueSocket = socket;
-    socket.addEventListener('open', () => { queueEntries.clear(); console.log('[realtime] queueing connected'); });
+    const queueEntries=group.entries,queueDiagnostics=group.diagnostics;
+    const rememberGroupGrace=data=>rememberQueueGrace({...data,players:(data.players||[]).filter(player=>group.ids.includes(String(player.profileId)))});
+    const isCurrent=()=>generation===realtimeSocketGeneration&&queueSocketGroups.get(group.index)===group&&group.socket===socket;
+    const socket = new WebSocket(`wss://socket.aoe2companion.com/listen?handler=queueing&profile_ids=${group.ids.join(',')}`);
+    group.socket = socket;
+    socket.addEventListener('open', () => { if(!isCurrent())return; queueEntries.clear(); queueDiagnostics.connectedAt=new Date().toISOString(); console.log(`[realtime] queueing group ${group.index+1} connected (${group.ids.length} profiles)`); });
     socket.addEventListener('message', event => {
-      if (socket !== queueSocket) return;
+      if (!isCurrent()) return;
       let messages; try { messages = JSON.parse(String(event.data)); } catch { return; }
+      queueDiagnostics.lastMessageAt = new Date().toISOString();
+      queueDiagnostics.messagesReceived += Array.isArray(messages) ? messages.length : 1;
       let changed = false;
       for (const message of Array.isArray(messages) ? messages : [messages]) {
         const data = message.data;
         if (!data?.id) continue;
+        const previousQueue = queueEntries.get(data.id)?.data;
+        const affected = [...new Set([...([...(data.players || []), ...(previousQueue?.players || [])].map(player => String(player.profileId))), ...(Array.isArray(data.profileIds) ? data.profileIds.map(String) : [])])].filter(id => group.ids.includes(id));
+        const upstreamTime = data.queueingSince || data.matchedAt || null;
+        const upstreamTimestamp = Date.parse(upstreamTime || '');
+        if (affected.length) {
+          queueDiagnostics.lastRelevantEventAt = queueDiagnostics.lastMessageAt;
+          trace.event('queue-event', { group:group.index+1, type:message.type, queueId:String(data.id), profileIds:affected, status:data.status || previousQueue?.status || null, matchId:data.matchId || previousQueue?.matchId || null, reason:data.reason || null, removedProfileIds:data.profileIds || [], queueingSince:data.queueingSince || null, matchedAt:data.matchedAt || null, upstreamAgeMs:Number.isFinite(upstreamTimestamp) ? Date.now()-upstreamTimestamp : null });
+        }
+        if (!(data.players || previousQueue?.players || []).length && /^m_/.test(String(data.id)) && message.type !== 'queueingRemoved') {
+          queueDiagnostics.unattributedMatchedEvents++;
+          if (!unattributedQueueIds.has(String(data.id))) {
+            unattributedQueueIds.add(String(data.id));
+            if (unattributedQueueIds.size > 500) unattributedQueueIds.delete(unattributedQueueIds.values().next().value);
+            trace.event('queue-unattributed', { group:group.index+1, type:message.type, queueId:String(data.id), matchId:data.matchId || null, status:data.status || null, fields:Object.keys(data) });
+          }
+        }
         if (message.type === 'queueingRemoved') {
           const prior = queueEntries.get(data.id)?.data;
           if (data.reason === 'left' && prior?.status === 'queueing' && Array.isArray(data.profileIds) && data.profileIds.length) {
@@ -126,7 +153,7 @@ export function createRealtimeService(deps) {
             const departed = (prior.players || []).filter(player => leftIds.has(String(player.profileId)));
             const remaining = (prior.players || []).filter(player => !leftIds.has(String(player.profileId)));
             if (departed.length) {
-              rememberQueueGrace({ ...prior, players:departed });
+              rememberGroupGrace({ ...prior, players:departed });
               if (remaining.length) {
                 queueEntries.set(data.id, { data:{ ...prior, players:remaining, partyLeaderProfileId:leftIds.has(String(prior.partyLeaderProfileId)) ? null : prior.partyLeaderProfileId }, seenAt:Date.now() });
               } else queueEntries.delete(data.id);
@@ -134,14 +161,14 @@ export function createRealtimeService(deps) {
             }
             continue;
           }
-          if (prior?.status === 'queueing') rememberQueueGrace(prior);
+          if (prior?.status === 'queueing') rememberGroupGrace(prior);
           if (data.reason === 'cancelled' && prior?.status === 'matched') {
             const cancellingIds = new Set((Array.isArray(data.profileIds) ? data.profileIds : []).map(String));
-            rememberQueueGrace({ ...prior, players:(prior.players || []).filter(player => !cancellingIds.has(String(player.profileId))) });
+            rememberGroupGrace({ ...prior, players:(prior.players || []).filter(player => !cancellingIds.has(String(player.profileId))) });
             const members = new Set((prior.players || []).map(p => String(p.profileId)));
             for (const id of Array.isArray(data.profileIds) ? data.profileIds : []) {
               const profileId = String(id);
-              if (members.has(profileId) && realtimeSocketProfileIds.includes(profileId)) {
+              if (members.has(profileId) && group.ids.includes(profileId)) {
                 queueGrace.delete(profileId);
                 rememberCancellation(profileId, { matchId: prior.matchId, cancelledAt: Date.now(), players: (prior.players || []).map(p => ({ profileId:String(p.profileId), name:p.name || '' })) });
                 changed = true;
@@ -153,19 +180,20 @@ export function createRealtimeService(deps) {
         }
         const prior = queueEntries.get(data.id)?.data || {};
         const merged = { ...prior, ...data };
-        if (!(merged.players || []).some(p => realtimeSocketProfileIds.includes(String(p.profileId)))) continue;
-        for (const player of merged.players || []) { cancelledPlayers.delete(String(player.profileId)); queueGrace.delete(String(player.profileId)); }
+        if (!(merged.players || []).some(p => group.ids.includes(String(p.profileId)))) continue;
+        for (const player of (merged.players || []).filter(player=>group.ids.includes(String(player.profileId)))) { cancelledPlayers.delete(String(player.profileId)); queueGrace.delete(String(player.profileId)); }
         merged.displaySeed = prior.displaySeed ?? Math.random();
         queueEntries.set(data.id, { data: merged, seenAt: Date.now() });
         changed = true;
       }
       if (changed) scheduleRealtimeSocketPublish();
     });
-    socket.addEventListener('error', () => console.warn('[realtime] queueing connection error'));
+    socket.addEventListener('error', () => console.warn(`[realtime] queueing group ${group.index+1} connection error`));
     socket.addEventListener('close', () => {
-      if (socket !== queueSocket || generation !== realtimeSocketGeneration) return;
+      if (!isCurrent()) return;
       queueEntries.clear(); scheduleRealtimeSocketPublish();
-      queueReconnectTimer = setTimeout(connectQueueSocket, 5000); queueReconnectTimer.unref?.();
+      group.reconnectCount++;
+      group.reconnectTimer=setTimeout(()=>connectQueueSocket(group),5000);group.reconnectTimer.unref?.();
     });
   }
   function notifyActiveMatch(rawMatch) {
@@ -458,6 +486,7 @@ export function createRealtimeService(deps) {
         if (!latest || !socketMatchId(latest)) throw new Error('empty match response; keeping existing state');
         const latestState = normalizeRealtimeLatestMatch(latest, profileId);
         const active = socketMatchId(latest) === matchId && latestState.status === 'game';
+        trace.validation({ reason, profileId, expected:match, latest, status:latestState.status, decision:active ? 'keep' : socketMatchId(latest) !== matchId ? 'remove-different-match' : 'remove-inactive-match' });
         if (active) {
           const group = [...realtimeSocketGroups.values()].find(item => item.ids.includes(profileId)) || [...realtimeSocketGroups.values()][0];
           if (group && upsertRealtimeMatch(group, latest)) scheduleRealtimeSocketPublish();
@@ -478,6 +507,7 @@ export function createRealtimeService(deps) {
         return;
       } catch (error) {
         lastError = error;
+        trace.event('validation-error', { reason, matchId, profileId, error:error.message, rateLimited:Boolean(error.rateLimited) });
         if (error.rateLimited) break;
       }
     }
@@ -559,6 +589,7 @@ export function createRealtimeService(deps) {
       const payload = await buildEnrichedPayload(realtimeSocketProfileIds, socketStates(), 'aoe2companion-websocket');
       const key = realtimeSocketProfileIds.join(',');
       realtimePayloadCache = { key, payload };
+      trace.publish(payload, payload.source || 'unknown');
       await writeFile(realtimePayloadPath, JSON.stringify({ key, payload }), 'utf8');
       realtimeLastPublishAt = payload.checkedAt;
       // Notifications run independently at ingestion; list enrichment must not delay them.
@@ -603,6 +634,7 @@ export function createRealtimeService(deps) {
           const finished = data.finished != null && data.finished !== 0 && data.finished !== '';
           const abandoned = data.abandoned === true;
           if (finished || abandoned) {
+            trace.event('match-ended-event', { group:group.index+1, type, matchId:id, finished:data.finished ?? null, abandoned });
             if (removeRealtimeMatch(id, data.finished)) changed = true;
           }
           else if (!type || type === 'matchAdded' || type === 'matchUpdated' || type === 'matchStarted') {
@@ -632,20 +664,23 @@ export function createRealtimeService(deps) {
     if (key === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size) return;
     realtimeSocketGeneration += 1;
     recovery.reset();
-    clearTimeout(queueReconnectTimer);
-    const previousQueueSocket = queueSocket; queueSocket = null;
-    try { previousQueueSocket?.close(); } catch {}
-    queueEntries.clear();
+    for(const group of queueSocketGroups.values()) {
+      clearTimeout(group.reconnectTimer);
+      const previous=group.socket;group.socket=null;
+      try { previous?.close(); } catch {}
+    }
+    queueSocketGroups.clear();
     for (const group of realtimeSocketGroups.values()) { clearTimeout(group.reconnectTimer); try { group.socket?.close(); } catch {} }
     realtimeSocketGroups.clear();
     realtimeSocketProfileIds = ids;
-    const batchSize = Math.max(1, Math.ceil(ids.length / realtimeWebSocketGroupCount));
-    for (let offset = 0, index = 0; offset < ids.length; offset += batchSize, index += 1) {
+    for (const [index,groupIds] of splitRealtimeProfiles(ids,realtimeWebSocketGroupCount).entries()) {
       const group = {
-        index, ids: ids.slice(offset, offset + batchSize), matches: new Map(),
+        index, ids: groupIds, matches: new Map(),
         connected: false, connectedAt: null, disconnectedAt: null, lastMessageAt: null, messagesReceived: 0, reconnectCount: 0, failures: 0, socket: null, reconnectTimer: null
       };
       realtimeSocketGroups.set(index, group);
+      queueSocketGroups.set(index,{index,ids:groupIds,entries:new Map(),socket:null,reconnectTimer:null,reconnectCount:0,
+        diagnostics:{connectedAt:null,lastMessageAt:null,lastRelevantEventAt:null,messagesReceived:0,unattributedMatchedEvents:0}});
     }
     let cachedPayload = await getCachedPayload(ids);
     // When the monitored-player pool changes, the persisted payload key no
@@ -677,7 +712,7 @@ export function createRealtimeService(deps) {
       });
     }
     for (const group of realtimeSocketGroups.values()) connectRealtimeSocketGroup(group);
-    if (ids.length) connectQueueSocket();
+    for(const group of queueSocketGroups.values())connectQueueSocket(group);
     lobbyListener.start(ids);
     // Republish restored matches immediately so newly loaded enrichments,
     // such as Liquipedia tournament metadata, are reflected without waiting
@@ -697,6 +732,7 @@ export function createRealtimeService(deps) {
     realtimeRefreshPromise = (async () => {
       const payload = await buildRealtimePayload(ids);
       realtimePayloadCache = { key, payload };
+      trace.publish(payload, payload.source || 'unknown');
       await writeFile(realtimePayloadPath, JSON.stringify({ key, payload }), 'utf8');
       realtimeLastPublishAt = payload.checkedAt;
       console.log(`[realtime] cache refreshed: ${payload.states.length} states`);
@@ -781,6 +817,18 @@ export function createRealtimeService(deps) {
       profileCount: realtimeSocketProfileIds.length,
       groupCount: realtimeSocketGroups.size,
       socketCount: realtimeSocketGroups.size,
+      totalSocketCount: realtimeSocketGroups.size+queueSocketGroups.size+lobbyListener.status().socketCount,
+      queueing: {
+        connected:queueSocketGroups.size>0&&[...queueSocketGroups.values()].every(group=>group.socket?.readyState===1),
+        socketCount:queueSocketGroups.size,
+        connectedAt:[...queueSocketGroups.values()].map(group=>group.diagnostics.connectedAt).filter(Boolean).sort().at(-1)||null,
+        lastMessageAt:[...queueSocketGroups.values()].map(group=>group.diagnostics.lastMessageAt).filter(Boolean).sort().at(-1)||null,
+        lastRelevantEventAt:[...queueSocketGroups.values()].map(group=>group.diagnostics.lastRelevantEventAt).filter(Boolean).sort().at(-1)||null,
+        messagesReceived:[...queueSocketGroups.values()].reduce((sum,group)=>sum+group.diagnostics.messagesReceived,0),
+        unattributedMatchedEvents:[...queueSocketGroups.values()].reduce((sum,group)=>sum+group.diagnostics.unattributedMatchedEvents,0),
+        entries:new Set([...queueSocketGroups.values()].flatMap(group=>[...group.entries.keys()])).size,
+        groups:[...queueSocketGroups.values()].map(group=>({group:group.index+1,profileCount:group.ids.length,connected:group.socket?.readyState===1,reconnectCount:group.reconnectCount,...group.diagnostics,entries:group.entries.size}))
+      },
       lobbies: lobbyListener.status(),
       checkedAt: realtimePayloadCache?.payload?.checkedAt || null,
       lastPublishAt: realtimeLastPublishAt,

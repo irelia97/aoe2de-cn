@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, utimes } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAvatarCache, AVATAR_TTL } from '../server/services/avatar-cache.js';
 
-test('avatar bytes persist, refresh only after 24 hours, merge requests and retain stale data on failure', async () => {
+test('avatar bytes persist, refresh only after fifteen days, merge requests and retain stale data on failure', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'aoe-avatar-'));
   let time = 1000;
   let calls = 0;
@@ -29,6 +29,12 @@ test('avatar bytes persist, refresh only after 24 hours, merge requests and reta
     assert.equal((await cache.get(first.key)).hash, first.hash);
     assert.equal(calls, 1);
     cache.close();
+    // Existing metadata used a 24-hour expiry; adopt the new lifetime from
+    // the original fetch timestamp without fetching the image again.
+    const metadata = join(directory, `${first.key.replace(':', '-')}.json`);
+    const saved = JSON.parse(await readFile(metadata, 'utf8'));
+    saved.expires = saved.updatedAt + 24 * 60 * 60_000;
+    await writeFile(metadata, JSON.stringify(saved));
     cache = createAvatarCache(options);
     assert.equal((await cache.get(first.key)).hash, first.hash);
     assert.equal(calls, 1);

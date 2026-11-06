@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source=fs.readFileSync('server.js','utf8');const start=source.indexOf('async function fetchLivePlayerLeaderboardStats(');const end=source.indexOf('async function fetchMediaLiveSource(',start);
+const payload={result:{code:0},statGroups:[{id:1,members:[{profile_id:1458474}]}],leaderboardStats:[{statgroup_id:1,leaderboard_id:3,rank:-1,rating:1888},{statgroup_id:1,leaderboard_id:4,rank:0,rating:2100}]};
+let requested;
+const ctx=vm.createContext({URL,URLSearchParams,AbortSignal,livePlayerStatsCache:new Map(),livePlayerStatsRefreshes:new Map(),livePlayerStatsCacheTtl:3600000,mediaLiveStatsTimeout:20000,withMediaTimeout:p=>p,fetchUpstreamWithRateLimit:async url=>{requested=JSON.parse(url.searchParams.get('profile_ids'));return{ok:true,json:async()=>payload}}});vm.runInContext(source.slice(start,end),ctx);
+const data=await ctx.fetchLivePlayerLeaderboardStats(['1458474']);assert.equal(data.randomMap1v1.rating,1888);assert.equal(data.randomMap1v1.rank,null);assert.equal(data.randomMapTeam.rating,2100);assert.deepEqual(requested,[1458474]);
+const app=fs.readFileSync('public/app.js','utf8');const a=app.indexOf('    const ladderBadge =');const b=app.indexOf('    const markup =',a);const badge=vm.runInNewContext(app.slice(a,b)+';ladderBadge');assert.ok(badge('1v1',{rating:1888,rank:null}).includes('1,888'));assert.ok(!badge('1v1',{rating:1888,rank:null}).includes('#'));assert.ok(badge('1v1',{rating:1888,rank:12}).includes('#12'));assert.equal(badge('1v1',{rating:0,rank:1}),'');
+const player=JSON.parse(fs.readFileSync('map/aoc-selected-streamers.json','utf8')).players.find(p=>p.rl.includes('1458474'));assert.equal(player.ratingProfileId,'1458474');assert.ok(player.rl.includes('211246'));assert.ok(source.includes('fetchLivePlayerLeaderboardStats(ratingProfileId ? [ratingProfileId] : rl)'));
+console.log('Inactive rating retained; absent rank omitted; active rank shown; Irelia main-account score configured passed');

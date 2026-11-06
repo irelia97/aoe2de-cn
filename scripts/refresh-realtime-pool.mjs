@@ -27,16 +27,9 @@ async function worker() {
       // Same persisted account data used by /api/profile-accounts. The fresh
       // official check below covers main accounts even if this cache is absent.
       const data = JSON.parse(await readFile(join(cacheDir, 'aoe2recs-profiles', `${id}.json`), 'utf8'));
-      let accounts = Array.isArray(data.profile?.accounts) ? data.profile.accounts : [];
-      // Ask the existing endpoint to refresh stale identity/account data using
-      // its shared background cache, without blocking on upstream outages.
-      if (Date.now() - Number(data.savedAt || 0) >= 48 * 60 * 60_000) {
-        try {
-          const response = await fetch(`http://127.0.0.1:3000/api/profile-accounts?id=${id}`, { signal: AbortSignal.timeout(5000) });
-          const refreshed = await response.json();
-          if (response.ok && Array.isArray(refreshed.accounts)) accounts = refreshed.accounts;
-        } catch {}
-      }
+      // Pool maintenance reads cached identities only. Ranked activity is
+      // checked separately below and must not trigger AoE2Recs refreshes.
+      const accounts = Array.isArray(data.profile?.accounts) ? data.profile.accounts : [];
       results.push({ id, accounts });
     } catch (error) {
       results.push({ id, error: error.message || String(error) });

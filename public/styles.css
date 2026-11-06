@@ -1684,9 +1684,10 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 .page-realtime .realtime-status-activity.is-queueing{color:#c49bff}html[data-resolved-theme="light"] .page-realtime .realtime-status-activity.is-queueing{color:#7940ad}
 .page-realtime .realtime-status-activity.is-cancelled{color:#ff967d;font-size:12px}html[data-resolved-theme="light"] .page-realtime .realtime-status-activity.is-cancelled{color:#b43e29}
 .realtime-escape-icon{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;font-size:13px;line-height:1}
-.realtime-status-activity.is-lobby>span[aria-hidden="true"]{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;font-size:13px;line-height:1}
-.page-realtime .realtime-status-activity.is-lobby{color:#f279c6}html[data-resolved-theme="light"] .page-realtime .realtime-status-activity.is-lobby{color:#ad216f}
+.realtime-status-activity.is-lobby>span[aria-hidden="true"]{display:inline-flex;flex:none;align-items:center;justify-content:center;width:12px;height:12px;font-size:12px;line-height:1}
+.page-realtime .realtime-status-activity.is-lobby{color:#f279c6;font-size:12px;flex-wrap:nowrap}.page-realtime .realtime-status-activity.is-lobby>.realtime-lobby-join{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}html[data-resolved-theme="light"] .page-realtime .realtime-status-activity.is-lobby{color:#ad216f}
 .page-realtime .realtime-lobby-join{color:inherit;text-decoration:none}.page-realtime .realtime-lobby-join:hover{text-decoration:underline}
+.page-realtime .realtime-status-activity.is-game>.realtime-status-live-link{display:inline-flex;align-items:center;column-gap:4px}.realtime-game-icon{display:inline-flex;flex:none;align-items:center;justify-content:center;width:12px;height:12px;line-height:1}.realtime-game-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .page-realtime .realtime-status-table td:nth-child(3){font-size:12px}.player-team-link{color:inherit;text-decoration:none}.player-team-link:hover{text-decoration:underline}
 .profile-details-table .profile-accounts-notice{padding:9px 12px;color:var(--muted,#a9a18f);font-size:12px;line-height:1.6;white-space:normal}
 #leaderboard>.topbar>.breadcrumbs{display:none}
@@ -1698,3 +1699,28 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 .topbar-share-button:hover{border-color:#b99b68;background:#b99b681a}.topbar-share-button:focus-visible{outline:2px solid #b99b68;outline-offset:3px}.topbar-share-button:disabled{opacity:.65;cursor:wait}
 .topbar-share-status{position:absolute;left:0;top:calc(100% + 7px);z-index:50;max-width:280px;padding:7px 10px;border:1px solid #8b78534d;border-radius:5px;background:var(--bg,#101310);color:var(--text,#eadfca);box-shadow:0 4px 14px #0003;font-size:12px;white-space:nowrap}.topbar-share-status[hidden]{display:none}
 @media(min-width:901px){#leaderboard>.topbar>.topbar-share{grid-column:1;grid-row:1;justify-self:start}#leaderboard>.topbar>.top-right{min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end;gap:4px 10px}#leaderboard>.topbar .daily-usage{max-width:100%;flex-wrap:wrap;justify-content:flex-end;gap:2px 8px}#leaderboard>.topbar .theme-tabs{flex-shrink:0}#leaderboard>.topbar .theme-tabs button{white-space:nowrap}}
+
+/* Keep each column label and toggle in its header when folded. */
+.page-realtime .realtime-status-panel.hide-team .realtime-status-table tbody tr>:nth-child(3),
+.page-realtime .realtime-status-panel.hide-tournament .realtime-status-table tbody tr>:nth-child(5),
+.page-realtime .realtime-status-panel.hide-live .realtime-status-table tbody tr>:nth-child(6){visibility:hidden;pointer-events:none}
+.page-realtime .realtime-status-table th:nth-child(3),.page-realtime .realtime-status-table th:nth-child(5){text-indent:0}
+.realtime-column-heading{display:inline-flex;align-items:center;gap:2px;text-indent:0;white-space:nowrap}
+.realtime-column-hide{display:inline-flex;align-items:center;justify-content:center;flex:none;width:16px;height:24px;padding:0;border:0;border-radius:0 5px 5px 0;background:#424445;color:#fff;cursor:pointer}
+.realtime-column-hide:hover{background:#5c5f60}
+.realtime-column-hide:focus-visible{outline:2px solid #c8a65b;outline-offset:2px}
+.realtime-column-hide svg{display:block;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:square;stroke-linejoin:miter}
+.realtime-column-hide[aria-expanded="false"] svg{transform:rotate(180deg)}
+@media(max-width:620px){.page-realtime .realtime-status-table{min-width:var(--realtime-table-min-width,1050px)}}
+
+.page-realtime .realtime-status-table th{box-sizing:border-box}
+
+.page-realtime .realtime-status-panel.hide-team th:nth-child(3),.page-realtime .realtime-status-panel.hide-tournament th:nth-child(5),.page-realtime .realtime-status-panel.hide-live th:nth-child(6){padding-left:4px;padding-right:4px;font-size:11px}
+
+.page-realtime .realtime-status-activity.realtime-queue-activity{flex-wrap:nowrap;width:100%;min-width:0}
+.page-realtime .realtime-queue-activity>span{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.page-realtime .realtime-queue-activity>span{text-align:left}
+html[data-resolved-theme="light"] .realtime-column-hide{background:#c7b99e;color:#5f5039}
+html[data-resolved-theme="light"] .realtime-column-hide:hover{background:#b6a687;color:#443620}
+html[data-resolved-theme="light"] .realtime-column-hide:focus-visible{outline-color:#806536}

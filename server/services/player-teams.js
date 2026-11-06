@@ -39,7 +39,7 @@ export function createPlayerTeams({ readFile, writeFile, rename, cachePath, load
         const canonicalId=verified?String(player.id):id;
         if(!/^\d+$/.test(canonicalId))throw Error('Invalid AoE2Recs profile ID');
         const accountIds=verified?[...new Set([canonicalId,id,...(profile.accounts||[]).filter(a=>a.platform==='steam').map(a=>String(a.id))])].filter(value=>/^\d+$/.test(value)):[id];
-        store({canonicalId,accountIds,team:verified && typeof player.team==='string'?player.team.trim():'',updatedAt:now()});
+        store({canonicalId,accountIds,team:verified && typeof player.team==='string'?player.team.trim():'',updatedAt:Math.min(now(),Number(profile.cacheSavedAt)||now())});
         retryAfter.delete(id);
         save();onChange();
       }).catch(error=>{
