@@ -44,6 +44,8 @@ import { appendNewTournamentResults, parseTournamentResultsHtml, tournamentResul
 import { forceChinaCountry, isForcedChinaProfile } from './server/services/country-overrides.js';
 import { fetchKickLive } from './server/services/kick-live.js';
 import { createPlayerTeams } from './server/services/player-teams.js';
+import { applyCnzsRoster, createCnzsRoster } from './server/services/liquipedia-cnzs.js';
+import { createTeamRosterSync } from './server/services/liquipedia-team-rosters.js';
 import { createProfileAccountsReader } from './server/services/profile-accounts.js';
 const execFileAsync = promisify(execFile);
 
@@ -109,17 +111,15 @@ const avatarCache = createAvatarCache({
       if (avatar) return avatar;
       throw new Error('Steam 头像暂不可用');
     } catch (error) {
-      const profileId = profileDb?.prepare('SELECT profile_id AS profileId FROM profiles WHERE steam_id = ? LIMIT 1').get(id)?.profileId;
-      if (profileId) {
-        const fallback = await getAoE2RecsProfile(String(profileId));
-        if (fallback?.profile?.avatar) return fallback.profile.avatar;
-      }
+      // Daily leaderboard avatar warmup must never consume the AoE2Recs
+      // profile request gate. Keep the previous cached image when Steam fails.
       throw error;
     }
   }
 });
 const leaderboardCache = new Map();
 const leaderboardRefreshes = new Map();
+const leaderboardAvatarWarmup = { running:false, lastStartedAt:null, lastCompletedAt:null, result:null, error:null };
 let tournamentEloPlayersCache = null;
 let tournamentEloPlayersFetchedAt = 0;
 const personalStatsCache = new BoundedCache(512);
@@ -176,8 +176,11 @@ const ladderOrder = Object.keys(leaderboardSchedules).map(Number);
 const cacheWaiters = new Map();
 const aoe2RecsProfileCache = new BoundedCache(512);
 const aoe2RecsProfileRefreshes = new Map();
+const aoe2RecsSearchEntries = new Map();
+let aoe2RecsSearchLoaded = false, aoe2RecsSearchLoading = null;
 const aoe2RecsGateStatePath = join(dataDir, 'aoe2recs-request-cooldown.json');
 const aoe2RecsBrowser = createAoE2RecsBrowser({ connect:() => chromium.connectOverCDP('http://127.0.0.1:9228', { timeout:10_000 }) });
+let aoe2RecsVerificationNotified = false;
 const fetchAoE2RecsProfileOnce = createAoE2RecsRequestGate({
   request: fetchAoE2RecsProfileTransport,
   readState: async () => {
@@ -190,11 +193,17 @@ const fetchAoE2RecsProfileOnce = createAoE2RecsRequestGate({
     await rename(`${aoe2RecsGateStatePath}.tmp`, aoe2RecsGateStatePath);
   }
 });
+process.on('SIGUSR2', () => {
+  fetchAoE2RecsProfileOnce.resetCooldown?.()
+    .then(() => console.log('[aoe2recs] cooldown cleared by operator'))
+    .catch(error => console.warn('[aoe2recs] cooldown reset failed:', error.message));
+});
 const gameAssetRefreshes = new Map();
 const aoe2RecsProfileCacheTtl = 15 * 24 * 60 * 60_000;
 const worldsEdgeMatchCacheDir = join(dataDir, 'worldsedge-matches');
 const worldsEdgeMatchCacheTtl = 10 * 60_000;
 const worldsEdgeMatchCache = new BoundedCache(512);
+const worldsEdgeMatchRepairRefreshes = new Map();
 const worldsEdgeMatchRefreshes = new Map();
 let profileDb = null;
 let profileCache = null;
@@ -1134,7 +1143,10 @@ async function fetchMediaLive() {
   const configured = await loadSelectedStreamers();
   const sources = configured.length ? configured : (Array.isArray(mediaSources.live) ? mediaSources.live : []);
   const results = [];
-  const batchSize = 10;
+  // Keep the full round within the 90-second deadline even when several
+  // platforms stall until their per-source timeout. With 128 configured
+  // sources, batches of ten could spend more than six minutes here.
+  const batchSize = 64;
   for (let index = 0; index < sources.length; index += batchSize) {
     const batch = sources.slice(index, index + batchSize);
     const batchResults = await Promise.all(batch.map(async source => {
@@ -1160,18 +1172,17 @@ async function fetchMediaLive() {
     const current = selected.get(key);
     if (!current || (priority[item.platform] || 1) > (priority[current.platform] || 1)) selected.set(key, item);
   }
-  const enriched = [];
-  for (const item of selected.values()) {
+  const enriched = await Promise.all([...selected.values()].map(async item => {
     const { rl, ratingProfileId, ...publicItem } = item;
     const profileIds = (Array.isArray(rl) ? rl : []).map(String).filter(id => /^\d+$/.test(id));
     try {
       const leaderboards = await fetchLivePlayerLeaderboardStats(ratingProfileId ? [ratingProfileId] : rl);
-      enriched.push(leaderboards ? { ...publicItem, profileIds, leaderboards } : { ...publicItem, profileIds });
+      return leaderboards ? { ...publicItem, profileIds, leaderboards } : { ...publicItem, profileIds };
     } catch (error) {
       console.warn(`[media] live player stats failed: ${item.name || item.id}`, error.message);
-      enriched.push({ ...publicItem, profileIds });
+      return { ...publicItem, profileIds };
     }
-  }
+  }));
   const sorted = enriched.sort((a, b) => {
     if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
     if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
@@ -1495,6 +1506,18 @@ function refreshLeaderboard(id) {
   return refresh;
 }
 
+async function withCachedLeaderboardAvatars(data) {
+  await avatarCache.ready;
+  const rows = await Promise.all((data.rows || []).map(async row => {
+    const steamId = String(row.steamId || '');
+    const profileId = String(row.profileId || '');
+    const key = /^\d{17}$/.test(steamId) ? `steam:${steamId}` : /^\d+$/.test(profileId) ? `profile:${profileId}` : '';
+    const entry = key ? await avatarCache.peek(key) : null;
+    return { ...row, avatar:entry ? `/api/avatar-image/${entry.hash}.${entry.type.split('/')[1]}` : '' };
+  }));
+  return { ...data, rows };
+}
+
 async function getLeaderboard(id) {
   let cached = leaderboardCache.get(id);
   if (!cached) {
@@ -1502,7 +1525,7 @@ async function getLeaderboard(id) {
     cached = leaderboardCache.get(id);
   }
   const now = Date.now();
-  return { ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now) };
+  return withCachedLeaderboardAvatars({ ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now) });
 }
 
 async function getLeaderboardPage(id, page) {
@@ -1525,7 +1548,41 @@ async function getLeaderboardPage(id, page) {
     cached = leaderboardCache.get(id);
   }
   const now = Date.now();
-  return { ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now), requestedPage };
+  return withCachedLeaderboardAvatars({ ...cached.data, cacheExpiresAt: cached.expiresAt > now ? cached.expiresAt : nextLeaderboardRefreshAt(id, now), requestedPage });
+}
+
+async function prewarmLeaderboardAvatars() {
+  if (leaderboardAvatarWarmup.running) return;
+  leaderboardAvatarWarmup.running = true;
+  leaderboardAvatarWarmup.lastStartedAt = new Date().toISOString();
+  leaderboardAvatarWarmup.error = null;
+  try {
+    await Promise.all([getLeaderboard(3), getLeaderboard(4)]);
+    const keys = [];
+    for (const id of [3,4]) for (const row of leaderboardCache.get(id)?.data?.rows || []) {
+      const steamId = String(row.steamId || ''), profileId = String(row.profileId || '');
+      if (/^\d{17}$/.test(steamId)) keys.push(`steam:${steamId}`);
+      else if (/^\d+$/.test(profileId)) keys.push(`profile:${profileId}`);
+    }
+    leaderboardAvatarWarmup.result = await avatarCache.prewarm(keys, 1000, 8);
+    leaderboardAvatarWarmup.lastCompletedAt = new Date().toISOString();
+    console.log('[avatars] daily leaderboard warmup complete:', leaderboardAvatarWarmup.result);
+  } catch (error) {
+    leaderboardAvatarWarmup.error = error.message;
+    console.warn('[avatars] daily leaderboard warmup failed:', error.message);
+  } finally { leaderboardAvatarWarmup.running = false; }
+}
+
+function scheduleDailyLeaderboardAvatarWarmup() {
+  const now = Date.now(), chinaNow = new Date(now + 8 * 60 * 60_000);
+  const targetChina = Date.UTC(chinaNow.getUTCFullYear(), chinaNow.getUTCMonth(), chinaNow.getUTCDate(), 4, 15);
+  let target = targetChina - 8 * 60 * 60_000;
+  if (target <= now) target += 24 * 60 * 60_000;
+  const timer = setTimeout(() => {
+    void prewarmLeaderboardAvatars();
+    scheduleDailyLeaderboardAvatarWarmup();
+  }, target - now);
+  timer.unref();
 }
 
 function nextLeaderboardRefreshAt(id, now = Date.now()) {
@@ -1551,6 +1608,8 @@ function scheduleLeaderboardRefresh() {
   }, Math.max(0, next.at - Date.now()));
 }
 scheduleLeaderboardRefresh();
+scheduleDailyLeaderboardAvatarWarmup();
+setTimeout(() => { void prewarmLeaderboardAvatars(); }, 15_000).unref();
 setInterval(() => { refreshMediaLive().catch(error => console.warn('[media] live refresh failed:', error.message)); }, mediaLiveRefreshInterval);
 
 async function downloadProfileParquet(tempPath) {
@@ -1773,7 +1832,10 @@ function sanitizeAoE2RecsProfile(data) {
     player: profile.player && typeof profile.player === 'object' ? profile.player : null,
     accounts: Array.isArray(profile.accounts) ? profile.accounts : [],
     live: profile.live && typeof profile.live === 'object' ? profile.live : null,
-    matches: Array.isArray(profile.matches) ? profile.matches.slice(0, 20) : []
+    matches: Array.isArray(profile.matches) ? profile.matches.slice(0, 20) : [],
+    hours: Array.isArray(profile.hours) || (profile.hours && typeof profile.hours === 'object') ? profile.hours : null,
+    opps: Array.isArray(profile.opps) || (profile.opps && typeof profile.opps === 'object') ? profile.opps : null,
+    teaming: Array.isArray(profile.teaming) || (profile.teaming && typeof profile.teaming === 'object') ? profile.teaming : null
   };
 }
 
@@ -1859,11 +1921,79 @@ const playerTeams = createPlayerTeams({
   },
   onChange:()=>realtimeService.refreshEnrichment()
 });
+const cnzsRosterPath = join(dataDir, 'liquipedia-cnzs-roster.json');
+const teamRosterPath = join(dataDir, 'liquipedia-team-rosters.json');
+const fetchLiquipediaTeamData = (params, priority = 3) => queueLiquipediaParse(async () => {
+  const url = new URL(liquipediaApiUrl);
+  url.search = new URLSearchParams({ ...params, format: 'json', formatversion: '2' });
+  const response = await fetch(url, {
+    headers: { accept: 'application/json', 'accept-encoding': 'gzip', 'user-agent': liquipediaUserAgent },
+    signal: AbortSignal.timeout(30_000)
+  });
+  if (!response.ok) throw Error(`HTTP ${response.status}`);
+  const data = await response.json();
+  if (data.error) throw Error(data.error.code || 'Liquipedia API error');
+  return data;
+}, priority);
+const teamRosterSync = createTeamRosterSync({
+  read: () => readFile(teamRosterPath, 'utf8'),
+  save: async text => {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(teamRosterPath + '.tmp', text, 'utf8');
+    await rename(teamRosterPath + '.tmp', teamRosterPath);
+  },
+  fetchDirectory: async () => (await fetchLiquipediaTeamData({
+    action: 'parse', page: 'Portal:Teams', section: '1', prop: 'text'
+  })).parse?.text,
+  fetchTeamPages: async titles => {
+    const sources = new Map();
+    for (let i = 0; i < titles.length; i += 45) {
+      const data = await fetchLiquipediaTeamData({
+        action: 'query', prop: 'revisions', rvprop: 'content', rvslots: 'main', redirects: '1',
+        titles: titles.slice(i, i + 45).join('|')
+      });
+      if (!Array.isArray(data.query?.pages)) throw Error('Missing team pages');
+      const aliases = new Map([...(data.query.normalized || []), ...(data.query.redirects || [])].map(({from,to}) => [from,to]));
+      const pages = new Map(data.query.pages.map(page => [page.title, page.revisions?.[0]?.slots?.main?.content]));
+      for (const title of titles.slice(i, i + 45)) {
+        const normalized = aliases.get(title) || title;
+        sources.set(title, pages.get(aliases.get(normalized) || normalized));
+      }
+    }
+    return sources;
+  },
+  references: loadRlReference,
+  onChange: () => realtimeService.refreshEnrichment()
+});
+const cnzsRoster = createCnzsRoster({
+  read: () => readFile(cnzsRosterPath, 'utf8'),
+  save: async text => {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(cnzsRosterPath + '.tmp', text, 'utf8');
+    await rename(cnzsRosterPath + '.tmp', cnzsRosterPath);
+  },
+  fetchHtml: () => queueLiquipediaParse(async () => {
+    const url = new URL(liquipediaApiUrl);
+    url.search = new URLSearchParams({ action: 'parse', page: 'CN_ZhongSheng', section: '2', prop: 'text', format: 'json', formatversion: '2' });
+    const response = await fetch(url, {
+      headers: { accept: 'application/json', 'accept-encoding': 'gzip', 'user-agent': liquipediaUserAgent },
+      signal: AbortSignal.timeout(25_000)
+    });
+    if (!response.ok) throw Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.parse?.title !== 'CN ZhongSheng' || typeof payload.parse.text !== 'string') throw Error('Missing CNZS roster');
+    return payload.parse.text;
+  }, 2),
+  onChange: () => realtimeService.refreshEnrichment()
+});
+
 async function loadPlayerTeams(ids, verifiedProfiles) {
   const references=await loadRlReference();
   const canonicalIds=ids.map(id=>references.get(String(id))?.canonicalProfileId).filter(Boolean);
   const verified=verifiedProfiles || await loadVerifiedPlayerProfiles([...ids,...canonicalIds]);
-  return playerTeams.getTeams(ids,verified,references);
+  const teams = await playerTeams.getTeams(ids,verified,references);
+  await teamRosterSync.apply(teams, references, verified);
+  return applyCnzsRoster(teams, references, verified, await cnzsRoster.get());
 }
 const profileService = createProfileService({
   getProfileDb: () => profileDb,
@@ -1886,7 +2016,8 @@ const { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce } = matchesSe
 // Visible profile refreshes get queue priority and one bounded attempt; the
 // realtime monitor retains its existing retry policy through matchesService.
 const profileMatchesService = createMatchesService({ fetchUpstreamWithRateLimit, normalizeCompanionMatches, attempts:1, requestTimeoutMs:10_000, priority:5 });
-const { fetchWorldsEdgeMatchesOnce:fetchProfileMatchesOnce, fetchLatestWorldsEdgeMatchOnce:fetchLatestProfileMatchOnce } = profileMatchesService;
+const { fetchWorldsEdgeMatchesOnce:fetchProfileMatchesOnce, fetchLatestWorldsEdgeMatchOnce:fetchLatestProfileMatchOnce,
+  fetchWorldsEdgeMatchByIdOnce:fetchProfileMatchByIdOnce } = profileMatchesService;
 
 const realtimeService = createRealtimeService({
   loadVerifiedRealtimeNames: loadVerifiedPlayerProfiles,
@@ -1916,7 +2047,9 @@ async function readWorldsEdgeMatchesCache(profileId) {
     try {
       const disk = JSON.parse(await readFile(worldsEdgeMatchCachePath(key), 'utf8'));
       if (disk && Array.isArray(disk.matches) && Number.isFinite(Number(disk.savedAt))) {
-        current = { savedAt: Number(disk.savedAt), matches: disk.matches, pages: Number(disk.pages) || 1, hasMore: disk.hasMore !== false, hasOlderUnfinished: typeof disk.hasOlderUnfinished === 'boolean' ? disk.hasOlderUnfinished : hasOlderUnfinishedMatches(disk.matches) };
+        current = { savedAt: Number(disk.savedAt), matches: disk.matches, pages: Number(disk.pages) || 1, hasMore: disk.hasMore !== false,
+          hasOlderUnfinished: typeof disk.hasOlderUnfinished === 'boolean' ? disk.hasOlderUnfinished : hasOlderUnfinishedMatches(disk.matches),
+          unfinishedRepairs:disk.unfinishedRepairs && typeof disk.unfinishedRepairs === 'object' ? disk.unfinishedRepairs : {} };
         worldsEdgeMatchCache.set(key, current);
       }
     } catch {
@@ -1924,6 +2057,72 @@ async function readWorldsEdgeMatchesCache(profileId) {
     }
   }
   return current;
+}
+
+const unfinishedRepairDelays = [10 * 60_000, 60 * 60_000, 6 * 60 * 60_000];
+const unfinishedRepairLifetime = 7 * 24 * 60 * 60_000;
+async function repairOlderUnfinishedMatches(profileId, snapshot) {
+  const key = String(profileId);
+  if (!snapshot?.hasOlderUnfinished || worldsEdgeMatchRepairRefreshes.has(key)) return worldsEdgeMatchRepairRefreshes.get(key);
+  const task = (async () => {
+    const now = Date.now(), latestId = String(snapshot.matches?.[0]?.id || '');
+    const repairs = { ...(snapshot.unfinishedRepairs || {}) };
+    let metadataChanged = false;
+    const due = [];
+    for (const match of (snapshot.matches || []).slice(1)) {
+      if (!Number(match?.started) || Number(match.finished) || match.abandoned === true) continue;
+      const id = String(match.id || '');
+      if (!/^[1-9]\d{0,15}$/.test(id)) continue;
+      let state = repairs[id] && typeof repairs[id] === 'object' ? { ...repairs[id] } : {};
+      if (state.latestId !== latestId) {
+        state = state.stopped ? { latestId, attempts:0, firstAttemptAt:0, nextAttemptAt:0 } : { ...state, latestId, nextAttemptAt:0 };
+        repairs[id] = state; metadataChanged = true;
+      }
+      if (state.firstAttemptAt && now - Number(state.firstAttemptAt) >= unfinishedRepairLifetime) {
+        if (!state.stopped) { repairs[id] = { ...state, stopped:true, stoppedAt:now }; metadataChanged = true; }
+        continue;
+      }
+      if (!state.stopped && now >= Number(state.nextAttemptAt || 0)) due.push({ id, state });
+      if (due.length >= 5) break;
+    }
+    const replacements = new Map();
+    let cursor = 0;
+    async function worker() {
+      while (cursor < due.length) {
+        const { id, state } = due[cursor++];
+        try {
+          const fresh = await fetchProfileMatchByIdOnce(id);
+          if (fresh && (Number(fresh.finished) > 0 || fresh.abandoned === true)) {
+            replacements.set(id, fresh);
+            delete repairs[id];
+            metadataChanged = true;
+            continue;
+          }
+        } catch (error) {
+          console.warn(`[matches] unfinished repair ${id} failed:`, error.message);
+        }
+        const attempts = Number(state.attempts || 0) + 1;
+        const firstAttemptAt = Number(state.firstAttemptAt || 0) || now;
+        const expired = now - firstAttemptAt >= unfinishedRepairLifetime;
+        const delay = unfinishedRepairDelays[Math.min(attempts - 1, unfinishedRepairDelays.length - 1)] || 24 * 60 * 60_000;
+        repairs[id] = { latestId, attempts, firstAttemptAt, nextAttemptAt:expired ? 0 : now + (attempts >= 4 ? 24 * 60 * 60_000 : delay),
+          ...(expired ? { stopped:true, stoppedAt:now } : {}) };
+        metadataChanged = true;
+      }
+    }
+    await Promise.all([worker(), worker()]);
+    if (!metadataChanged && !replacements.size) return;
+    const latest = worldsEdgeMatchCache.get(key) || snapshot;
+    const matches = (latest.matches || []).map(match => replacements.get(String(match.id)) || match);
+    const updated = { ...latest, matches, unfinishedRepairs:repairs, hasOlderUnfinished:hasOlderUnfinishedMatches(matches) };
+    worldsEdgeMatchCache.set(key, updated);
+    await mkdir(worldsEdgeMatchCacheDir, { recursive:true });
+    const path = worldsEdgeMatchCachePath(key), tempPath = `${path}.tmp`;
+    await writeFile(tempPath, JSON.stringify(updated), 'utf8');
+    await rename(tempPath, path);
+  })().finally(() => worldsEdgeMatchRepairRefreshes.delete(key));
+  worldsEdgeMatchRepairRefreshes.set(key, task);
+  return task;
 }
 
 async function getWorldsEdgeMatches(profileId, page = 1) {
@@ -2053,11 +2252,23 @@ function aoe2RecsProfilePath(profileId) {
 }
 
 async function readAoE2RecsProfileCache(profileId) {
+  const path = aoe2RecsProfilePath(profileId);
   const cached = aoe2RecsProfileCache.get(profileId);
-  if (cached) return cached;
+  let diskStat = null;
+  if (cached) {
+    try {
+      diskStat = await stat(path);
+      if (Number(cached.fileMtimeMs || 0) >= diskStat.mtimeMs) return cached;
+    } catch (error) {
+      if (error.code === 'ENOENT') return cached;
+      throw error;
+    }
+  }
   try {
-    const parsed = JSON.parse(await readFile(aoe2RecsProfilePath(profileId), 'utf8'));
+    const parsed = JSON.parse(await readFile(path, 'utf8'));
     if (parsed?.savedAt && Array.isArray(parsed.profile?.accounts)) {
+      diskStat ||= await stat(path);
+      parsed.fileMtimeMs = diskStat.mtimeMs;
       aoe2RecsProfileCache.set(profileId, parsed);
       return parsed;
     }
@@ -2065,18 +2276,92 @@ async function readAoE2RecsProfileCache(profileId) {
   return null;
 }
 
+function indexAoE2RecsProfile(profileId, profile) {
+  if (!profile || profile.notFound) return;
+  const playerId = String(profile.player?.id || profileId);
+  const values = [];
+  const add = (id, name, aliases = [], lastMatchTime = null) => {
+    id = String(id || ''); name = String(name || '').trim();
+    if (!/^\d+$/.test(id) || !name) return;
+    values.push({ profileId:id, canonicalProfileId:playerId, name,
+      lastMatchTime, aliases:[...new Set((aliases || []).map(value => String(value || '').trim()).filter(Boolean))] });
+  };
+  const primaryAccountMatch = (profile.accounts || []).find(account => String(account.id || '') === playerId)?.last;
+  add(playerId, profile.player?.name || '', [], profile.player?.last_match || primaryAccountMatch);
+  for (const account of profile.accounts || []) add(account.id, account.name || '', account.akas || [], account.last);
+  aoe2RecsSearchEntries.set(String(profileId), values);
+}
+
+async function ensureAoE2RecsSearchIndex() {
+  if (aoe2RecsSearchLoaded) return;
+  if (!aoe2RecsSearchLoading) aoe2RecsSearchLoading = (async () => {
+    let files = [];
+    try { files = await readdir(aoe2RecsProfileCacheDir); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const profileFiles = files.filter(file => /^\d+\.json$/.test(file));
+    for (const file of profileFiles) {
+      try {
+        const profileId = file.slice(0, -5);
+        const parsed = JSON.parse(await readFile(join(aoe2RecsProfileCacheDir, file), 'utf8'));
+        indexAoE2RecsProfile(profileId, parsed?.profile);
+      } catch {}
+    }
+    aoe2RecsSearchLoaded = true;
+  })().finally(() => { aoe2RecsSearchLoading = null; });
+  return aoe2RecsSearchLoading;
+}
+
+function aoe2RecsProfileInsights(profileId, profile) {
+  const directHours = Array.isArray(profile?.hours) ? profile.hours : [];
+  const directTeaming = Array.isArray(profile?.teaming) ? profile.teaming : [];
+  const directOpps = Array.isArray(profile?.opps) ? profile.opps : [];
+  if (!directHours.length && !directTeaming.length && !directOpps.length) return null;
+  const activityHours = Array(24).fill(0);
+  for (const item of directHours) {
+    const utcHour = Number(item?.x), value = Number(item?.y);
+    if (Number.isInteger(utcHour) && utcHour >= 0 && utcHour < 24 && Number.isFinite(value)) activityHours[(utcHour + 8) % 24] = value;
+  }
+  const directPeople = values => (Array.isArray(values) ? values : []).map(item => ({
+    id:String(item?.id || ''), name:String(item?.name || '').trim() || `玩家 ${item?.id || ''}`, count:Number(item?.value) || 0
+  })).filter(item => item.count > 0).sort((a,b) => b.count-a.count || a.name.localeCompare(b.name,'zh-CN')).slice(0,5);
+  const directTeammates = directPeople(directTeaming), directOpponents = directPeople(directOpps);
+  const peakHours = activityHours.map((count,hour)=>({hour,count})).filter(item=>item.count>0).sort((a,b)=>b.count-a.count || a.hour-b.hour).slice(0,3).map(item=>item.hour);
+  return { source:'aoe2recs-summary', timezone:'Asia/Shanghai', activityHours, peakHours,
+    teammates:directTeammates, opponents:directOpponents };
+}
+
 async function writeAoE2RecsProfileCache(profileId, profile) {
   const cached = { savedAt: Date.now(), profile };
   await mkdir(aoe2RecsProfileCacheDir, { recursive: true });
   const tempPath = `${aoe2RecsProfilePath(profileId)}.tmp`;
   await writeFile(tempPath, JSON.stringify(cached), 'utf8');
-  await rename(tempPath, aoe2RecsProfilePath(profileId));
-  aoe2RecsProfileCache.set(profileId, cached);
+  const path = aoe2RecsProfilePath(profileId);
+  await rename(tempPath, path);
+  const fileMtimeMs = (await stat(path)).mtimeMs;
+  aoe2RecsProfileCache.set(profileId, { ...cached, fileMtimeMs });
+  indexAoE2RecsProfile(profileId, profile);
   return cached;
 }
 
 async function fetchAoE2RecsProfileTransport(profileId) {
-  const raw = await aoe2RecsBrowser.read(profileId);
+  let raw;
+  try {
+    raw = await aoe2RecsBrowser.read(profileId);
+    aoe2RecsVerificationNotified = false;
+  } catch (error) {
+    if (error?.code === 'AOE2RECS_VERIFICATION_REQUIRED' && !aoe2RecsVerificationNotified) {
+      aoe2RecsVerificationNotified = true;
+      try {
+        realtimeChat.announceSystem({
+          content:'AoE2Recs 真实浏览器需要人工验证，账号与曾用名等资料将暂时使用已有缓存。',
+          key:'aoe2recs-verification-required',
+          repeatMs:15 * 60_000
+        });
+      } catch (noticeError) {
+        console.warn('[realtime-chat] AoE2Recs verification notice failed:', noticeError.message);
+      }
+    }
+    throw error;
+  }
   const data = raw?.person && typeof raw.person === 'object' ? raw.person : raw;
   if (data?.found === false) return { notFound:true, accounts:[], player:null, avatar:'', matches:[] };
   const profile = sanitizeAoE2RecsProfile(raw);
@@ -2106,12 +2391,14 @@ async function getAoE2RecsProfile(profileId) {
 }
 
 const profileSearchPool = createProfileSearchPool();
-async function searchProfiles(query, leaderboardId, signal) {
+async function searchProfiles(query, _leaderboardId, signal) {
   const normalized = query.trim();
   const queryLower = normalized.toLocaleLowerCase();
   const ratings = new Map();
-  const selectedRatings = new Map();
-  const cached = leaderboardCache.get(leaderboardId);
+  const oneVsOneRatings = new Map();
+  // Player search is identity-oriented and must rank consistently regardless
+  // of which leaderboard happens to be open in the UI.  Always use RM 1v1.
+  const cached = leaderboardCache.get(3);
   for (const boardCache of leaderboardCache.values()) {
     for (const row of boardCache.data.rows) {
       const profileId = String(row.profileId || '');
@@ -2122,11 +2409,23 @@ async function searchProfiles(query, leaderboardId, signal) {
   if (cached) for (const row of cached.data.rows) {
     const profileId = String(row.profileId || '');
     const rating = Number(row.rating);
-    if (profileId && Number.isFinite(rating)) selectedRatings.set(profileId, rating);
+    if (profileId && Number.isFinite(rating)) oneVsOneRatings.set(profileId, rating);
   }
   const matchingProfiles = await profileSearchPool.query(join(dataDir, profileCache.filename), normalized, { signal });
   const candidates = new Map(matchingProfiles.map(player => [String(player.profileId), { ...player, aliases: [] }]));
   const profileById = profileDb.prepare('SELECT profile_id AS profileId, steam_id AS steamId, name, clan, country, last_match_time AS lastMatchTime FROM profiles WHERE profile_id = ?');
+  await ensureAoE2RecsSearchIndex();
+  for (const entries of aoe2RecsSearchEntries.values()) for (const entry of entries) {
+    const names = [entry.name, ...entry.aliases];
+    if (!names.some(value => value.toLocaleLowerCase().includes(queryLower))) continue;
+    const id = entry.profileId;
+    const player = candidates.get(id) || profileById.get(id) || localProfileDetails(id)?.player;
+    if (!player) continue;
+    const existingAliases = new Set(candidates.get(id)?.aliases || []);
+    for (const value of names) if (value.toLocaleLowerCase() !== String(player.name || entry.name).toLocaleLowerCase()) existingAliases.add(value);
+    candidates.set(id, { ...player, profileId:id, name:player.name || entry.name,
+      lastMatchTime:entry.lastMatchTime || player.lastMatchTime || '', aliases:[...existingAliases] });
+  }
   for (const boardCache of leaderboardCache.values()) {
     for (const row of boardCache.data.rows) {
       const alias = String(row.alias || '');
@@ -2151,9 +2450,23 @@ async function searchProfiles(query, leaderboardId, signal) {
       }), clan: profile?.clan || row.clan || inferredClan, aliases: alias && alias.toLocaleLowerCase() !== String(profile?.name || row.name).toLocaleLowerCase() ? [alias] : [] });
     }
   }
+  for (const [id, reference] of await loadRlReference()) {
+    const alias = reference.name;
+    if (id !== reference.canonicalProfileId || !alias.toLocaleLowerCase().includes(queryLower)) continue;
+    const player = candidates.get(id) || profileById.get(id);
+    if (!player) continue;
+    const aliases = new Set(player.aliases || []);
+    if (alias.toLocaleLowerCase() !== player.name.toLocaleLowerCase()) aliases.add(alias);
+    candidates.set(id, { ...player, aliases: [...aliases] });
+  }
   const results = [...candidates.values()].map(player => {
     const name = player.name.toLocaleLowerCase();
-    const matchingNames = [player.name, ...(player.aliases || [])].map(value => value.toLocaleLowerCase());
+    const searchNameVariants = value => {
+      const raw = String(value || '').trim().toLocaleLowerCase();
+      const withoutTeamPrefix = raw.replace(/^(?:[_\[]?[a-z0-9]{2,12}[\]_.\s-]+)+/i, '');
+      return withoutTeamPrefix && withoutTeamPrefix !== raw ? [raw, withoutTeamPrefix] : [raw];
+    };
+    const matchingNames = [player.name, ...(player.aliases || [])].flatMap(searchNameVariants);
     const positions = matchingNames.map(value => value.indexOf(queryLower)).filter(value => value >= 0);
     const position = positions.length ? Math.min(...positions) : 0;
     const exact = matchingNames.some(value => value === queryLower);
@@ -2161,15 +2474,18 @@ async function searchProfiles(query, leaderboardId, signal) {
     return {
       ...player,
       country: forceChinaCountry(player.profileId, player.country || ''),
-      rating: selectedRatings.get(String(player.profileId)) ?? ratings.get(String(player.profileId)) ?? null,
+      rating: oneVsOneRatings.get(String(player.profileId)) ?? ratings.get(String(player.profileId)) ?? null,
       matchQuality: exact ? 3 : startsWith ? 2 : position >= 0 ? 1 : 0,
       matchPosition: Math.max(0, position),
-      matchLengthDifference: Math.abs([...player.name].length - [...normalized].length),
+      matchLengthDifference: Math.min(...matchingNames.map(value => Math.abs([...value].length - [...normalized].length))),
       lastMatchTimestamp: profileLastMatchTimestamp(player.lastMatchTime)
     };
   });
-  results.sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1)
+  const activeCutoff = Date.now() - 30 * 86_400_000;
+  const activeSearchProfile = player => player.rating != null || player.lastMatchTimestamp >= activeCutoff;
+  results.sort((a, b) => Number(activeSearchProfile(b)) - Number(activeSearchProfile(a))
     || b.matchQuality - a.matchQuality
+    || (b.rating ?? -1) - (a.rating ?? -1)
     || a.matchPosition - b.matchPosition
     || a.matchLengthDifference - b.matchLengthDifference
     || b.lastMatchTimestamp - a.lastMatchTimestamp
@@ -2227,6 +2543,112 @@ async function runLiquipediaParseQueue() {
     catch (error) { request.reject(error); }
   }
   liquipediaParseRunning = false;
+}
+
+async function startGuessEligibilityScan() {
+  const catalogPath = join(dataDir, 'guess-eligibility-catalog.json');
+  const progressPath = join(dataDir, 'guess-eligibility-progress.json');
+  let input;
+  try { input = JSON.parse(await readFile(catalogPath, 'utf8')); }
+  catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  const { scanGuessEligibility } = await import('./server/services/liquipedia-guess-eligibility.js');
+  await scanGuessEligibility({
+    ...input,
+    readProgress: async () => {
+      try { return JSON.parse(await readFile(progressPath, 'utf8')); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; return {}; }
+    },
+    saveProgress: async progress => {
+      await writeFile(progressPath + '.tmp', JSON.stringify(progress, null, 2), 'utf8');
+      await rename(progressPath + '.tmp', progressPath);
+    },
+    fetchPages: titles => queueLiquipediaParse(async () => {
+      const text = titles.map((title, index) => '<div id="guess-eligibility-' + index + '">\n{{:' + title + '}}\n</div>').join('\n');
+      const body = new URLSearchParams({ action: 'parse', text, title: 'AOE2CN eligibility scan', prop: 'text', format: 'json', formatversion: '2' });
+      const response = await fetch(liquipediaApiUrl, {
+        method: 'POST', body, headers: { 'user-agent': liquipediaUserAgent, 'accept-encoding': 'gzip' }, signal: AbortSignal.timeout(35_000)
+      });
+      if (!response.ok) throw Error('Liquipedia HTTP ' + response.status);
+      const payload = await response.json();
+      const html = payload.parse?.text;
+      if (typeof html !== 'string') throw Error(payload.error?.code || 'missing placement tables');
+      const markers = [...html.matchAll(/<div id="guess-eligibility-(\d+)">/g)];
+      return new Map(markers.map((marker, index) => [
+        titles[Number(marker[1])], html.slice(marker.index + marker[0].length, markers[index + 1]?.index)
+      ]));
+    }, 3)
+  });
+  console.log('[guess-eligibility] catalog scan complete');
+}
+
+function runGuessEligibilityScan() {
+  startGuessEligibilityScan().catch(error => {
+    console.warn('[guess-eligibility] retry in 10 minutes:', error.message);
+    setTimeout(runGuessEligibilityScan, 10 * 60_000).unref();
+  });
+}
+
+async function runGuessResultsBackfill() {
+  const manifestPath = join(dataDir, 'guess-results-backfill-input.json');
+  let titles;
+  try { titles = JSON.parse(await readFile(manifestPath, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  const { backfillGuessResults } = await import('./server/services/liquipedia-guess-results.js');
+  await backfillGuessResults({
+    titles,
+    progressPath: join(dataDir, 'guess-results-backfill-progress.json'),
+    fetchHtml: text => queueLiquipediaParse(async () => {
+      const body = new URLSearchParams({
+        action: 'parse', text, title: 'Sitaux/Results', prop: 'text', format: 'json', formatversion: '2'
+      });
+      const response = await fetch(liquipediaApiUrl, {
+        method: 'POST', body, headers: { 'user-agent': liquipediaUserAgent, 'accept-encoding': 'gzip' },
+        signal: AbortSignal.timeout(45_000)
+      });
+      if (!response.ok) throw Error('Liquipedia HTTP ' + response.status);
+      const data = await response.json();
+      if (typeof data.parse?.text !== 'string') throw Error(data.error?.code || 'missing results HTML');
+      return data.parse.text;
+    }, 4)
+  });
+}
+
+async function collectGuessTournamentSources() {
+  const path = join(dataDir, 'guess-sa-tournament-sources.json');
+  const results = await loadLiquipediaResultsCache();
+  const events = new Map();
+  for (const tier of ['s', 'a']) for (const row of results.categories[tier]?.rows || []) {
+    if (!row.url) continue;
+    const url = new URL(row.url);
+    if (url.hostname !== 'liquipedia.net' || !url.pathname.startsWith('/ageofempires/')) continue;
+    const title = decodeURIComponent(url.pathname.slice('/ageofempires/'.length)).replaceAll('_', ' ');
+    if (title) events.set(title, { tier: tier.toUpperCase(), title, url: url.href, dates: row.dates });
+  }
+  if (!events.size) throw Error('no S/A tournament index');
+  let saved = {};
+  try { saved = JSON.parse(await readFile(path, 'utf8')).sources || {}; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const pending = [...events.values()].filter(event => !Object.hasOwn(saved, event.title));
+  for (let i = 0; i < pending.length; i += 25) {
+    const batch = pending.slice(i, i + 25);
+    const data = await fetchLiquipediaTeamData({
+      action: 'query', prop: 'revisions', rvprop: 'content', rvslots: 'main', redirects: '1',
+      titles: batch.map(event => event.title).join('|')
+    }, 1);
+    if (!Array.isArray(data.query?.pages)) throw Error('missing S/A event pages');
+    const aliases = new Map([...(data.query.normalized || []), ...(data.query.redirects || [])].map(({from,to}) => [from,to]));
+    const pages = new Map(data.query.pages.map(page => [page.title, page.revisions?.[0]?.slots?.main?.content]));
+    for (const event of batch) {
+      const title = aliases.get(event.title) || event.title;
+      saved[event.title] = { ...event, source: pages.get(aliases.get(title) || title) || null };
+    }
+    await writeFile(path + '.tmp', JSON.stringify({ total: events.size, fetched: Object.keys(saved).length, sources: saved }), 'utf8');
+    await rename(path + '.tmp', path);
+    console.log('[guess-eligibility] tournament sources:', Object.keys(saved).length, '/', events.size);
+  }
 }
 
 function parseLiquipediaTournaments(html) {
@@ -2592,6 +3014,7 @@ async function recordPageView(req) {
   const visitors = new Set(Array.isArray(day.visitors) ? day.visitors : []);
   visitors.add(createHash('sha256').update(`aoe2cn-site-traffic-v1:${ip}`).digest('hex'));
   siteTrafficState.days[date] = {
+    ...day,
     views: Math.max(0, Number(day.views) || 0) + 1,
     visitors: [...visitors],
     uniqueVisitors: visitors.size,
@@ -2599,6 +3022,25 @@ async function recordPageView(req) {
   };
   await persistSiteTraffic();
   return { ...currentSiteStats(), counted: true };
+}
+
+async function guessPlayerStats(req) {
+  await ensureSiteTrafficState();
+  const date = chinaDayKey();
+  const day = siteTrafficState.days[date] || {};
+  const players = Array.isArray(day.guessPlayers) ? day.guessPlayers : [];
+  if (req.method === 'POST') {
+    const ip = requestClientIp(req);
+    if (!excludeFromSiteTraffic(ip)) {
+      const visitor = createHash('sha256').update(`aoe2cn-guess-player-v1:${ip}`).digest('hex');
+      if (!players.includes(visitor)) {
+        players.push(visitor);
+        siteTrafficState.days[date] = { ...day, guessPlayers: players };
+        await persistSiteTraffic();
+      }
+    }
+  }
+  return { date, players: players.length };
 }
 
 async function archiveSiteDay(date = chinaDayKey()) {
@@ -2999,7 +3441,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   if (url.pathname === '/api/internal/health') {
     if (!isInternalIp(protectionIp)) return sendNoStoreJson(res, 404, { error: 'Not found' });
     const worker = await background.health();
-    return sendNoStoreJson(res, 200, { ok: true, uptime: process.uptime(), background: worker, profileBrowser:aoe2RecsBrowser.stats(), caches: { avatars: avatarCache.stats(), personalStats: personalStatsCache.stats(), livePlayerStats: livePlayerStatsCache.stats(), profiles: aoe2RecsProfileCache.stats(), matches: worldsEdgeMatchCache.stats() } });
+    return sendNoStoreJson(res, 200, { ok: true, uptime: process.uptime(), background: worker, profileBrowser:aoe2RecsBrowser.stats(), leaderboardAvatarWarmup, caches: { avatars: avatarCache.stats(), personalStats: personalStatsCache.stats(), livePlayerStats: livePlayerStatsCache.stats(), profiles: aoe2RecsProfileCache.stats(), matches: worldsEdgeMatchCache.stats() } });
   }
   if (url.pathname === '/api/replay-analysis/status') {
     const jobId = url.searchParams.get('jobId') || '';
@@ -3011,6 +3453,14 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   if (url.pathname === '/api/protection/status') {
     if (!isInternalIp(protectionIp)) return sendNoStoreJson(res, 404, { error: 'Not found' });
     return sendNoStoreJson(res, 200, apiProtection.stats());
+  }
+  if (url.pathname === '/api/guess/players') {
+    if (!['GET', 'POST'].includes(req.method)) return sendNoStoreJson(res, 405, { error: '不支持的请求方法' });
+    try {
+      return sendNoStoreJson(res, 200, await guessPlayerStats(req));
+    } catch {
+      return sendNoStoreJson(res, 500, { error: '游玩人数暂不可用' });
+    }
   }
   if (url.pathname === '/api/site-stats') {
     if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
@@ -3209,8 +3659,10 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       const rlReference = (await loadRlReference()).get(String(profileId)) || null;
       const teams=await loadPlayerTeams([profileId]);
       profile.player={...profile.player,team:teams.get(profileId) || ''};
+      const recsCached = await readAoE2RecsProfileCache(profileId);
+      const insights = aoe2RecsProfileInsights(profileId, recsCached?.profile);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300' });
-      return res.end(JSON.stringify({ ...profile, rlReference, cached: true, stale: false, source: 'profile-dump' }));
+      return res.end(JSON.stringify({ ...profile, rlReference, insights, cached: true, stale: false, source: 'profile-dump' }));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '获取选手资料失败' }));
@@ -3224,8 +3676,14 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     }
     try {
       const result = await readProfileAccounts(profileId);
+      let recsCached = await readAoE2RecsProfileCache(profileId);
+      if (!recsCached?.profile) for (const account of result.accounts || []) {
+        recsCached = await readAoE2RecsProfileCache(String(account.id || ''));
+        if (recsCached?.profile) break;
+      }
+      const insights = aoe2RecsProfileInsights(profileId, recsCached?.profile);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': result.stale ? 'no-cache' : 'public, max-age=300' });
-      return res.end(JSON.stringify(result));
+      return res.end(JSON.stringify({ ...result, insights }));
     } catch (error) {
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '获取账号与曾用名失败' }));
@@ -3263,6 +3721,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
         // A cold profile needs one full history request, never a 20-match prefetch.
         const cached = await readWorldsEdgeMatchesCache(profileId);
         const snapshot = cached?.matches?.length ? cached : await getWorldsEdgeMatches(profileId, 1);
+        repairOlderUnfinishedMatches(profileId, snapshot).catch(error => console.warn(`选手 ${profileId} 旧对局校正失败:`, error.message));
         res.writeHead(200, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store' });
         return res.end(JSON.stringify({ matches:snapshot.matches.slice(0,100), hasMore:false,
           cached:Boolean(cached?.matches?.length), stale:Boolean(snapshot.stale), savedAt:snapshot.savedAt }));
@@ -3526,6 +3985,8 @@ httpServer.maxHeadersCount = 100;
 httpServer.listen(port, '127.0.0.1', () => {
   console.log(`AoE2DE Ladder running at http://localhost:${port}`);
   startLiquipediaMatchesLifecycle().catch(error => console.warn('[events] lifecycle startup failed:', error.message));
+  collectGuessTournamentSources().catch(error => console.warn('[guess-eligibility] tournament sources failed:', error.message));
+  runGuessResultsBackfill().catch(error => console.warn('[guess-results] backfill paused:', error.message));
   scheduleLiquipediaResultsRefresh().catch(error=>console.warn('[event-results] scheduler startup failed:',error.message));
   refreshMediaCache().catch(error => console.warn('[media] initial refresh failed:', error.message));
   startBilibiliUpdatesLifecycle().catch(error => console.warn('[updates] lifecycle startup failed:', error.message));
@@ -3533,6 +3994,8 @@ httpServer.listen(port, '127.0.0.1', () => {
   startProfileCacheLifecycle().catch(error => console.error('启动玩家资料缓存失败:', error.message));
   ensureSiteTrafficState().then(() => scheduleSiteDailyArchive()).catch(error => console.warn('[stats] daily archive startup failed:', error.message));
   playerTeams.start();
+  cnzsRoster.start();
+  teamRosterSync.start();
   let lastRealtimeApiFallbackAt = Date.now();
   const refreshRealtimeOnServer = async () => {
     try {

@@ -41,9 +41,9 @@ test('queue states apply only to monitored players, merge maps, and clear on rem
     {type:'queueingRemoved',data:{id:'m3',reason:'cancelled',profileIds:[88]}}]);
   assert.notEqual((await state()).status,'cancelled');
   const cancelledByOpponent = await state();
-  assert.equal(cancelledByOpponent.status,'offline');
-  assert.equal(cancelledByOpponent.queueGrace.queueId,'m3');
-  assert.ok(cancelledByOpponent.graceUntil > Date.now()+299000);
+  assert.equal(cancelledByOpponent.status,'queueing');
+  assert.equal(cancelledByOpponent.queue.id,'m3');
+  assert.equal(cancelledByOpponent.queue.syntheticRequeue,true);
   send([{type:'queueingAdded',data:{id:'m4',status:'matched',matchId:4,players:[{profileId:42},{profileId:88}]}},
     {type:'queueingRemoved',data:{id:'m4',reason:'cancelled'}}]);
   assert.notEqual((await state()).status,'cancelled');
@@ -59,8 +59,12 @@ test('queue states apply only to monitored players, merge maps, and clear on rem
   send([{type:'queueingAdded',data:{id:'q6',status:'queueing',players:[{profileId:42}]}}]);
   assert.equal((await state()).status,'queueing');
   assert.equal((await state()).queueGrace,undefined);
-  send([{type:'queueingRemoved',data:{id:'q6',reason:'started'}},
-    {type:'queueingAdded',data:{id:'q7',status:'queueing',partyLeaderProfileId:88,players:[{profileId:42},{profileId:88},{profileId:99},{profileId:100}]}}]);
+  send([{type:'queueingRemoved',data:{id:'q6',reason:'started'}}]);
+  const syntheticMatched=await state();
+  assert.equal(syntheticMatched.status,'matched');
+  assert.equal(syntheticMatched.queue.id,'q6');
+  assert.equal(syntheticMatched.queue.syntheticMatched,true);
+  send([{type:'queueingAdded',data:{id:'q7',status:'queueing',partyLeaderProfileId:88,players:[{profileId:42},{profileId:88},{profileId:99},{profileId:100}]}}]);
   send([{type:'queueingRemoved',data:{id:'q7',reason:'left',profileIds:[88,'99']}}]);
   const retained=await state();
   assert.equal(retained.status,'queueing');
@@ -89,4 +93,38 @@ test('queue states apply only to monitored players, merge maps, and clear on rem
   send([{type:'queueingUpdated',data:{id:'m_unattributed',status:'matched',matchId:100,players:[{profileId:42},{profileId:88}]}}]);
   assert.equal((await state()).status,'matched');
 
+  const timestamp = seconds => new Date(Date.now() + seconds * 1000).toISOString();
+  const matchedAt = timestamp(-20);
+  send([{type:'queueingRemoved',data:{id:'m_unattributed',reason:'started'}},
+    {type:'queueingAdded',data:{id:'old-party',status:'queueing',queueingSince:timestamp(-60),players:[{profileId:42}]}},
+    {type:'queueingAdded',data:{id:'match-without-removal',status:'matched',matchId:101,matchedAt,players:[{profileId:42}]}}]);
+  assert.equal((await state()).queue.id,'match-without-removal');
+  assert.equal(service.getRealtimeStatus().queueing.entries,1);
+  send([{type:'queueingAdded',data:{id:'new-party',status:'queueing',queueingSince:timestamp(-5),players:[{profileId:42}]}},
+    {type:'queueingUpdated',data:{id:'match-without-removal',mapImageUrl:'/rm_arena.png'}}]);
+  assert.equal((await state()).queue.id,'new-party');
+});
+
+test('confirmed game removes older queue without waiting for expiry, but a newer queue still wins', async () => {
+  const sockets=[];
+  class Socket { constructor(url){this.url=url;this.readyState=1;this.handlers={};sockets.push(this)} addEventListener(t,h){this.handlers[t]=h}close(){this.readyState=3} }
+  const started=Math.floor(Date.now()/1000)-60;
+  const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache')},writeFile:async()=>{},localProfileDetails:()=>null,getMediaCache:async()=>({live:[]}),loadRlReference:async()=>new Map(),fetchPersonalLeaderboardStats:async()=>[],fetchLatestWorldsEdgeMatchOnce:async()=>({id:900,started,finished:0,live:true,players:[{id:42},{id:43}]}),forceChinaCountry:(_,c)=>c});
+  await service.startRealtimeWebSockets(['42','43']);
+  const queues=sockets.filter(s=>s.url.includes('handler=queueing'));
+  const send=(id,at,status='queueing',matchId=null)=>{
+    for(const socket of queues)socket.handlers.message({data:JSON.stringify([{type:'queueingAdded',data:{id,status,matchId,queueingSince:new Date(at*1000).toISOString(),players:[{profileId:42},{profileId:43}]}}])});
+  };
+  const states=async()=> (await service.refreshRealtimePayload(['42','43'])).states;
+  send('old-queue',started-100);
+  assert.ok((await states()).every(s=>s.status==='game'));
+  assert.equal(service.getRealtimeStatus().queueing.entries,0);
+  // Deleting one member must not recreate or retain the other group's queue.
+  assert.ok((await states()).every(s=>s.status==='game'));
+  send('new-queue',started+30);
+  assert.ok((await states()).every(s=>s.status==='queueing'));
+  for(const socket of queues)socket.handlers.message({data:JSON.stringify([{type:'queueingRemoved',data:{id:'new-queue',reason:'started'}}])});
+  send('same-match',started+30,'matched',900);
+  assert.ok((await states()).every(s=>s.status==='game'));
+  assert.equal(service.getRealtimeStatus().queueing.entries,0);
 });

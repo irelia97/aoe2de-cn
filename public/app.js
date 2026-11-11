@@ -32,7 +32,7 @@ const leaderboardPageRequests = new Map();
 const leaderboardRetryAt = new Map();
 const leaderboardSummaryCache = new Map();
 const leaderboardSummaryRequests = new Map();
-const leaderboardLocalCachePrefix = 'aoe2de:leaderboard-cache:v3:';
+const leaderboardLocalCachePrefix = 'aoe2de:leaderboard-cache:v4:';
 function readLeaderboardLocalCache(id) {
   try {
     const cached = JSON.parse(localStorage.getItem(`${leaderboardLocalCachePrefix}${id}`) || 'null');
@@ -184,20 +184,6 @@ function formatTimeAgo(timestamp) {
   if (secondsAgo < 365 * 86400) return `${Math.floor(secondsAgo / (30 * 86400))} 个月前`;
   return `${Math.floor(secondsAgo / (365 * 86400))} 年前`;
 }
-async function fetchJsonWithRetries(url, options = {}) {
-  let retries = 0;
-  while (true) {
-    try {
-      const response = await fetch(url, options);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } catch (error) {
-      if (retries >= 5) throw error;
-      retries += 1;
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-}
 function rowMarkup(row, displayRank = Number(row.rank)) {
   const totalGames = Number(row.wins) + Number(row.losses);
   const totalRate = totalGames ? (Number(row.wins) / totalGames * 100).toFixed(1) : null;
@@ -209,7 +195,8 @@ function rowMarkup(row, displayRank = Number(row.rank)) {
   const countryCell = selectedCountry === 'all'
     ? `<div class="country-cell" title="${escapeHtml(country)}"><span class="flag">${leaderboardCountryFlag(countryCode)}</span><span class="country-name">${escapeHtml(country)}</span></div>`
     : `<span class="world-rank-cell">#${fmt.format(Number(row.rank))}</span>`;
-  const avatar = selectedLadder === 15 ? '' : `<span class="avatar" title="${escapeHtml(row.name)} 的 Steam 头像" data-avatar="${escapeHtml(row.steamId || '')}"><span class="avatar-fallback">${escapeHtml((row.name || '?').slice(0, 1).toUpperCase())}</span></span>`;
+  const avatarContent = `<span class="avatar-fallback">${escapeHtml((row.name || '?').slice(0, 1).toUpperCase())}</span>`;
+  const avatar = selectedLadder === 15 ? '' : `<span class="avatar" title="${escapeHtml(row.name)} 的 Steam 头像" data-avatar="${escapeHtml(row.steamId || '')}" data-cached-avatar="${escapeHtml(row.avatar || '')}">${avatarContent}</span>`;
   const eloChange = Number(row.eloChange || 0);
   const streakCell = selectedLadder === 15
     ? `<span class="elo-change${eloChange > 0 ? ' positive' : eloChange < 0 ? ' negative' : ''}">${eloChange > 0 ? '+' : ''}${fmt.format(eloChange)}</span>`
@@ -222,26 +209,59 @@ function rowMarkup(row, displayRank = Number(row.rank)) {
     : `<a class="player-name" href="/profile/${encodeURIComponent(row.profileId)}">${escapeHtml(row.name)}</a>`;
   return `<tr class="player-row" data-profile="${row.profileId}" data-steam="${escapeHtml(row.steamId || '')}" data-ladder="${selectedLadder}"><td><span class="rank${medal}">${rank <= 3 ? `<span class="medal-mark" title="第${rank}名奖杯">${trophy}</span>` : rank}</span></td><td>${countryCell}</td><td><div class="player">${avatar}${nameMarkup}</div></td><td><div class="rating-stack"><span class="rating">${fmt.format(row.rating)}</span><span class="peak-rating">最高 ${fmt.format(row.highestRating ?? row.rating)}</span></div></td><td><span class="record"><b>${fmt.format(row.wins)}</b><i>/</i>${fmt.format(row.losses)}</span></td><td><span class="winrate-number">${totalRate === null ? '—' : `${totalRate}%`}</span></td><td>${streakCell}</td><td><span class="last-match-time" title="${escapeHtml(lastMatchTitle)}">${lastMatch || '暂无数据'}</span></td></tr>`;
 }
-async function loadRowDetails(row) {
-  const avatar = row.querySelector('.avatar');
-  const steamId = row.dataset.steam;
-  if (steamId) {
-    fetchJsonWithRetries(`/api/avatar?v=2&steamId=${encodeURIComponent(steamId)}`, { cache: 'default' }).then(data => {
-      if (!avatar?.isConnected) return;
-      if (!data) {
-        return;
-      }
-      if (data.avatar) {
-        const image = document.createElement('img');
-        image.src = data.avatar;
-        image.alt = '';
-        image.loading = 'lazy';
-        image.onerror = () => image.remove();
-        avatar.replaceChildren(image);
-      }
-    }).catch(() => {
+const leaderboardAvatarRequests = new Map();
+const leaderboardAvatarQueue = [];
+let leaderboardAvatarActive = 0;
+function runLeaderboardAvatarQueue() {
+  while (leaderboardAvatarActive < 5 && leaderboardAvatarQueue.length) {
+    const task = leaderboardAvatarQueue.shift();
+    leaderboardAvatarActive += 1;
+    task.run().then(task.resolve, task.resolve).finally(() => {
+      leaderboardAvatarActive -= 1;
+      runLeaderboardAvatarQueue();
     });
   }
+}
+function queueLeaderboardAvatar(run) {
+  const promise = new Promise(resolve => leaderboardAvatarQueue.push({ run, resolve }));
+  runLeaderboardAvatarQueue();
+  return promise;
+}
+function cancelQueuedLeaderboardAvatars() {
+  while (leaderboardAvatarQueue.length) leaderboardAvatarQueue.shift().resolve(null);
+}
+async function fetchLeaderboardAvatar(params) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt) await new Promise(resolve => setTimeout(resolve, attempt * 1500));
+    try {
+      const response = await fetch(`/api/avatar?${params}`, { signal: AbortSignal.timeout(30_000) });
+      if (response.ok) return response.json();
+    } catch { /* Retry cold lookups and transient request throttling. */ }
+  }
+  return null;
+}
+function loadRowDetails(row) {
+  const avatar = row.querySelector('.avatar');
+  if (!avatar || !row.isConnected || avatar.querySelector('img')) return;
+  const cachedAvatar = avatar.dataset.cachedAvatar || '';
+  if (!cachedAvatar) return;
+  const key = cachedAvatar;
+  if (!leaderboardAvatarRequests.has(key)) {
+    const request = queueLeaderboardAvatar(() => new Promise(resolve => {
+      const image = new Image();
+      image.alt = '';
+      image.decoding = 'async';
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = cachedAvatar;
+    }))
+      .finally(() => leaderboardAvatarRequests.delete(key));
+    leaderboardAvatarRequests.set(key, request);
+  }
+  leaderboardAvatarRequests.get(key).then(image => {
+    if (!avatar.isConnected || !image) return;
+    avatar.replaceChildren(image.cloneNode());
+  });
 }
 function renderRows(rows) {
   currentRows = rows;
@@ -298,9 +318,13 @@ function renderPage() {
   const streakHeader = document.querySelector('.streak-col');
   if (streakHeader) streakHeader.textContent = selectedLadder === 15 ? '近60天积分变化' : '连胜';
   const emptyMessage = !pageLoaded ? '<span class="loader"></span>正在加载该分页…' : currentRows.length ? '该国籍暂无上榜玩家' : '暂无榜单数据';
+  lazyDetails.disconnect();
+  cancelQueuedLeaderboardAvatars();
   body.innerHTML = pageRows.length ? pageRows.map((row, index) => rowMarkup(row, selectedCountry === 'all' ? row.rank : startIndex + index + 1)).join('') : `<tr><td colspan="8" class="loading">${emptyMessage}</td></tr>`;
-  const renderedRows = [...body.querySelectorAll('.player-row')];
-  renderedRows.forEach(row => lazyDetails.observe(row));
+  // Queue every avatar on the selected page immediately. The queue keeps only
+  // five image requests active, so users can scroll without encountering rows
+  // that have not even started loading. Failed loads retain the fallback.
+  body.querySelectorAll('.player-row').forEach(row => loadRowDetails(row));
   const start = filteredRows.length ? startIndex + 1 : 0;
   const end = Math.min(startIndex + pageRows.length, filteredRows.length);
   document.querySelector('#resultRange').textContent = `显示 ${start}–${end} / ${filteredRows.length}`;
@@ -392,7 +416,7 @@ async function loadLeaderboard(force = false) {
     let response;
     while (true) {
       try {
-        response = await fetch(`/api/leaderboard?id=${ladderId}`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+        response = await fetch(`/api/leaderboard?id=${ladderId}&avatarCache=1`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
         data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         break;
@@ -429,7 +453,7 @@ async function loadLeaderboardPage(page) {
   if (leaderboardPageRequests.has(key)) return leaderboardPageRequests.get(key);
   const request = (async () => {
     try {
-      const response = await fetch(`/api/leaderboard?id=${encodeURIComponent(ladderId)}&page=${encodeURIComponent(requestedPage)}`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+      const response = await fetch(`/api/leaderboard?id=${encodeURIComponent(ladderId)}&page=${encodeURIComponent(requestedPage)}&avatarCache=1`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       const entry = leaderboardData.get(ladderId);
@@ -502,7 +526,6 @@ let currentProfileLeaderboardRows = [];
 let currentProfileRecentResults = new Map();
 let currentProfileRecentStats = new Map();
 let currentProfileRecentModeCounts = null;
-let profileDetailsTimeout = null;
 
 function formatBytes(bytes) {
   if (!Number(bytes)) return '';
@@ -592,17 +615,78 @@ function renderPlayerDetailsRows(details) {
     const aliases = Array.isArray(account.akas) ? account.akas.filter(alias => typeof alias === 'string' && alias.trim()).map(repairMojibake) : [];
     const accountName = account.name || '未命名账号';
     const accountId = String(account.id ?? '');
-    const accountMarkup = /^\d+$/.test(accountId)
-      ? `<a href="/profile/${encodeURIComponent(accountId)}">${escapeHtml(accountName)}</a>`
-      : escapeHtml(accountName);
-    const avatar = `<span class="profile-account-avatar" data-profile-id="${escapeHtml(accountId)}" title="${escapeHtml(accountName)} 的 Steam 头像"><span>${escapeHtml(accountName.slice(0, 1).toUpperCase() || '?')}</span></span>`;
+    const platformKey = String(account.platform || 'unknown').toLocaleLowerCase();
+    const platformName = ({ steam:'Steam', xbox:'Xbox', microsoft:'Xbox / Microsoft', voobly:'Voobly' })[platformKey] || (account.platform || '未知平台');
+    let vooblyUrl = '';
+    if (platformKey === 'voobly' && typeof account.url === 'string') {
+      try {
+        const parsed = new URL(account.url);
+        if (parsed.protocol === 'https:' && (parsed.hostname === 'voobly.com' || parsed.hostname.endsWith('.voobly.com'))) vooblyUrl = parsed.href;
+      } catch {}
+    }
+    const accountMarkup = platformKey === 'voobly'
+      ? (vooblyUrl ? `<a href="${escapeHtml(vooblyUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(accountName)}</a>` : escapeHtml(accountName))
+      : (/^\d+$/.test(accountId) ? `<a href="/profile/${encodeURIComponent(accountId)}">${escapeHtml(accountName)}</a>` : escapeHtml(accountName));
+    const avatarProfileId = platformKey === 'voobly' ? '' : ` data-profile-id="${escapeHtml(accountId)}"`;
+    const avatar = `<span class="profile-account-avatar"${avatarProfileId} title="${escapeHtml(accountName)} 的账号头像"><span>${escapeHtml(accountName.slice(0, 1).toUpperCase() || '?')}</span></span>`;
     const isCurrentAccount = accountId === String(currentProfileId);
     const accountLast = Number(account.last);
     const last = isCurrentAccount && currentProfileLastMatchTimestamp > 0 ? currentProfileLastMatchTimestamp : accountLast;
     const lastText = isCurrentAccount && currentProfileLastMatchLive ? '游戏中' : formatTimeAgo(last) || '暂无数据';
     const lastTitle = last > 0 ? `${currentProfileLastMatchLive && isCurrentAccount ? '开始于 ' : ''}${new Date(last * 1000).toLocaleString('zh-CN')}` : '接口未提供最后游戏时间';
-    return `<tr data-profile-account-id="${escapeHtml(accountId)}"><td class="profile-account-id">${escapeHtml(accountId || '—')}</td><td><div class="profile-account-name">${avatar}${accountMarkup}</div></td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : details.partial ? '暂未获取' : '无'}</td><td class="profile-account-last" title="${escapeHtml(lastTitle)}">${escapeHtml(lastText)}</td></tr>`;
+    return `<tr data-profile-account-id="${escapeHtml(accountId)}"><td class="profile-account-id"><div class="profile-account-id-cell"><span class="profile-account-platform profile-account-platform-${escapeHtml(platformKey)}">${escapeHtml(platformName)}</span><span>${escapeHtml(accountId || '—')}</span></div></td><td><div class="profile-account-name">${avatar}${accountMarkup}</div></td><td>${aliases.length ? aliases.map(escapeHtml).join('、') : details.partial ? '暂未获取' : '无'}</td><td class="profile-account-last" title="${escapeHtml(lastTitle)}">${escapeHtml(lastText)}</td></tr>`;
   }).join('');
+}
+
+function renderProfileRecsInsights(insights) {
+  const target = document.querySelector('#profileRecsInsights');
+  const activeTarget = document.querySelector('#profileActiveHours');
+  if (!target) return;
+  if (!insights) {
+    target.hidden = true; target.innerHTML = '';
+    if (activeTarget) { activeTarget.hidden = true; activeTarget.textContent = ''; }
+    return;
+  }
+  if (insights.status) {
+    const message = insights.status === 'loading' ? '正在补齐统计资料…' : '统计资料暂时不可用';
+    target.innerHTML = `<div class="profile-subsection-heading profile-recs-insight-heading"><h3>常见玩家</h3></div><div class="profile-recs-insight-message">${escapeHtml(message)}</div>`;
+    target.hidden = false;
+    if (activeTarget) { activeTarget.hidden = false; activeTarget.textContent = `活跃时段：${message}`; }
+    return;
+  }
+  const hours = Array.isArray(insights.activityHours) ? insights.activityHours.slice(0,24).map(Number) : [];
+  const activeHours = hours.map((value,hour)=>({value,hour})).filter(item=>item.value>=4).map(item=>item.hour);
+  const activeSet = new Set(activeHours), ranges = [];
+  for (let hour=0; hour<24; hour++) {
+    if (!activeSet.has(hour) || activeSet.has((hour+23)%24)) continue;
+    let end=hour+1; while(end<hour+24 && activeSet.has(end%24)) end++;
+    ranges.push(`${String(hour).padStart(2,'0')}:00–${String(end%24).padStart(2,'0')}:00`);
+  }
+  if (activeHours.length===24) ranges.push('全天');
+  if (activeTarget) { activeTarget.hidden = false; activeTarget.textContent = `活跃时段：${ranges.join('、') || '暂无占比达到 4% 的时段'}（北京时间）`; }
+  const personList = (items, empty) => Array.isArray(items) && items.length ? items.map(item => {
+    const label = `${item.name || `玩家 ${item.id}`} · ${item.count} 场`;
+    const initial = escapeHtml((item.name || '?').slice(0,1).toUpperCase());
+    const avatar = /^\d+$/.test(String(item.id || ''))
+      ? `<i class="profile-recs-person-avatar" data-profile-avatar-id="${escapeHtml(item.id)}"><span>${initial}</span></i>`
+      : `<i class="profile-recs-person-avatar"><span>${initial}</span></i>`;
+    const content = `${avatar}<span>${escapeHtml(item.name || `玩家 ${item.id}`)}</span><b>${escapeHtml(`${item.count} 场`)}</b>`;
+    return /^\d+$/.test(String(item.id || '')) ? `<a class="profile-recs-person-card" href="/profile/${encodeURIComponent(item.id)}" title="${escapeHtml(label)}">${content}</a>` : `<span class="profile-recs-person-card">${content}</span>`;
+  }).join('') : `<span>${empty}</span>`;
+  target.innerHTML = `<div class="profile-subsection-heading profile-recs-insight-heading"><h3>常见玩家</h3></div><div class="profile-recs-insight-grid"><div class="profile-recs-team"><span>最多队友</span><div class="profile-recs-people">${personList(insights.teammates,'暂未提供队友数据')}</div></div><div class="profile-recs-opponents"><span>最多对手</span><div class="profile-recs-people">${personList(insights.opponents,'暂未提供对手数据')}</div></div></div>`;
+  target.hidden = false;
+  target.querySelectorAll('.profile-recs-person-avatar[data-profile-avatar-id]').forEach(avatar => {
+    fetch(`/api/avatar?v=2&profileId=${encodeURIComponent(avatar.dataset.profileAvatarId)}`, { cache:'default' })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (!avatar.isConnected || !data?.avatar) return;
+        const image = document.createElement('img');
+        image.alt = '';
+        image.decoding = 'async';
+        image.onload = () => { if (avatar.isConnected) avatar.replaceChildren(image); };
+        image.src = fullSteamAvatarUrl(data.avatar);
+      }).catch(() => {});
+  });
 }
 function syncCurrentProfileAccountLastMatch(timestamp, live = false) {
   const value = Number(timestamp);
@@ -1043,10 +1127,16 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
     const ratingPair = row.rating != null || row.highestRating != null ? `${row.rating != null ? fmt.format(row.rating) : '—'} / ${row.highestRating != null ? fmt.format(row.highestRating) : '—'}` : '—';
     const recent = Array.isArray(recentResults?.get?.(Number(row.id))) ? recentResults.get(Number(row.id)).slice().reverse() : [];
     const favorite = recentStats?.get?.(Number(row.id)) || {};
-    const recentMarkup = Array.from({ length: 5 }, (_, index) => {
+    const recentMarkup = Array.from({ length: 10 }, (_, index) => {
       const result = recent[index];
-      return `<span class="profile-recent-result ${result === true ? 'win' : result === false ? 'loss' : 'unknown'}" title="${result === true ? '胜利' : result === false ? '失败' : '暂无记录'}">${result === true ? '✓' : result === false ? '×' : '·'}</span>`;
+      const won = typeof result === 'object' && result !== null ? result.won : result;
+      return `<span class="profile-recent-result ${won === true ? 'win' : won === false ? 'loss' : 'unknown'}" title="${won === true ? '胜利' : won === false ? '失败' : '暂无记录'}">${won === true ? '✓' : won === false ? '×' : '·'}</span>`;
     }).join('');
+    const recentRatingDeltas = recent.filter(result => result?.ratingDelta != null).map(result => Number(result.ratingDelta)).filter(Number.isFinite);
+    const recentRatingChange = recentRatingDeltas.length ? recentRatingDeltas.reduce((sum, value) => sum + value, 0) : null;
+    const recentRatingChangeMarkup = recentRatingChange == null
+      ? '<span class="profile-recent-rating-change unknown">总分变化 —</span>'
+      : `<span class="profile-recent-rating-change ${recentRatingChange > 0 ? 'positive' : recentRatingChange < 0 ? 'negative' : 'neutral'}">总分变化 ${recentRatingChange > 0 ? '+' : ''}${fmt.format(recentRatingChange)}</span>`;
     const rankLabel = lobbyMode ? '累计胜场' : active ? '世界排名' : hasData ? '不活跃' : '未参与此模式';
     const rankValue = lobbyMode ? (row.pending ? '加载中…' : row.wins != null ? fmt.format(row.wins) : '—') : active ? '#' + fmt.format(row.rank) : hasData ? '无排名' : '—';
     const favoriteCiv = favorite.civilization ? `${favorite.civilization} · ${favorite.civilizationCount} 场` : '—';
@@ -1063,7 +1153,7 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
     const favoriteCivIcon = favorite.civilizationIcon ? `<img class="profile-ladder-civ-icon" src="${escapeHtml(favorite.civilizationIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : '';
     const lastGame = formatTimeAgo(row.lastMatchDate) || '—';
     const lastGameTitle = Number(row.lastMatchDate) > 0 ? new Date(Number(row.lastMatchDate) * 1000).toLocaleString('zh-CN') : '接口未提供最后游戏时间';
-    return `<article class="profile-ladder-card${active ? '' : ' profile-inactive-row'}"${active ? '' : ' hidden'}><div class="profile-ladder-card-head"><strong>${escapeHtml(row.label || '未知模式')}</strong><span>${games !== null ? `${fmt.format(games)} 场` : '—'}</span><span class="profile-ladder-last-game" title="${escapeHtml(lastGameTitle)}">最后游戏时间 ${escapeHtml(lastGame)}</span></div><div class="profile-ladder-card-body"><div class="profile-ladder-card-main"><div class="profile-ladder-rank"><small>${rankLabel}</small><b>${rankValue}</b></div><div class="profile-ladder-stat profile-ladder-rating"><span>${lobbyMode ? '累计负场' : '当前积分/历史最高'}</span><b>${lobbyMode ? (row.losses != null ? fmt.format(row.losses) : '—') : ratingPair}</b></div><div class="profile-ladder-stat profile-ladder-record"><span>胜率</span><b>${winrate}</b></div></div><div class="profile-ladder-favorites"><div class="profile-ladder-stat profile-ladder-favorite-civ"><span>近期最多民族</span><b title="${escapeHtml(favorite.civilization || '暂无数据')}">${favoriteCivIcon}${escapeHtml(favoriteCiv)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-map"><span>近期最多地图</span><b title="${escapeHtml(favorite.map || '暂无数据')}">${escapeHtml(favoriteMap)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-opponent"><span>近期最强对手/最多对手</span>${favoriteOpponents}</div></div></div><div class="profile-ladder-card-foot"><span class="profile-recent-results-label">最近 5 场</span><span class="profile-recent-results">${recentMarkup}</span></div></article>`;
+    return `<article class="profile-ladder-card${active ? '' : ' profile-inactive-row'}"${active ? '' : ' hidden'}><div class="profile-ladder-card-head"><strong>${escapeHtml(row.label || '未知模式')}</strong><span>${games !== null ? `${fmt.format(games)} 场` : '—'}</span><span class="profile-ladder-last-game" title="${escapeHtml(lastGameTitle)}">最后游戏时间 ${escapeHtml(lastGame)}</span></div><div class="profile-ladder-card-body"><div class="profile-ladder-card-main"><div class="profile-ladder-rank"><small>${rankLabel}</small><b>${rankValue}</b></div><div class="profile-ladder-stat profile-ladder-rating"><span>${lobbyMode ? '累计负场' : '当前积分/历史最高'}</span><b>${lobbyMode ? (row.losses != null ? fmt.format(row.losses) : '—') : ratingPair}</b></div><div class="profile-ladder-stat profile-ladder-record"><span>胜率</span><b>${winrate}</b></div></div><div class="profile-ladder-favorites"><div class="profile-ladder-stat profile-ladder-favorite-civ"><span>近期最多民族</span><b title="${escapeHtml(favorite.civilization || '暂无数据')}">${favoriteCivIcon}${escapeHtml(favoriteCiv)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-map"><span>近期最多地图</span><b title="${escapeHtml(favorite.map || '暂无数据')}">${escapeHtml(favoriteMap)}</b></div><div class="profile-ladder-stat profile-ladder-favorite-opponent"><span>近期最强对手/最多对手</span>${favoriteOpponents}</div></div></div><div class="profile-ladder-card-foot"><span class="profile-recent-results-label">最近 10 场</span><span class="profile-recent-results">${recentMarkup}</span>${recentRatingChangeMarkup}</div></article>`;
   }).join('') || '<div class="profile-leaderboard-empty">暂无天梯汇总数据</div>';
   body.querySelectorAll('.profile-ladder-opponent-avatar[data-profile-avatar-id]').forEach(avatar => {
     const profileId = avatar.dataset.profileAvatarId;
@@ -1091,25 +1181,42 @@ function renderProfileLeaderboards(leaderboards, recentResults = currentProfileR
   }
 }
 let profileLeaderboardsRequestId = 0;
+async function fetchProfileSection(url, isCurrent) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!isCurrent()) return null;
+    try {
+      const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data || typeof data !== 'object') throw Error('资料格式无效');
+      return data;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+}
 function loadProfileLeaderboards(profileId) {
   const requestId = ++profileLeaderboardsRequestId;
   const isCurrent = () => requestId === profileLeaderboardsRequestId && location.pathname === `/profile/${encodeURIComponent(profileId)}`;
   const initialBody = document.querySelector('#profileLeaderboardBody');
   if (initialBody) initialBody.innerHTML = profileSectionLoadingMarkup();
-  fetch(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}&progressive=1`, { cache: 'no-store' })
-    .then(response => response.ok ? response.json() : null)
+  fetchProfileSection(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}&progressive=1`, isCurrent)
     .then(async data => {
-      if (!isCurrent() || !data?.leaderboards) return;
+      if (!isCurrent()) return;
+      if (!Array.isArray(data?.leaderboards)) throw Error('天梯资料格式无效');
       renderProfileLeaderboards(data.leaderboards);
       if (!data.leaderboards.some(row => row.pending || row.stale)) return;
       try {
-        const response = await fetch(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}`, { cache:'no-store' });
-        if (!response.ok) return;
-        const complete = await response.json();
+        const complete = await fetchProfileSection(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}`, isCurrent);
         if (isCurrent() && complete?.leaderboards) renderProfileLeaderboards(complete.leaderboards);
       } catch { /* Ranked cards stay visible if the optional lobby lookup fails. */ }
     })
-    .catch(() => {});
+    .catch(() => {
+      if (!isCurrent() || !initialBody) return;
+      const retry = Object.assign(document.createElement('button'), { type: 'button', textContent: '重试' });
+      retry.onclick = () => loadProfileLeaderboards(profileId);
+      initialBody.replaceChildren(document.createTextNode('天梯资料暂时无法加载 '), retry);
+    });
 }
 function profileMatchCategory(match) {
   const type = profileMatchLeaderboard(match);
@@ -1118,15 +1225,30 @@ function profileMatchCategory(match) {
   if (!type || type.toLowerCase() === 'unranked') return 'lobby';
   return 'other';
 }
-function filterProfileMatches(matches) {
+const normalizeProfileMatchSearch = value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase();
+const profileMatchSearchQuery = () => normalizeProfileMatchSearch(document.querySelector('#profileMatchesSearch')?.value);
+const profileMatchSearchHit = (query, ...values) => Boolean(query && values.some(value => normalizeProfileMatchSearch(value).includes(query)));
+
+function filterProfileMatches(matches, profileId) {
   const filter = document.querySelector('#profileMatchesFilter')?.value || 'all';
-  return filter === 'all' ? matches : matches.filter(match => profileMatchCategory(match) === filter);
+  const query = profileMatchSearchQuery();
+  return matches.filter(match => {
+    if (filter !== 'all' && profileMatchCategory(match) !== filter) return false;
+    if (!query) return true;
+    if (profileMatchSearchHit(query, match.rms, mapDisplayName(match.rms))) return true;
+    const players = Array.isArray(match.players) ? match.players : [];
+    if (players.some(player => player.civilization &&
+      profileMatchSearchHit(query, player.civilization, civilizationNameZh(player.civilization)))) return true;
+    return players.some(player => String(player.id) !== String(profileId) && profileMatchSearchHit(query, player.name));
+  });
 }
-function renderProfileMatches(profile, matchesOverride = null, visibleCount = 100) {
+function renderProfileMatches(profileId, matches, visibleMatches) {
   const body = document.querySelector('#profileMatchesBody');
   if (!body) return;
-  const playerId = String(profile.player?.id || '');
-  const matches = Array.isArray(matchesOverride) ? matchesOverride : (Array.isArray(profile.matches) ? profile.matches : []);
+  const playerId = String(profileId);
+  const query = profileMatchSearchQuery();
+  const highlight = (label, ...values) => profileMatchSearchHit(query, ...values)
+    ? `<mark class="profile-match-search-hit">${escapeHtml(label)}</mark>` : escapeHtml(label);
   if (!matches.length) {
     body.innerHTML = '<div class="profile-matches-empty">暂无对局记录</div>';
     return;
@@ -1140,9 +1262,7 @@ function renderProfileMatches(profile, matchesOverride = null, visibleCount = 10
   // LIVE can only belong to the newest match. Searching the full history lets
   // an old unfinished cache record override a newer completed match.
   const liveMatch = matches.length && isLiveMatch(matches[0]) ? matches[0] : null;
-  const historyMatches = matches.filter(match => match !== liveMatch);
   const ratingDeltas = profileMatchRatingDeltas(matches);
-  const visibleMatches = filterProfileMatches((liveMatch ? [liveMatch] : []).concat(historyMatches)).slice(0, visibleCount);
   if (!visibleMatches.length) { body.innerHTML = '<div class="profile-matches-empty">最近对局中暂无符合筛选的记录</div>'; return; }
   body.innerHTML = visibleMatches.map(match => {
     const live = match === liveMatch;
@@ -1181,9 +1301,10 @@ function renderProfileMatches(profile, matchesOverride = null, visibleCount = 10
       const ratingDeltaMarkup = Number.isFinite(ratingDelta) && ratingDelta !== 0 ? `<span class="profile-match-rating-delta ${ratingDelta > 0 ? 'positive' : 'negative'}">${ratingDelta > 0 ? '+' : ''}${fmt.format(ratingDelta)}</span>` : '';
       const crownMarkup = playerWon ? '<span class="profile-match-crown" title="胜者">♛</span>' : '';
       const playerName = escapeHtml(player.name || '未知玩家');
-      const playerLink = /^\d+$/.test(String(player.id || '')) ? `<a class="profile-match-player-name-link" title="${playerName}" href="/profile/${encodeURIComponent(String(player.id))}">${playerName}</a>` : playerName;
+      const playerLabel = highlight(player.name || '未知玩家', !isSelf ? player.name : null);
+      const playerLink = /^\d+$/.test(String(player.id || '')) ? `<a class="profile-match-player-name-link" title="${playerName}" href="/profile/${encodeURIComponent(String(player.id))}">${playerLabel}</a>` : playerLabel;
       const nameMarkup = `<div class="profile-match-player-name">${side === 'left' ? ratingDeltaMarkup : ''}<strong title="${playerName}">${playerLink}</strong>${side !== 'left' ? ratingDeltaMarkup : ''}</div>`;
-      const mainMarkup = `<div class="profile-match-player-main">${nameMarkup}<span class="profile-match-civ"><span>${escapeHtml(civilizationZh)}</span>${civMarkup}</span></div>`;
+      const mainMarkup = `<div class="profile-match-player-main">${nameMarkup}<span class="profile-match-civ"><span>${highlight(civilizationZh, player.civilization, player.civilization ? civilizationZh : null)}</span>${civMarkup}</span></div>`;
       const colorMarkup = `<span class="profile-match-color" style="background:${color}"></span>`;
       return side === 'left' ? `<div class="${playerClass}">${ratingMarkup}${crownMarkup}${mainMarkup}${colorMarkup}</div>` : `<div class="${playerClass}">${colorMarkup}${mainMarkup}${crownMarkup}${ratingMarkup}</div>`;
     };
@@ -1207,7 +1328,7 @@ function renderProfileMatches(profile, matchesOverride = null, visibleCount = 10
     const analysisProfileId = self?.id || players.find(player => player.id)?.id;
     const analysisButton = !live && match.id && analysisProfileId ? `<a class="profile-match-replay-analysis" href="/replay-analysis?matchId=${encodeURIComponent(String(match.id))}&profileId=${encodeURIComponent(String(analysisProfileId))}">录像分析</a>` : '';
     const teamLayoutClass = `${teams.length > 2 ? ' many-teams' : ''}${teams.length >= 2 && teams.some(team => Array.isArray(team.members) && team.members.length > 1) ? ' team-game' : ''}`;
-    return `<article class="profile-match-card ${live ? 'is-live' : resultClass}"><div class="profile-match-heading"><span class="profile-match-leaderboard" title="${escapeHtml(profileMatchTypeLabel(match))}">${escapeHtml(profileMatchTypeLabel(match))}</span>${liveBadge}</div><div class="profile-match-content"><div class="profile-match-info"><div class="profile-match-map-column"><div class="profile-match-map-icon">${mapIcon}</div>${replayButton}${analysisButton}</div><div class="profile-match-map-copy"><strong class="${mapNameColorClass(rawMapName)}" title="${escapeHtml(mapName)}">${escapeHtml(mapName)}</strong><span>◷ ${escapeHtml(durationText)}</span><span>${escapeHtml(matchAgo)}</span><small>#${escapeHtml(match.id ?? '—')}</small></div></div><div class="profile-match-teams${teamLayoutClass}">${matchupMarkup}</div></div></article>`;
+    return `<article class="profile-match-card ${live ? 'is-live' : resultClass}"><div class="profile-match-heading"><span class="profile-match-leaderboard" title="${escapeHtml(profileMatchTypeLabel(match))}">${escapeHtml(profileMatchTypeLabel(match))}</span>${liveBadge}</div><div class="profile-match-content"><div class="profile-match-info"><div class="profile-match-map-column"><div class="profile-match-map-icon">${mapIcon}</div>${replayButton}${analysisButton}</div><div class="profile-match-map-copy"><strong class="${mapNameColorClass(rawMapName)}" title="${escapeHtml(mapName)}">${highlight(mapName, match.rms, mapName)}</strong><span>◷ ${escapeHtml(durationText)}</span><span>${escapeHtml(matchAgo)}</span><small>#${escapeHtml(match.id ?? '—')}</small></div></div><div class="profile-match-teams${teamLayoutClass}">${matchupMarkup}</div></div></article>`;
   }).join('');
   body.querySelectorAll('.profile-match-replay-download').forEach(picker => {
     picker.addEventListener('change', () => {
@@ -1240,6 +1361,7 @@ function renderProfileLastMatchFromMatch(match) {
 }
 function profileRecentResultsByLeaderboard(matches, playerId) {
   const results = new Map();
+  const ratingDeltas = profileMatchRatingDeltas(Array.isArray(matches) ? matches : []);
   const leaderboardId = match => profileMatchCategory(match) === 'lobby' ? 0 : ({ 'RM 1v1': 3, 'RM TG': 4, 'EW 1v1': 13, 'EW TG': 14 }[profileMatchLeaderboard(match)] ?? null);
   const ordered = [...(Array.isArray(matches) ? matches : [])].sort((a, b) => Number(b.started || b.lobby_created || 0) - Number(a.started || a.lobby_created || 0));
   for (const match of ordered) {
@@ -1255,7 +1377,9 @@ function profileRecentResultsByLeaderboard(matches, playerId) {
     const lost = self.winner === false || self.won === false || (selfTeam && selfTeam.winner === false);
     if (!won && !lost) continue;
     const values = results.get(id) || [];
-    if (values.length < 5) values.push(won);
+    const directRatingDelta = self.ratingDelta == null ? null : Number(self.ratingDelta);
+    const ratingDelta = Number.isFinite(directRatingDelta) ? directRatingDelta : ratingDeltas.get(`${match.id}:${self.id}`);
+    if (values.length < 10) values.push({ won, ratingDelta:Number.isFinite(ratingDelta) ? ratingDelta : null });
     results.set(id, values);
   }
   return results;
@@ -1264,9 +1388,12 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
   const stats = new Map();
   const leaderboardId = match => profileMatchCategory(match) === 'lobby' ? 0 : ({ 'RM 1v1': 3, 'RM TG': 4, 'EW 1v1': 13, 'EW TG': 14 }[profileMatchLeaderboard(match)] ?? null);
   const counts = new Map();
-  for (const match of Array.isArray(matches) ? matches : []) {
+  const orderedMatches = [...(Array.isArray(matches) ? matches : [])].sort((a,b) => Number(b.started || 0) - Number(a.started || 0));
+  const newestMatchId = String(orderedMatches[0]?.id || '');
+  for (const match of orderedMatches) {
     const id = leaderboardId(match);
-    if (id == null || match?.live === true || (!Number(match?.finished) && match?.abandoned !== true)) continue;
+    const resultKnown = Number(match?.finished) > 0 || match?.abandoned === true;
+    if (id == null || ((match?.live === true || !resultKnown) && String(match?.id || '') === newestMatchId)) continue;
     const self = (Array.isArray(match.players) ? match.players : []).find(player => String(player.id) === String(playerId));
     if (!self) continue;
     const entry = counts.get(id) || { civilizations: new Map(), civilizationIcons: new Map(), maps: new Map(), opponents: new Map() };
@@ -1281,20 +1408,18 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
     const selfTeam = (Array.isArray(match.teams) ? match.teams : []).find(team => Array.isArray(team.members) && team.members.some(member => String(member) === String(self.number)));
     const selfWon = self.winner === true || self.won === true || selfTeam?.winner === true;
     const selfLost = self.winner === false || self.won === false || (selfTeam && selfTeam.winner === false);
-    if (selfWon || selfLost) {
-      const selfMembers = new Set(Array.isArray(selfTeam?.members) ? selfTeam.members.map(String) : [String(self.number)]);
-      for (const opponent of (Array.isArray(match.players) ? match.players : []).filter(player => !selfMembers.has(String(player.number)))) {
-        const name = String(opponent.name || '').trim();
-        if (name) {
-          const prior = entry.opponents.get(name) || { id: String(opponent.id || ''), total: 0, wins: 0, losses: 0, rating: 0, latest: 0 };
-          prior.total += 1;
-          prior.latest = Math.max(prior.latest, Number(match.started || match.finished || 0));
-          const opponentRating = Number(opponent.rating);
-          if (Number.isFinite(opponentRating) && opponentRating > 0) prior.rating = Math.max(prior.rating, opponentRating);
-          if (selfWon) prior.wins += 1;
-          if (selfLost) prior.losses += 1;
-          entry.opponents.set(name, prior);
-        }
+    const selfMembers = new Set(Array.isArray(selfTeam?.members) ? selfTeam.members.map(String) : [String(self.number)]);
+    for (const opponent of (Array.isArray(match.players) ? match.players : []).filter(player => !selfMembers.has(String(player.number)))) {
+      const name = String(opponent.name || '').trim();
+      if (name) {
+        const prior = entry.opponents.get(name) || { id: String(opponent.id || ''), total: 0, wins: 0, losses: 0, rating: 0, latest: 0 };
+        prior.total += 1;
+        prior.latest = Math.max(prior.latest, Number(match.started || match.finished || 0));
+        const opponentRating = Number(opponent.rating);
+        if (Number.isFinite(opponentRating) && opponentRating > 0) prior.rating = Math.max(prior.rating, opponentRating);
+        if (resultKnown && selfWon) prior.wins += 1;
+        if (resultKnown && selfLost) prior.losses += 1;
+        entry.opponents.set(name, prior);
       }
     }
     counts.set(id, entry);
@@ -1304,17 +1429,18 @@ function profileRecentStatsByLeaderboard(matches, playerId) {
     const civilization = mostFrequent(entry.civilizations);
     const map = mostFrequent(entry.maps);
     const fallbackOpponent = ['', { id: '', total: 0, wins: 0, losses: 0, rating: 0, latest: 0 }];
-    const strongestOpponent = [...entry.opponents.entries()].sort((a, b) => a[1].wins * b[1].total - b[1].wins * a[1].total || b[1].total - a[1].total || b[1].rating - a[1].rating || b[1].latest - a[1].latest || a[0].localeCompare(b[0], 'zh-CN'))[0] || fallbackOpponent;
+    // 先按玩家对该对手的胜率从低到高；胜率相同时，对局样本更多者优先（如 0/2 高于 0/1）。
+    const strongestOpponent = [...entry.opponents.entries()].filter(([,value]) => value.wins + value.losses > 0).sort((a, b) => a[1].wins * (b[1].wins+b[1].losses) - b[1].wins * (a[1].wins+a[1].losses) || b[1].losses - a[1].losses || (b[1].wins+b[1].losses) - (a[1].wins+a[1].losses) || b[1].rating - a[1].rating || b[1].latest - a[1].latest || a[0].localeCompare(b[0], 'zh-CN'))[0] || fallbackOpponent;
     const mostOpponent = [...entry.opponents.entries()].sort((a, b) => b[1].total - a[1].total || b[1].rating - a[1].rating || b[1].latest - a[1].latest || a[0].localeCompare(b[0], 'zh-CN'))[0] || fallbackOpponent;
     stats.set(id, {
       civilization: civilization[0], civilizationCount: civilization[1], civilizationIcon: entry.civilizationIcons.get(civilization[0]) || '', map: map[0], mapCount: map[1],
-      strongestOpponent: strongestOpponent[0], strongestOpponentId: strongestOpponent[1].id || '', strongestOpponentWins: strongestOpponent[1].wins, strongestOpponentTotal: strongestOpponent[1].total,
+      strongestOpponent: strongestOpponent[0], strongestOpponentId: strongestOpponent[1].id || '', strongestOpponentWins: strongestOpponent[1].wins, strongestOpponentTotal:strongestOpponent[1].wins+strongestOpponent[1].losses,
       mostOpponent: mostOpponent[0], mostOpponentId: mostOpponent[1].id || '', mostOpponentWins: mostOpponent[1].wins, mostOpponentTotal: mostOpponent[1].total
     });
   }
   return stats;
 }
-async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDetailsRequestId) {
+async function loadWorldsEdgeMatches(profileId, requestId = profileDetailsRequestId) {
   const more = document.querySelector('#profileMatchesMore');
   if (more) { more.hidden = true; more.onclick = null; }
   const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
@@ -1326,6 +1452,16 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     for (const selector of ['#profileMatchesBody','#profileRecentModeChart']) document.querySelector(selector)?.setAttribute('aria-busy',String(phase === 'refreshing'));
   };
   let matches = [], visibleCount = 20;
+  const renderMatches = () => {
+    if (!isCurrent()) return;
+    const filtered = filterProfileMatches(matches, profileId);
+    renderProfileMatches(profileId, matches, filtered.slice(0, visibleCount));
+    if (more) {
+      more.hidden = filtered.length <= visibleCount;
+      more.disabled = false;
+      more.textContent = '显示更多（20局）';
+    }
+  };
   const render = () => {
     if (!isCurrent()) return;
     currentProfileRecentResults = profileRecentResultsByLeaderboard(matches, profileId);
@@ -1334,15 +1470,16 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
     renderProfileModeCharts();
     if (currentProfileLeaderboardRows.length) renderProfileLeaderboards(currentProfileLeaderboardRows, currentProfileRecentResults, currentProfileRecentStats);
     renderProfileLastMatchFromMatch(matches[0]);
-    renderProfileMatches(profile, matches, visibleCount);
-    if (more) {
-      more.hidden = filterProfileMatches(matches).length <= visibleCount;
-      more.disabled = false;
-      more.textContent = '显示更多（20局）';
-    }
+    renderMatches();
   };
+  const applyFilters = () => { visibleCount = 20; if (matches.length) renderMatches(); };
   const matchFilter = document.querySelector('#profileMatchesFilter');
-  if (matchFilter) matchFilter.onchange = () => { visibleCount = 20; render(); };
+  if (matchFilter) matchFilter.onchange = applyFilters;
+  const matchSearch = document.querySelector('#profileMatchesSearch');
+  if (matchSearch) {
+    matchSearch.value = '';
+    matchSearch.oninput = applyFilters;
+  }
   const fetchHistory = async suffix => {
     const response = await fetch(`/api/profile-matches?id=${encodeURIComponent(profileId)}${suffix}`, { cache:'no-store', signal:AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error('近期对局请求失败');
@@ -1353,7 +1490,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
   if (more) more.onclick = () => {
     if (!isCurrent()) return;
     visibleCount = Math.min(100, visibleCount + 20);
-    render();
+    renderMatches();
   };
   // Obtain all 100 matches first, display 20 at a time. Only then
   // check the latest match; never start a latest lookup or 20-match prefetch first.
@@ -1394,7 +1531,7 @@ async function loadWorldsEdgeMatches(profileId, profile, requestId = profileDeta
 }
 
 function loadProfileAccounts(profileId, requestId, attempt = 0) {
-  const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}` && !document.querySelector('#profileAccounts')?.hidden;
+  const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
   if(!attempt)setProfileMessage(profileSectionLoadingMarkup());
   fetch(`/api/profile-accounts?id=${encodeURIComponent(profileId)}`, { cache: 'no-store' })
     .then(response => response.ok ? response.json() : Promise.reject(new Error('账号资料请求失败')))
@@ -1404,6 +1541,7 @@ function loadProfileAccounts(profileId, requestId, attempt = 0) {
       const details = { player: { id: profileId }, avatar: data?.avatar || '', accounts: Array.isArray(data?.accounts) ? data.accounts : [],partial:Boolean(data?.partial) };
       renderProfileIdentityLinks(details.accounts, profileId);
       const status=data.status || (details.partial?'unavailable':'complete');
+      renderProfileRecsInsights(data.insights || (status === 'loading' || status === 'unavailable' ? { status } : null));
       const messages={loading:'正在查询关联账号与曾用名，先显示本地已知账号。','not-found':'资料来源暂未收录该账号，以下为本地已知账号；暂无法确认关联账号与曾用名。','single-account':'暂无其他关联账号；曾用名见下表。',unavailable:'关联账号与曾用名获取失败，以下为本地已知账号，请稍后重试。'};
       const notice=messages[status] ? `<tr><td colspan="4" class="profile-accounts-notice">${messages[status]}</td></tr>` : '';
       document.querySelector('#profileDetailsBody').innerHTML = notice+renderPlayerDetailsRows(details);
@@ -1454,7 +1592,8 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
     meta.innerHTML = `${country}<span class="profile-country-separator">·</span><span class="profile-team-inline">${team}</span>`;
   }
   renderProfileIdentityLinks(profile.accounts, profileId);
-  renderProfileIdentityReference(profile.rlReference || null);
+  if (profile.rlReference) renderProfileIdentityReference(profile.rlReference);
+  renderProfileRecsInsights(profile.insights);
   const lastMatch = document.querySelector('#profileIdentityLastMatch');
   if (lastMatch) {
     const latestMatch = Array.isArray(profile.matches) ? profile.matches[0] : null;
@@ -1470,7 +1609,7 @@ function renderAoE2RecsProfile(profile, profileId, fallbackName, requestId = pro
   }
   const matchesBody = document.querySelector('#profileMatchesBody');
   if (matchesBody && profileMatchesRequestId !== requestId) matchesBody.innerHTML = profileLoadingMarkup();
-  if (profileMatchesRequestId !== requestId) loadWorldsEdgeMatches(profileId, profile, requestId);
+  if (profileMatchesRequestId !== requestId) loadWorldsEdgeMatches(profileId, requestId);
 }
 function routeToPlayerProfile(player) {
   if (!player?.profileId) return;
@@ -1515,8 +1654,19 @@ function mediaPreviewUrl(item, live = false) {
   }
   return '';
 }
+function stopMediaHoverPreviews(root = document) {
+  root.querySelectorAll?.('.media-hover-preview').forEach(frame => frame.remove());
+  root.querySelectorAll?.('.media-card.is-previewing').forEach(card => card.classList.remove('is-previewing'));
+}
+let mediaPreviewLifecycleBound = false;
 function setupMediaHoverPreviews(root) {
   if (!root) return;
+  if (!mediaPreviewLifecycleBound) {
+    mediaPreviewLifecycleBound = true;
+    window.addEventListener('blur', () => stopMediaHoverPreviews());
+    window.addEventListener('pagehide', () => stopMediaHoverPreviews());
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stopMediaHoverPreviews(); });
+  }
   root.querySelectorAll('.media-card[data-preview-url]').forEach(card => {
     if (card.dataset.previewBound === '1') return;
     card.dataset.previewBound = '1';
@@ -2459,7 +2609,7 @@ let realtimeScheduleMatches = [];
 async function refreshRealtimeSchedulePreview() {
   const panel = document.querySelector('#realtimeSchedulePreview');
   if (!panel || !/^\/realtime\/?$/.test(location.pathname)) return;
-  const { qualifiesForSchedule, scheduleTierLabel } = await import('/realtime-schedule.js?v=1');
+  const { qualifiesForSchedule, scheduleTierLabel } = await import('/realtime-schedule.js?v=2');
   if (Date.now() - realtimeScheduleCheckedAt > 60000) {
     realtimeScheduleCheckedAt = Date.now();
     try {
@@ -2653,7 +2803,7 @@ function realtimeServerName(value) {
 }
 function realtimeLeaderboardName(value) {
   const key = String(value || '').trim().toUpperCase().replace(/\s+/g, '_');
-  const names = { RM_1V1: '1v1 随机地图', RM_TG: '团队随机地图', RM_TEAM: '团队随机地图', DM_1V1: '1v1 死亡竞赛', DM_TG: '团队死亡竞赛', DM_TEAM: '团队死亡竞赛', EW_1V1: '1v1 帝国战争', EW_TG: '团队帝国战争', EW_TEAM: '团队帝国战争', UNRANKED: '非排位' };
+  const names = { RM_1V1: '1v1 随机地图', RM_TG: '团队随机地图', RM_TEAM: '团队随机地图', DM_1V1: '1v1 死亡竞赛', DM_TG: '团队死亡竞赛', DM_TEAM: '团队死亡竞赛', EW_1V1: '1v1 帝国战争', EW_TG: '团队帝国战争', EW_TEAM: '团队帝国战争', UNRANKED: '自定义房间' };
   if (key.startsWith('QP_')) return `快速${realtimeLeaderboardName(key.slice(3))}`;
   return names[key] || String(value || '自定义房间');
 }
@@ -2763,7 +2913,7 @@ function playerTeamMarkup(value, stripAffixes = false) {
     ['gaberianss',[null,'Gaberianss']],
     ['kyo all fallen',[null,'Kyo_All_Fallen']],
     ['lingyuan',[null,'LingYuan']],
-    ['rulers of rome',[null,'Rulers_of_Rome']],
+    ['rulers of rome',['RoR','Rulers_of_Rome']],
     ['salzz',[null,'SalzZ']],
     ['suomi',[null,'Suomi']],
     ['the amigos',[null,'The_Amigos']],
@@ -2915,7 +3065,7 @@ function renderRealtimeStatus(states) {
     const name = escapeHtml(player.name || `玩家 ${state.profileId || ''}`);
     const team = playerTeamMarkup(player.team, true);
     const tournamentValue = state.match?.tournament || state.match?.event || state.match?.eventName || '';
-    const tournamentName = eventTournamentMainName(typeof tournamentValue === 'string' ? { name:tournamentValue } : tournamentValue).replace(/\s+[-–—]\s+Top\s*\d+\s*$/i, '');
+    const tournamentName = eventTournamentMainName(typeof tournamentValue === 'string' ? { name:tournamentValue } : tournamentValue).replace(/\s+[-–—]\s+(?:Top\s*\d+|Group\s+(?:Stage|[A-Z0-9]+))\s*$/i, '');
     const tournamentUrl = typeof tournamentValue === 'object'
       ? tournamentValue?.url || tournamentValue?.href || ''
       : state.match?.tournamentUrl || state.match?.eventUrl || '';
@@ -2998,6 +3148,7 @@ function renderRealtimeCards(payload) {
     const leaderboardKey=String(match.leaderboard||'').trim().toLowerCase();
     const ranked=!leaderboardKey||leaderboardKey==='unranked'||leaderboardKey.startsWith('qp_')?'非排位':'排位';
     const mode=realtimeLeaderboardName(match.leaderboard) || '自定义对局';
+    const rankedTag=`<span>⚔ ${ranked}</span>`;
     const activity='游戏中';
     const watch=`<a class="realtime-watch-link" href="aoe2de://1/${encodeURIComponent(String(match.id||null))}" title="在游戏内观战" aria-label="在游戏内观战">👁</a>`;
     const rawMapName = String(match.map || '').trim();
@@ -3005,7 +3156,7 @@ function renderRealtimeCards(payload) {
     const knownMap = Boolean(rawMapName) && (displayedMapName !== rawMapName || Object.values(mapNamesZh).includes(rawMapName));
     const mapImage = knownMap ? aoe2MapImageUrl(rawMapName) : '';
     const mapImageMarkup = mapImage ? `<img class="realtime-map-thumbnail" src="${escapeHtml(`${mapImage}?v=rgba`)}" alt="" loading="lazy" onerror="this.hidden=true">` : '';
-    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(displayedMapName)}</strong>${mapImageMarkup}<time>${realtimeElapsed(match.started)}</time>${watch}</div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● ${activity}</span><span>◇ ${escapeHtml(mode)}</span><span>⚔ ${ranked}</span><span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
+    return `<article class="realtime-match-card"><div class="realtime-match-top"><span class="realtime-match-live-dot"></span><strong>${escapeHtml(displayedMapName)}</strong>${mapImageMarkup}<time>${realtimeElapsed(match.started)}</time>${watch}</div><div class="realtime-match-players${groups?' is-team-game':''}">${rows}</div><div class="realtime-match-tags"><span>● ${activity}</span><span>◇ ${escapeHtml(mode)}</span>${rankedTag}<span>▣ ${escapeHtml(realtimeServerName(match.server||''))}</span></div></article>`;
   }).join('');
 }
 
@@ -3513,6 +3664,7 @@ let currentRoutePath = '';
 let routeRenderSequence = 0;
 function renderCurrentRoute(selectedPlayer = null) {
   const routeSequence = ++routeRenderSequence;
+  stopMediaHoverPreviews();
   if (currentRoutePath !== location.pathname) {
     window.scrollTo({ top:0, behavior:'instant' });
     currentRoutePath = location.pathname;
@@ -3602,14 +3754,12 @@ function renderCurrentRoute(selectedPlayer = null) {
   if (!isEventsPage) { clearInterval(eventsPollTimer); eventsPollTimer = null; }
   if (isTechTreePage) {
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
-    import('/tech-tree.js?v=82').then(module => routeSequence === routeRenderSequence && module.mountTechTree(document.querySelector('#tech-tree-page')))
+    import('/tech-tree.js?v=83').then(module => routeSequence === routeRenderSequence && module.mountTechTree(document.querySelector('#tech-tree-page')))
       .catch(() => { document.querySelector('#tech-tree-page').textContent='科技树加载失败，请刷新页面重试。'; });
     return;
   }
   if (isCivilizationsPage) {
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     import('/civilizations.js?v=27').then(module => routeSequence === routeRenderSequence && module.mountCivilizations(document.querySelector('#civilizations-page'), {
       civName: civilizationNameZh, mapName: mapDisplayName, civImage: aoe2CivilizationImageUrl
     })).catch(() => { document.querySelector('#civilizations-page').textContent='民族统计加载失败，请刷新页面重试。'; });
@@ -3617,13 +3767,11 @@ function renderCurrentRoute(selectedPlayer = null) {
   }
   if (isMediaPage) {
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     loadMedia(isMediaVideosPage);
     return;
   }
   if (isReplayAnalysisPage) {
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     setupReplayAnalysis();
     return;
   }
@@ -3631,39 +3779,33 @@ function renderCurrentRoute(selectedPlayer = null) {
     window.scrollTo({ top: 0, behavior: 'auto' });
     profileDetailsRequestId++;
     startRealtimePolling();
-    clearTimeout(profileDetailsTimeout);
     return;
   }
   if (isEventsPage) {
     window.scrollTo({ top: 0, behavior: 'auto' });
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     startEventsPolling();
     return;
   }
   if (isEventResultsPage) {
     window.scrollTo({top:0,behavior:'auto'});
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     import('/event-results.js?v=14').then(module=>routeSequence === routeRenderSequence && module.mountEventResults(document.querySelector('#event-results-page')))
       .catch(()=>{document.querySelector('#event-results-page').textContent='赛事结果加载失败，请刷新页面重试。';});
     return;
   }
   if (isUpdatesPage) {
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     loadUpdates(new URLSearchParams(location.search).get('articleId') || '');
     return;
   }
   if (isBuildOrdersPage) {
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     loadBuildOrders(buildOrderSlug);
     return;
   }
   if (isFeedbackPage) {
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     loadFeedbackStatus();
     loadRecentFeedback();
     return;
@@ -3691,7 +3833,6 @@ function renderCurrentRoute(selectedPlayer = null) {
       if (countryFilter) countryFilter.value = selectedCountry;
     }
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     loadLeaderboard();
     updateCountdown();
     return;
@@ -3712,10 +3853,10 @@ function renderCurrentRoute(selectedPlayer = null) {
     }
     setProfileLoadingAnimation(false);
     profileDetailsRequestId++;
-    clearTimeout(profileDetailsTimeout);
     document.querySelector('#profileIdentityName').textContent = '搜索并选择一名玩家';
     document.querySelector('#profileIdentityMeta').textContent = '';
-  document.querySelector('#profileIdentityLinks').innerHTML = '';
+    document.querySelector('#profileIdentityLinks').innerHTML = '';
+    renderProfileRecsInsights(null);
     document.querySelector('#profileIdentityLastMatch').textContent = '';
     setProfileMessage('请使用页面顶部的搜索框查找并选择玩家。');
     const leaderboardBody = document.querySelector('#profileLeaderboardBody');
@@ -3739,7 +3880,6 @@ function renderCurrentRoute(selectedPlayer = null) {
   loadAoE2RecsProfile(profileId, selectedPlayer?.name || history.state?.name || '');
 }
 function loadAoE2RecsProfile(profileId, fallbackName = '') {
-  clearTimeout(profileDetailsTimeout);
   const requestId = ++profileDetailsRequestId;
   profileMatchesRequestId = requestId;
   currentProfileAvatarUrl = '';
@@ -3749,42 +3889,50 @@ function loadAoE2RecsProfile(profileId, fallbackName = '') {
   currentProfileRecentResults = new Map();
   currentProfileRecentStats = new Map();
   currentProfileRecentModeCounts = null;
+  loadProfileAccounts(profileId, requestId);
   renderProfileModeCharts();
   setProfileLoadingAnimation(false);
   const profileName = document.querySelector('#profileIdentityName');
   profileName.textContent = fallbackName || `玩家 ${profileId}`;
+  document.querySelector('#profileIdentityMeta').textContent = '正在获取玩家资料…';
   document.querySelector('#profileIdentityLinks').innerHTML = '';
+  renderProfileRecsInsights(null);
   const matchesBody = document.querySelector('#profileMatchesBody');
   const matchesMore = document.querySelector('#profileMatchesMore');
   if (matchesBody) matchesBody.innerHTML = profileLoadingMarkup();
   if (matchesMore) { matchesMore.hidden = true; matchesMore.disabled = false; matchesMore.onclick = null; }
-  loadWorldsEdgeMatches(profileId, { player: { id: profileId }, matches: [] }, requestId);
+  loadWorldsEdgeMatches(profileId, requestId);
   const localProfile = readAoE2RecsProfileCache(profileId);
   if (localProfile) {
     renderAoE2RecsProfile(localProfile, profileId, fallbackName, requestId);
   } else {
     setProfileMessage(profileSectionLoadingMarkup());
   }
-  const controller = new AbortController();
-  profileDetailsTimeout = setTimeout(() => controller.abort(), 150_000);
-  if (localProfile) return;
-  fetch(`/api/profile-details?id=${encodeURIComponent(profileId)}`, { cache: 'no-store', signal: controller.signal })
-    .then(response => {
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
-    })
+  const isCurrent = () => requestId === profileDetailsRequestId && location.pathname === `/profile/${encodeURIComponent(String(profileId))}`;
+  fetchProfileSection(`/api/profile-details?v=2&id=${encodeURIComponent(profileId)}`, isCurrent)
     .then(data => {
-      if (requestId !== profileDetailsRequestId || !data || typeof data !== 'object') return;
-      clearTimeout(profileDetailsTimeout);
+      if (!isCurrent()) return;
       if (!data.player && !Array.isArray(data.accounts)) throw new Error('资料格式无效');
       if (!data.stale) saveAoE2RecsProfileCache(profileId, data);
+      if (localProfile) {
+        const team = document.querySelector('#profileIdentityMeta .profile-team-inline');
+        if (team && data.player) team.innerHTML = playerTeamMarkup(data.player.team) || '暂无战队';
+        renderProfileIdentityLinks(data.accounts, profileId);
+        if (data.rlReference) renderProfileIdentityReference(data.rlReference);
+        renderProfileRecsInsights(data.insights);
+        return;
+      }
       renderAoE2RecsProfile(data, profileId, fallbackName, requestId);
     })
-    .catch(error => {
-      if (requestId !== profileDetailsRequestId) return;
+    .catch(() => {
+      if (!isCurrent()) return;
       setProfileLoadingAnimation(false);
-      clearTimeout(profileDetailsTimeout);
-      setProfileMessage(error.name === 'AbortError' ? '加载失败（已重试 10 次），请稍后再试。' : '加载失败（已重试 10 次），请稍后再试。', 'profile-details-error');
+      if (localProfile) return;
+      const meta = document.querySelector('#profileIdentityMeta');
+      const retry = Object.assign(document.createElement('button'), { type: 'button', textContent: '重试资料' });
+      retry.onclick = () => loadAoE2RecsProfile(profileId, fallbackName);
+      meta.replaceChildren(document.createTextNode('玩家资料暂时无法加载 '), retry);
+      setProfileMessage('玩家资料暂时无法加载。', 'profile-details-error');
     });
 }
 function hideProfileSuggestions() {

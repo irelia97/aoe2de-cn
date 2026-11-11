@@ -179,6 +179,13 @@ html[data-resolved-theme="light"] .profile-details-sub{color:#647066}
 html[data-resolved-theme="light"] .profile-result-name{color:#263329}
 html[data-resolved-theme="light"] .profile-result-id{color:#707a70}
 .profile-account-id{font:10px var(--mono)!important;color:#a5ad9f!important;white-space:nowrap!important}.profile-account-name{display:flex;align-items:center;gap:8px;min-width:150px}.profile-account-avatar{display:inline-grid;place-items:center;flex:none;width:28px;height:28px;border-radius:50%;overflow:hidden;background:#293129;border:1px solid #414a3f;color:#bec9b2;font-size:10px;font-weight:700}.profile-account-avatar img{width:100%;height:100%;object-fit:cover}.profile-account-last{font:10px var(--mono)!important;color:#aeb9a7!important;white-space:nowrap!important}
+.profile-account-id-cell{display:flex;flex-direction:column;align-items:flex-start;gap:4px}.profile-account-platform{display:inline-flex;padding:2px 5px;border:1px solid #566254;border-radius:3px;color:#d5dfcc;font:700 8px var(--sans);letter-spacing:.04em}.profile-account-platform-xbox,.profile-account-platform-microsoft{border-color:#4f8b55;color:#8ee59a}
+.profile-recs-insights{margin:14px 0 4px;padding:14px 16px;border:1px solid #303a30;border-radius:6px;background:#181e18}.profile-recs-insight-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:11px}.profile-recs-insight-heading strong{font-size:13px;color:#e1c76f}.profile-recs-insight-heading small{font-size:9px;color:#899487}.profile-recs-insight-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.profile-recs-insight-grid>div{min-width:0;padding:10px 11px;border:1px solid #303830;border-radius:5px;background:#202620}.profile-recs-insight-grid>div>span{display:block;margin-bottom:6px;color:#899487;font-size:9px}.profile-recs-people{display:flex;flex-direction:column;gap:5px}.profile-recs-people a,.profile-recs-people span{overflow:hidden;color:#dbe3d4;font-size:10px;text-decoration:none;text-overflow:ellipsis;white-space:nowrap}.profile-recs-people a:hover{color:#f0cf66;text-decoration:underline}.profile-active-hours{display:block;margin-top:10px;color:#d8c679;font:600 10px/1.6 var(--sans)}
+.profile-recs-people{display:grid;grid-template-columns:1fr;gap:6px}.profile-recs-person-card{display:grid!important;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:7px;min-height:32px;padding:5px 7px!important;border:1px solid #3a4439;border-radius:5px;background:#171d17;color:#dbe3d4!important;text-decoration:none!important}.profile-recs-person-card>i{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:#373f34;color:#d9bf69;font:700 9px var(--mono)}.profile-recs-person-card>span{overflow:hidden;margin:0!important;color:inherit!important;font-size:10px!important;text-overflow:ellipsis;white-space:nowrap}.profile-recs-person-card>b{color:#d9bf69;font:700 9px var(--mono);white-space:nowrap}.profile-recs-person-card:hover{border-color:#8c7a42;background:#222a20;color:#fff!important}
+.profile-recs-insight-message{padding:14px;border:1px solid #303830;border-radius:5px;background:#202620;color:#aeb8aa;font-size:11px;line-height:1.7}
+@media(max-width:760px){.profile-recs-insight-grid{grid-template-columns:1fr}.profile-recs-insight-heading{align-items:flex-start;flex-direction:column}.profile-recs-insight-heading small{line-height:1.5}}
+html[data-resolved-theme="light"] .profile-account-platform{border-color:#a5afa0;color:#53604f}html[data-resolved-theme="light"] .profile-account-platform-xbox,html[data-resolved-theme="light"] .profile-account-platform-microsoft{border-color:#6f9b72;color:#31723a}html[data-resolved-theme="light"] .profile-recs-insights{border-color:#c9c7bc;background:#f2efe5}html[data-resolved-theme="light"] .profile-recs-insight-grid>div{border-color:#d2d0c5;background:#faf8f1}html[data-resolved-theme="light"] .profile-recs-insight-grid>div>b,html[data-resolved-theme="light"] .profile-recs-people a,html[data-resolved-theme="light"] .profile-recs-people span{color:#343a32}
+html[data-resolved-theme="light"] .profile-recs-person-card{border-color:#d2d0c5;background:#fff;color:#343a32!important}html[data-resolved-theme="light"] .profile-recs-person-card>i{background:#ece8dc;color:#806a26}html[data-resolved-theme="light"] .profile-recs-person-card>b{color:#806a26}
 html[data-resolved-theme="light"] .profile-account-avatar{background:#e5e7df;border-color:#c5c9be;color:#53604f}
 html[data-resolved-theme="light"] .profile-account-id{color:#59665b!important}
 html[data-resolved-theme="light"] .profile-account-last{color:#59665b!important}
@@ -262,7 +269,7 @@ html[data-resolved-theme="light"] .profile-match-teams.team-game .profile-match-
 .profile-ladder-opponent-pair{display:grid;width:100%;grid-template-columns:minmax(0,1fr);gap:0}.profile-ladder-opponent-item{display:grid;min-width:0;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:5px;padding:3px 0;text-align:left}.profile-ladder-opponent-item+ .profile-ladder-opponent-item{border-top:1px solid #354052}.profile-ladder-opponent-item b{display:flex;max-width:100%;min-height:25px;align-items:center;overflow:hidden;color:#d99af2!important;font-size:11px!important;line-height:1.4!important}.profile-ladder-opponent-item em{color:#ff9878;font:700 9px/1 var(--mono);font-style:normal;white-space:nowrap}.profile-ladder-opponent-item .profile-ladder-opponent-avatar{width:22px;height:22px}.profile-ladder-opponent-item .profile-ladder-opponent-link{gap:4px;line-height:1.4}.profile-ladder-opponent-item .profile-ladder-opponent-name{padding:1px 0 2px}
 .profile-ladder-record{border-right:0}
 .profile-ladder-card-foot{padding:9px 16px 13px;text-align:center}
-.profile-recent-results-label{margin-right:9px;color:#b9c0cb;font-size:10px;font-weight:700}.profile-recent-results{display:inline-flex;align-items:center;gap:6px;vertical-align:middle}.profile-recent-result{display:inline-grid;place-items:center;width:19px;height:19px;border-radius:50%;font-size:12px;font-weight:800;line-height:1}.profile-recent-result.win{background:#45c987;color:#10241a}.profile-recent-result.loss{background:#e24e5b;color:#fff}.profile-recent-result.unknown{background:#596272;color:#d9dee7}
+.profile-recent-results-label{margin-right:9px;color:#b9c0cb;font-size:10px;font-weight:700}.profile-recent-results{display:inline-flex;align-items:center;gap:6px;vertical-align:middle}.profile-recent-result{display:inline-grid;place-items:center;width:19px;height:19px;border-radius:50%;font-size:12px;font-weight:800;line-height:1}.profile-recent-result.win{background:#45c987;color:#10241a}.profile-recent-result.loss{background:#e24e5b;color:#fff}.profile-recent-result.unknown{background:#596272;color:#d9dee7}.profile-recent-rating-change{margin-left:12px;font:700 10px var(--mono)}.profile-recent-rating-change.positive{color:#45c987}.profile-recent-rating-change.negative{color:#ef6a75}.profile-recent-rating-change.neutral,.profile-recent-rating-change.unknown{color:#9da6b2}
 .profile-leaderboard-empty{grid-column:1/-1;padding:28px;text-align:center;color:#87919f;font-size:12px}
 html[data-resolved-theme="light"] .profile-ladder-card{border-color:#d2d8e1;background:#f3f5f8;color:#263241;box-shadow:0 3px 10px rgba(70,74,90,.1)}
 html[data-resolved-theme="light"] .profile-ladder-card-head{border-color:#d9dfe7}html[data-resolved-theme="light"] .profile-ladder-favorites{border-color:#d9dfe7}html[data-resolved-theme="light"] .profile-ladder-favorites .profile-ladder-stat+.profile-ladder-stat{border-color:#d9dfe7!important}html[data-resolved-theme="light"] .profile-ladder-card-head strong{color:#273241}html[data-resolved-theme="light"] .profile-ladder-card-head>span:not(.profile-ladder-arrow){color:#465262}html[data-resolved-theme="light"] .profile-ladder-arrow{color:#a97808}html[data-resolved-theme="light"] .profile-ladder-rank,html[data-resolved-theme="light"] .profile-ladder-stat{border-color:#d9dfe7}html[data-resolved-theme="light"] .profile-ladder-rank b{color:#ae7900}html[data-resolved-theme="light"] .profile-ladder-rank small,html[data-resolved-theme="light"] .profile-ladder-stat span{color:#586575}html[data-resolved-theme="light"] .profile-ladder-rank em{color:#788494}html[data-resolved-theme="light"] .profile-ladder-stat b{color:#263241}html[data-resolved-theme="light"] .profile-ladder-favorite-civ b{color:#16858d}html[data-resolved-theme="light"] .profile-ladder-favorite-map b{color:#b85e22}html[data-resolved-theme="light"] .profile-ladder-favorite-opponent b{color:#8b4ca6}html[data-resolved-theme="light"] .profile-ladder-opponent-record{color:#c04b28}html[data-resolved-theme="light"] .profile-recent-results-label{color:#586575}html[data-resolved-theme="light"] .profile-recent-result.unknown{background:#c6ccd4;color:#657080}
@@ -1554,8 +1561,53 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 .profile-subsection-heading.profile-matches-section-heading{justify-content:flex-start;align-items:center;gap:12px}.profile-matches-section-heading .profile-matches-heading{flex:0 0 auto}.profile-matches-section-heading .profile-matches-filter{flex:0 0 auto}
 
 .profile-subsection-heading.profile-matches-section-heading{padding:14px 21px 10px}.profile-matches-section-heading .profile-matches-heading{margin:0;padding:0;line-height:1.4}.profile-matches-section-heading .profile-matches-filter{margin:0}
+.profile-subsection-heading.profile-matches-section-heading { flex-wrap: wrap; }
+.profile-matches-controls { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.profile-matches-controls .profile-matches-filter { max-width: 46%; }
+.profile-matches-search {
+  min-width: 0;
+  width: 330px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel2);
+  color: var(--text);
+  font: 600 13px var(--sans);
+}
+.profile-matches-search:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
 
 .profile-account-link svg{display:block;width:18px;height:18px;flex-shrink:0}.profile-identity-links .profile-account-link svg{width:24px;height:24px;padding:2px;box-sizing:border-box}
+
+/* Profile activity and AoE2Recs summaries follow the profile section scale. */
+.profile-identity-content .profile-active-hours{margin-top:18px;color:#c9d1c4;font:700 14px/1.2 var(--sans)}
+.profile-recs-insights{margin:0;padding:0;border:0;border-radius:0;background:transparent}
+.profile-recs-insight-heading{align-items:center;padding:14px 21px 10px}
+.profile-recs-insight-heading h3{flex:0 0 auto;margin:0;padding:0!important;color:#d99af2!important;font:700 18px/1.4 var(--sans)!important}
+.profile-recs-insight-heading small{margin-left:auto;color:#9e8bac;font:600 12px/1.4 var(--sans)}
+.profile-recs-insight-grid{padding:0 21px 18px;gap:14px}
+.profile-recs-insight-grid>div{padding:14px 16px;border-radius:9px;background:#1d1925}
+.profile-recs-insight-grid>div>span{margin-bottom:10px;font:600 12px/1.4 var(--sans)}
+.profile-recs-team{border-color:#315a5c!important}.profile-recs-team>span{color:#67d6dc!important}
+.profile-recs-opponents{border-color:#60466d!important}.profile-recs-opponents>span{color:#d99af2!important}
+.profile-recs-people{gap:8px}
+.profile-recs-person-card{grid-template-columns:32px minmax(0,1fr) auto;min-height:46px;padding:7px 10px!important;border-radius:7px;background:#15131b}
+.profile-recs-person-card>.profile-recs-person-avatar{display:grid;place-items:center;width:30px;height:30px;overflow:hidden;border-radius:50%;background:#30372e;color:#d9bf69;font:700 11px var(--mono)}
+.profile-recs-person-avatar img{width:100%;height:100%;object-fit:cover}
+.profile-recs-person-card>span{font-size:15px!important}
+.profile-recs-person-card>b{font:700 12px var(--mono)}
+.profile-recs-team .profile-recs-person-avatar,.profile-recs-team .profile-recs-person-card>b{color:#67d6dc}
+.profile-recs-opponents .profile-recs-person-avatar,.profile-recs-opponents .profile-recs-person-card>b{color:#d99af2}
+.profile-recs-insight-message{margin:0 21px 18px;font-size:12px}
+html[data-resolved-theme="light"] .profile-identity-content .profile-active-hours{color:#5b604f}
+html[data-resolved-theme="light"] .profile-recs-insights{background:transparent}
+html[data-resolved-theme="light"] .profile-recs-insight-heading h3{color:#8b4ca6!important}
+html[data-resolved-theme="light"] .profile-recs-insight-heading small{color:#7d6a86}
+html[data-resolved-theme="light"] .profile-recs-insight-grid>div{background:#f7f3fa}
+html[data-resolved-theme="light"] .profile-recs-team{border-color:#9bc5c7!important}
+html[data-resolved-theme="light"] .profile-recs-opponents{border-color:#c6a7d2!important}
+html[data-resolved-theme="light"] .profile-recs-person-card{background:#fff}
+html[data-resolved-theme="light"] .profile-recs-person-card>.profile-recs-person-avatar{width:30px;height:30px;background:#ece8dc}
+@media(max-width:760px){.profile-recs-insight-heading{align-items:flex-start;padding-left:12px;padding-right:12px}.profile-recs-insight-grid{padding-left:12px;padding-right:12px}.profile-recs-insight-message{margin-left:12px;margin-right:12px}}
 .replay-map{padding:16px;color:var(--muted)}
 .replay-map canvas{display:block;width:100%;max-width:760px;height:auto;margin:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel2)}
 .replay-map-controls{display:flex;align-items:center;gap:12px;max-width:760px;margin:14px auto}
@@ -1689,6 +1741,16 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 .page-realtime .realtime-lobby-join{color:inherit;text-decoration:none}.page-realtime .realtime-lobby-join:hover{text-decoration:underline}
 .page-realtime .realtime-status-activity.is-game>.realtime-status-live-link{display:inline-flex;align-items:center;column-gap:4px}.realtime-game-icon{display:inline-flex;flex:none;align-items:center;justify-content:center;width:12px;height:12px;line-height:1}.realtime-game-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .page-realtime .realtime-status-table td:nth-child(3){font-size:12px}.player-team-link{color:inherit;text-decoration:none}.player-team-link:hover{text-decoration:underline}
+#profileIdentityMeta .player-team-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+}
 .profile-details-table .profile-accounts-notice{padding:9px 12px;color:var(--muted,#a9a18f);font-size:12px;line-height:1.6;white-space:normal}
 #leaderboard>.topbar>.breadcrumbs{display:none}
 .topbar-share{position:relative;display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;color:var(--muted,#a9a18f);font-size:11px;line-height:1.5}
@@ -1724,3 +1786,5 @@ html[data-resolved-theme="light"] #profileMatchesMore{color:#fff}
 html[data-resolved-theme="light"] .realtime-column-hide{background:#c7b99e;color:#5f5039}
 html[data-resolved-theme="light"] .realtime-column-hide:hover{background:#b6a687;color:#443620}
 html[data-resolved-theme="light"] .realtime-column-hide:focus-visible{outline-color:#806536}
+
+.profile-match-search-hit { background: #f2cb71; color: #261d0c; border-radius: 3px; padding-inline: 2px; }

@@ -1,12 +1,13 @@
 // Shared by every AoE2Recs consumer in the website process.
 export function createAoE2RecsRequestGate({ request, readState = async () => null, saveState = async () => {}, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), intervalMs = 3_000,
-  baseCooldownMs = 15 * 60_000, maxCooldownMs = 6 * 60 * 60_000, maxPending = 32 }) {
+  cooldownScheduleMs = [1, 2, 5, 15, 30, 60].map(minutes => minutes * 60_000), maxPending = 32 }) {
   let failures = 0, blockedUntil = 0, pausedUntil = 0, nextAt = 0, running = false;
   const pending = new Map(), queue = [];
   const ready = Promise.resolve().then(readState).then(state => {
     pausedUntil = Math.max(0, Number(state?.pausedUntil) || 0);
     failures = Math.min(16, Math.max(0, Number(state?.failures) || 0));
+    const maxCooldownMs = cooldownScheduleMs.at(-1) || 60_000;
     blockedUntil = Math.min(now() + maxCooldownMs, Number(state?.blockedUntil) || 0);
     nextAt = Math.min(now() + intervalMs, Number(state?.nextAt) || 0);
   }).catch(error => console.warn('[aoe2recs] cooldown state read failed:', error.message));
@@ -46,19 +47,22 @@ export function createAoE2RecsRequestGate({ request, readState = async () => nul
             continue;
           }
           failures = Math.min(16, failures + 1);
-          blockedUntil = now() + Math.min(maxCooldownMs, baseCooldownMs * 2 ** (failures - 1));
+          const cooldownMs = cooldownScheduleMs[Math.min(failures - 1, cooldownScheduleMs.length - 1)] || 60_000;
+          blockedUntil = now() + cooldownMs;
           nextAt = blockedUntil;
           await persist();
           pending.delete(job.id);
           job.reject(error);
           // Discard the backlog on failure; it must not become a retry storm.
           for (const waiting of queue.splice(0)) { pending.delete(waiting.id); waiting.reject(unavailable()); }
-          console.warn(`[aoe2recs] request failed; paused until ${new Date(blockedUntil).toISOString()}`);
+          const errorCode = String(error?.code || error?.name || 'ERROR');
+          const errorMessage = String(error?.message || error).replace(/\s+/g, ' ').trim();
+          console.warn(`[aoe2recs] request failed profile=${job.id} failure=${failures} cooldownMs=${cooldownMs} code=${errorCode} message=${errorMessage}; paused until ${new Date(blockedUntil).toISOString()}`);
         }
       }
     } finally { running = false; }
   }
-  return async function fetchProfile(id) {
+  async function fetchProfile(id) {
     await ready;
     id = String(id);
     if (now() < Math.max(blockedUntil, pausedUntil)) throw unavailable();
@@ -68,5 +72,14 @@ export function createAoE2RecsRequestGate({ request, readState = async () => nul
     pending.set(id, result);
     void drain();
     return result;
+  }
+  fetchProfile.resetCooldown = async () => {
+    await ready;
+    failures = 0;
+    blockedUntil = 0;
+    pausedUntil = 0;
+    nextAt = 0;
+    await persist();
   };
+  return fetchProfile;
 }

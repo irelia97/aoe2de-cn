@@ -28,11 +28,11 @@ test('one failure drops the entire batch and persisted cooldown survives a resta
   const results = await Promise.allSettled(Array.from({ length: 25 }, (_, i) => get(String(i))));
   assert.ok(results.every(result => result.status === 'rejected'));
   assert.equal(calls, 1);
-  assert.equal(disk.blockedUntil, 901000);
+  assert.equal(disk.blockedUntil, 61000);
   const restarted = createAoE2RecsRequestGate(options);
   await assert.rejects(restarted('new'), /暂停请求/);
   assert.equal(calls, 1);
-  for (const duration of [30, 60, 120, 240, 360, 360]) {
+  for (const duration of [2, 5, 15, 30, 60, 60]) {
     clock = disk.blockedUntil;
     const before = clock;
     await assert.rejects(restarted('new'), /WebSocket 403/);

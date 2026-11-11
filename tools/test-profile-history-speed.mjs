@@ -19,6 +19,20 @@ test('foreground history failures make one prioritized, bounded attempt', async 
   assert.equal(calls, 1);
 });
 
+test('an unfinished match can be refreshed by match id without fetching profile history', async () => {
+  const requested = [];
+  const service = createMatchesService({ attempts:1, requestTimeoutMs:10_000, priority:5,
+    normalizeCompanionMatches: payload => payload.matches.map(item => ({ id:item.matchId, finished:item.finished ? 1 : 0 })),
+    fetchUpstreamWithRateLimit: async url => {
+      requested.push(String(url));
+      return { ok:true, json:async () => ({ matchId:520148390, finished:'2026-11-10T12:00:00Z' }) };
+    }
+  });
+  const match = await service.fetchWorldsEdgeMatchByIdOnce('520148390');
+  assert.deepEqual(match,{ id:520148390,finished:1 });
+  assert.deepEqual(requested,['https://data.aoe2companion.com/api/matches/520148390']);
+});
+
 const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
 const start = source.indexOf('async function getWorldsEdgeMatches(');
 const code = source.slice(start, source.indexOf('\nfunction aoe2RecsProfilePath', start));

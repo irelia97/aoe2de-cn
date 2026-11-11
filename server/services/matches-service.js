@@ -30,5 +30,17 @@ export function createMatchesService({ fetchUpstreamWithRateLimit, normalizeComp
     return result.matches[0] || null;
   }
 
-  return { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce };
+  async function fetchWorldsEdgeMatchByIdOnce(matchId) {
+    if (!/^[1-9]\d{0,15}$/.test(String(matchId))) throw new Error('无效的比赛 ID');
+    const response = await fetchUpstreamWithRateLimit(`https://data.aoe2companion.com/api/matches/${matchId}`, {
+      headers: { 'user-agent':'AOE2DE-CN/1.0', accept:'application/json' },
+      signal:AbortSignal.timeout(requestTimeoutMs), priority
+    });
+    if (!response.ok) throw new Error(`AoE2 Companion 对局请求失败（HTTP ${response.status}）`);
+    const payload = await response.json();
+    if (String(payload?.matchId || '') !== String(matchId)) throw new Error('对局信息不匹配');
+    return normalizeCompanionMatches({ matches:[payload] })[0] || null;
+  }
+
+  return { fetchWorldsEdgeMatchesOnce, fetchLatestWorldsEdgeMatchOnce, fetchWorldsEdgeMatchByIdOnce };
 }

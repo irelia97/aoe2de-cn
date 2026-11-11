@@ -75,3 +75,17 @@ test('lobby shards retain complete rooms and isolate disconnects, restarts and o
   sockets[0].handlers.open();send(sockets[0],[{type:'lobbyRemoved',data:{matchId:201}}]);sockets[0].handlers.close();
   assert.equal(listener.state('101').lobby.name,'New room');listener.stop();
 });
+
+test('departure received on one shard clears the named account on another shard and reveals its lobby',async()=>{
+ const {Socket,sockets,send}=fixture();
+ const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache')},writeFile:async()=>{},localProfileDetails:()=>null,getMediaCache:async()=>({live:[]}),loadRlReference:async()=>new Map(),fetchPersonalLeaderboardStats:async()=>[],fetchLatestWorldsEdgeMatchOnce:async()=>null,forceChinaCountry:(_,c)=>c});
+ await service.startRealtimeWebSockets(['1','2','3','4']);
+ const q=sockets.filter(s=>s.url.includes('handler=queueing'));const l=sockets.filter(s=>s.url.includes('handler=lobbies'));
+ const row={id:'party-old',status:'queueing',partyLeaderProfileId:1,players:[{profileId:1},{profileId:2}]};
+ for(const s of q.slice(0,2))send(s,[{type:'queueingAdded',data:row}]);
+ send(l[1],[{type:'lobbyAdded',data:{matchId:200,name:'new room'}},{type:'slotAdded',data:{matchId:200,slot:0,profileId:2}}]);
+ const states=async()=>new Map((await service.refreshRealtimePayload(['1','2','3','4'])).states.map(s=>[s.profileId,s]));
+ assert.equal((await states()).get('2').status,'queueing');
+ send(q[0],[{type:'queueingRemoved',data:{id:'party-old',reason:'left',profileIds:[2]}}]);
+ const result=await states();assert.equal(result.get('2').status,'lobby');assert.equal(result.get('2').lobby.id,200);assert.equal(result.get('1').status,'queueing');
+});

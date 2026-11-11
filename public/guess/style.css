@@ -1,0 +1,92 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: #eee8d8;
+  background: #131715;
+  --gold: #ebc780;
+  --line: #4b493b;
+  --muted: #b8b3a4;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: radial-gradient(ellipse at top, #30382d, transparent 65%) no-repeat; }
+.shell { width: min(1320px, 100% - 32px); margin: 0 auto; padding: 12px 0 25px; }
+.shell:has(.player-results) { width: min(1560px, 100% - 24px); }
+.hero { padding: 0 5px 24px; }
+.hero-actions { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding: 14px clamp(12px, 3vw, 28px); color: var(--muted); font-size: .9rem; }
+.hero-actions a { display: inline-flex; align-items: center; min-height: 44px; padding: 9px 15px; border: 1px solid #f5d99e; border-radius: 7px; background: var(--gold); color: #231c10; font-size: 1rem; font-weight: 750; text-decoration: none; }
+.hero-actions a:hover { background: #ffe1a4; }
+.hero-actions strong { color: var(--gold); }
+.eyebrow { color: var(--gold); letter-spacing: .17em; font-size: .76rem; font-weight: 700; }
+h1 { margin: 7px 0; font-family: Georgia, "Microsoft YaHei", serif; font-size: clamp(2.7rem, 8vw, 5rem); }
+.hero p, .muted { color: var(--muted); }
+.hero p { margin: 0; }
+.board { border: 1px solid var(--line); border-radius: 14px; background: #202521; padding: clamp(15px, 4vw, 28px); }
+.toolbar, .round-heading, form { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.toolbar, .round-heading { justify-content: space-between; }
+.segment { display: flex; gap: 4px; padding: 3px; background: #171b18; border-radius: 8px; }
+button, input { font: inherit; border-radius: 6px; border: 1px solid var(--line); }
+button { background: #292f28; color: inherit; padding: 8px 12px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--gold); }
+.segment button { background: transparent; border-color: transparent; }
+.segment button[aria-pressed="true"] { background: #424335; color: #ffe4a8; }
+.round-heading { margin-top: 21px; }
+h2 { margin: 0; font-size: 1.35rem; }
+#attempts { color: var(--gold); font-variant-numeric: tabular-nums; }
+.round-metrics { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.round-metrics strong { color: var(--gold); font-variant-numeric: tabular-nums; }
+#rules { margin: 7px 0 15px; line-height: 1.6; }
+input { flex: 1 1 170px; min-width: 0; background: #151a17; color: inherit; padding: 10px 12px; }
+.guess-search { position: relative; flex: 1 1 170px; min-width: 0; }
+.guess-search input { width: 100%; }
+.civilization-choices { position: absolute; z-index: 2; inset: calc(100% + 4px) 0 auto; max-height: min(16rem, 45vh); overflow-y: auto; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: #202521; }
+.civilization-choices button { display: block; width: 100%; text-align: left; border-color: transparent; background: transparent; }
+.civilization-choices button:hover, .civilization-choices button:focus-visible { background: #424335; }
+.primary { background: var(--gold); color: #231c10; font-weight: 700; }
+#startRound { display: block; min-height: 44px; margin: 20px auto; padding-inline: 24px; }
+:focus-visible { outline: 2px solid #ffdf9e; outline-offset: 3px; }
+#status { margin: 12px 0; }
+#status:empty { margin: 0; }
+.round-result { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #252d26; }
+.round-result h3 { margin: 0; color: var(--gold); }
+.round-result p { margin: 6px 0 12px; }
+.round-result dl { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 0; }
+.round-result dt { color: var(--muted); font-size: .8rem; }
+.round-result dd { margin: 2px 0 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.answer-profile { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.answer-profile h4 { margin: 0 0 10px; color: var(--gold); }
+.answer-profile p { margin: 12px 0 0; }
+.answer-profile a { color: var(--gold); }
+.results { margin-top: 14px; }
+table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 4px; font-size: .88rem; }
+td, th { padding: 8px; text-align: center; }
+th { color: var(--muted); }
+td, th { overflow-wrap: anywhere; }
+td, .guess-tier-line { background: #323830; border-radius: 5px; }
+td.hit, .guess-tier-line.hit { background: #096039; color: #fff; }
+td.near, .guess-tier-line.near { background: #795109; color: #fff; }
+td.miss { background: #8a2030; color: #fff; }
+.guess-tier-cell { padding: 0; background: transparent; }
+.guess-tier-line { display: block; padding: 5px 3px; }
+.guess-tier-line + .guess-tier-line { margin-top: 3px; }
+.player-results table { border-spacing: 6px; font-size: .95rem; }
+.player-results td:not(.guess-tier-cell) { padding: 12px 8px; }
+.player-results .guess-tier-line { padding: 8px 4px; }
+@media (max-width: 720px) {
+  .player-results table, .player-results tbody { display: block; }
+  .player-results thead { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+  .player-results tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; }
+  .player-results tbody tr + tr { margin-top: 8px; }
+  .player-results td { min-width: 0; }
+  .player-results td::before { content: attr(data-label); display: block; margin-bottom: 4px; font-size: .75rem; opacity: .88; }
+  .player-results .guess-tier-cell::before { color: var(--muted); }
+}
+.clues { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 8px; }
+.clues li { border: 1px solid var(--line); padding: 9px 11px; border-radius: 6px; }
+.clues .bonus-clue { grid-column: 1 / -1; }
+.clue-name { display: flex; align-items: center; gap: 7px; }
+.clue-name img { width: 28px; height: 28px; flex: 0 0 28px; object-fit: contain; }
+.clues small { display: block; color: var(--gold); margin-bottom: 4px; }
+.round-actions { display: flex; gap: 8px; margin-top: 12px; }
+.round-actions button:disabled { opacity: .55; cursor: default; }
+footer { margin-top: 15px; font-size: .85rem; line-height: 1.5; }

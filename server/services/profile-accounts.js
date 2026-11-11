@@ -20,8 +20,10 @@ export function createProfileAccountsReader({ readCached, refresh, localProfileD
       }
       if(!Array.isArray(cached?.profile?.accounts) || (candidate!==id && !cached.profile.accounts.some(account=>account.platform==='steam' && String(account.id)===id)))continue;
       const stale=now()-Number(cached.savedAt||0)>=cacheTtl;
-      if(stale)refreshInBackground(candidate);
-      return {accounts:cached.profile.accounts.map(account=>({...account,rlReference:references.get(String(account.id))||null})),avatar:cached.profile.avatar || '',cached:true,stale,partial:false,status:cached.profile.accounts.some(account=>String(account.id)!==id)?'complete':'single-account',source:'aoe2recs'};
+      const summaryMissing=!Array.isArray(cached.profile.hours)||!Array.isArray(cached.profile.opps)||!Array.isArray(cached.profile.teaming);
+      if(stale||summaryMissing)refreshInBackground(candidate);
+      const refreshState=refreshStates.get(candidate);
+      return {accounts:cached.profile.accounts.map(account=>({...account,rlReference:references.get(String(account.id))||null})),avatar:cached.profile.avatar || '',cached:true,stale:stale||summaryMissing,partial:false,status:summaryMissing?(refreshState||'loading'):(cached.profile.accounts.some(account=>String(account.id)!==id)?'complete':'single-account'),source:'aoe2recs'};
     }
     const accounts=related.map(accountId=>{
       const player=localProfileDetails(accountId)?.player;

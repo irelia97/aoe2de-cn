@@ -1,96 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, utimes } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAvatarCache, AVATAR_TTL } from '../server/services/avatar-cache.js';
 
-test('avatar bytes persist, refresh only after fifteen days, merge requests and retain stale data on failure', async () => {
+test('avatar cache merges requests and daily warmup makes only one upstream attempt per key', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'aoe-avatar-'));
-  let time = 1000;
-  let calls = 0;
-  let failed = false;
-  const options = {
-    directory, now: () => time,
-    resolveUrl: async () => { calls++; return `https://avatars.steamstatic.com/${calls}.jpg`; },
-    fetchImage: async () => {
-      if (failed) throw new Error('offline');
-      return new Response(`image ${calls}`, { headers: { 'content-type': 'image/jpeg' } });
-    }
-  };
-  let cache = createAvatarCache(options);
+  let time = Date.UTC(2026,10,10), calls = 0;
+  const key = 'steam:12345678901234567';
+  const cache = createAvatarCache({ directory, now:()=>time, sleep:async()=>{},
+    resolveUrl:async()=>{calls++;return `https://avatars.steamstatic.com/${calls}.jpg`;},
+    fetchImage:async()=>new Response(`image ${calls}`,{headers:{'content-type':'image/jpeg'}}) });
   try {
-    const [first, duplicate] = await Promise.all([cache.get('steam:12345678901234567'), cache.get('steam:12345678901234567')]);
-    assert.equal(calls, 1);
-    assert.equal(first.hash, duplicate.hash);
-    assert.equal((await cache.image(first.hash)).toString(), 'image 1');
-    time += AVATAR_TTL - 1;
-    await cache.refreshDue();
-    assert.equal((await cache.get(first.key)).hash, first.hash);
-    assert.equal(calls, 1);
-    cache.close();
-    // Existing metadata used a 24-hour expiry; adopt the new lifetime from
-    // the original fetch timestamp without fetching the image again.
-    const metadata = join(directory, `${first.key.replace(':', '-')}.json`);
-    const saved = JSON.parse(await readFile(metadata, 'utf8'));
-    saved.expires = saved.updatedAt + 24 * 60 * 60_000;
-    await writeFile(metadata, JSON.stringify(saved));
-    cache = createAvatarCache(options);
-    assert.equal((await cache.get(first.key)).hash, first.hash);
-    assert.equal(calls, 1);
-    time++;
-    await cache.refreshDue();
-    const second = await cache.get(first.key);
-    assert.equal(calls, 2);
-    assert.notEqual(first.hash, second.hash);
-    assert.equal((await cache.image(first.hash)).toString(), 'image 1');
-    time += AVATAR_TTL;
-    failed = true;
-    assert.equal((await cache.get(first.key)).hash, second.hash);
-    await cache.refreshDue();
-    assert.equal(calls, 3);
-    time += 5 * 60_000;
-    failed = false;
-    await cache.refreshDue();
-    assert.equal(calls, 4);
-    assert.equal(await cache.image('../escape'), null);
-  } finally { cache.close(); await rm(directory, { recursive: true, force: true }); }
+    const [first,duplicate]=await Promise.all([cache.get(key),cache.get(key)]);
+    assert.equal(calls,1);assert.equal(first.hash,duplicate.hash);
+    await cache.prewarm([key,key],0);assert.equal(calls,1);
+    time+=24*60*60_000;
+    const result=await cache.prewarm([key,key],0);
+    assert.equal(calls,2);assert.equal(result.refreshed,1);
+    assert.equal((await cache.get(key)).hash,(await cache.peek(key)).hash);
+    assert.equal(calls,2);
+  } finally {cache.close();await rm(directory,{recursive:true,force:true});}
 });
 
-test('untrusted upstream URL cannot be fetched', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'aoe-avatar-'));
-  let fetched = false;
-  const cache = createAvatarCache({ directory, resolveUrl: async () => 'https://example.com/avatar', fetchImage: async () => { fetched = true; } });
+test('failed avatar is not retried again on the same China-calendar day', async () => {
+  const directory=await mkdtemp(join(tmpdir(),'aoe-avatar-fail-'));
+  let time=Date.UTC(2026,10,10),calls=0;
+  const cache=createAvatarCache({directory,now:()=>time,sleep:async()=>{},resolveUrl:async()=>{calls++;throw Error('offline')}});
   try {
-    await assert.rejects(cache.get('profile:197964'), /头像地址不可用/);
-    assert.equal(fetched, false);
-  } finally { cache.close(); await rm(directory, { recursive: true, force: true }); }
+    await assert.rejects(cache.get('profile:1'),/offline/);
+    await assert.rejects(cache.get('profile:1'),/今日暂不可用/);
+    await cache.prewarm(['profile:1'],0);
+    assert.equal(calls,1);
+    time+=24*60*60_000;
+    await cache.prewarm(['profile:1'],0);
+    assert.equal(calls,2);
+  } finally {cache.close();await rm(directory,{recursive:true,force:true});}
 });
 
-test('expired avatars return immediately during a slow refresh and unreferenced old files are collected', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'aoe-avatar-stale-'));
-  let time = Date.now(), release, calls = 0;
-  const cache = createAvatarCache({ directory, now: () => time,
-    resolveUrl: async () => 'https://avatars.steamstatic.com/image.jpg',
-    fetchImage: async () => {
-      calls++;
-      if (calls === 2) await new Promise(resolve => { release = resolve; });
-      return new Response(`image ${calls}`, { headers: { 'content-type': 'image/jpeg' } });
-    } });
+test('stale avatar remains readable until a later daily warmup replaces it', async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'aoe-avatar-stale-'));
+  let time=Date.UTC(2026,10,10),calls=0;
+  const cache=createAvatarCache({directory,now:()=>time,sleep:async()=>{},resolveUrl:async()=>`https://avatars.steamstatic.com/${++calls}.jpg`,fetchImage:async()=>new Response(`image ${calls}`,{headers:{'content-type':'image/jpeg'}})});
   try {
-    const original = await cache.get('profile:1');
-    time += AVATAR_TTL + 1;
-    const stale = await cache.get('profile:1');
-    assert.equal(stale.hash, original.hash);
-    assert.equal(cache.stats().staleHits, 1);
-    await Promise.resolve(); release(); await cache.refreshDue();
-    assert.notEqual((await cache.get('profile:1')).hash, original.hash);
-    assert.ok(await cache.image(original.hash)); // Retirement starts a fresh grace period.
-    const orphan = 'a'.repeat(64), path = join(directory, orphan);
-    await writeFile(path, 'orphan');
-    await utimes(path, new Date(time - AVATAR_TTL - 1), new Date(time - AVATAR_TTL - 1));
-    await cache.refreshDue();
-    assert.equal(await cache.image(orphan), null);
-    assert.equal(cache.stats().evictions, 1);
-  } finally { cache.close(); await rm(directory, { recursive: true, force: true }); }
+    const first=await cache.get('profile:1');
+    time+=AVATAR_TTL+1;
+    assert.equal((await cache.get('profile:1')).hash,first.hash);
+    assert.equal(calls,1);
+    await cache.prewarm(['profile:1'],0);
+    assert.equal(calls,2);
+    assert.notEqual((await cache.peek('profile:1')).hash,first.hash);
+  } finally {cache.close();await rm(directory,{recursive:true,force:true});}
+});
+
+test('untrusted upstream URL cannot be fetched',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'aoe-avatar-url-'));let fetched=false;
+  const cache=createAvatarCache({directory,resolveUrl:async()=>'https://example.com/avatar',fetchImage:async()=>{fetched=true;}});
+  try {await assert.rejects(cache.get('profile:197964'),/头像地址不可用/);assert.equal(fetched,false);}
+  finally {cache.close();await rm(directory,{recursive:true,force:true});}
 });

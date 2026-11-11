@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { qualifiesForSchedule, scheduleTierLabel } from '../public/realtime-schedule.js';
 import { createRealtimeChat } from '../server/services/realtime-chat.js';
-for (const tier of ['S','A','B','B-Tier']) assert.equal(qualifiesForSchedule({tournament:{tier}}),true);
-for (const tier of ['', 'C']) {
-  assert.equal(qualifiesForSchedule({tournament:{tier},opponents:[{countryCode:'CN'}]}),true);
-  assert.equal(qualifiesForSchedule({tournament:{tier},opponents:[{country:'China'}]}),true);
+for (const tier of ['S','A','S-Tier','A-Tier']) assert.equal(qualifiesForSchedule({tournament:{tier}}),true);
+for (const tier of ['', 'B', 'B-Tier', 'C']) {
+  for (const countryCode of ['CN', 'HK', 'MO', 'TW']) {
+    assert.equal(qualifiesForSchedule({tournament:{tier},opponents:[{countryCode}]}),true);
+  }
+  for (const country of ['China', 'Hong Kong', 'Macau', 'Taiwan']) {
+    assert.equal(qualifiesForSchedule({tournament:{tier},opponents:[{country}]}),true);
+  }
   assert.equal(qualifiesForSchedule({tournament:{tier},opponents:[{countryCode:'DE'}]}),false);
 }
 assert.equal(qualifiesForSchedule({}),false);

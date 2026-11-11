@@ -4,12 +4,15 @@ import { createHash } from 'node:crypto';
 
 export const AVATAR_TTL = 15 * 24 * 60 * 60_000;
 
-export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, now = Date.now }) {
+export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, now = Date.now,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const entries = new Map();
   const pending = new Map();
   const retryAt = new Map();
+  const attemptedDay = new Map();
   const counters = { hits: 0, misses: 0, staleHits: 0, refreshes: 0, failures: 0, evictions: 0, diskBytes: 0 };
   let maintenance = null;
+  const dayKey = () => new Date(now() + 8 * 60 * 60_000).toISOString().slice(0,10);
   const ready = (async () => {
     await mkdir(directory, { recursive: true });
     for (const name of await readdir(directory)) {
@@ -77,21 +80,47 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
     if (entry?.expires > now()) { counters.hits++; return entry; }
     if (entry) {
       counters.staleHits++;
-      if (!(retryAt.get(key) > now())) refresh(key).catch(() => {});
       return entry;
     }
-    if (retryAt.get(key) > now()) throw new Error('头像暂时不可用，请稍后重试');
+    if (pending.has(key)) return pending.get(key);
+    if (attemptedDay.get(key) === dayKey() || retryAt.get(key) > now()) throw new Error('头像今日暂不可用，明日统一更新时重试');
     counters.misses++;
+    attemptedDay.set(key, dayKey());
     return refresh(key);
+  }
+  async function peek(key) {
+    await ready;
+    return entries.get(key) || null;
+  }
+  async function prewarm(keys, gapMs = 1000, concurrency = 1) {
+    await ready;
+    const today = dayKey();
+    let refreshed = 0, skipped = 0, failed = 0;
+    const queue = [];
+    for (const key of [...new Set(keys)].filter(value => /^(steam|profile):\d+$/.test(value))) {
+      const entry = entries.get(key);
+      const updatedDay = entry ? new Date(entry.updatedAt + 8 * 60 * 60_000).toISOString().slice(0,10) : '';
+      if (updatedDay === today || attemptedDay.get(key) === today) { skipped++; continue; }
+      queue.push(key);
+    }
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < queue.length) {
+        const key = queue[cursor++];
+        attemptedDay.set(key, today);
+        try { await refresh(key); refreshed++; } catch { failed++; }
+        if (gapMs > 0) await sleep(gapMs);
+      }
+    };
+    await Promise.all(Array.from({ length:Math.min(Math.max(1, Number(concurrency) || 1), queue.length || 1) }, worker));
+    return { total:new Set(keys).size, refreshed, skipped, failed, day:today };
   }
   async function refreshDue() {
     if (maintenance) return maintenance;
     maintenance = (async () => {
       await ready;
-      // Spread upstream requests rather than fetching every cached player at once.
-      for (const [key, entry] of entries) {
-        if (entry.expires <= now() && !(retryAt.get(key) > now())) await refresh(key).catch(() => {});
-      }
+      // Leaderboard avatars are refreshed by the daily prewarm job. Maintenance
+      // only cleans files so it cannot create a second upstream request that day.
       // A full cache lifetime of grace keeps existing browser references valid after a refresh.
       const referenced = new Set([...entries.values()].map(entry => entry.hash));
       let bytes = 0;
@@ -111,7 +140,7 @@ export function createAvatarCache({ directory, resolveUrl, fetchImage = fetch, n
   const timer = setInterval(() => { refreshDue().catch(() => {}); }, 60_000);
   timer.unref();
   return {
-    get, refreshDue, ready, close: () => clearInterval(timer),
+    get, peek, prewarm, refreshDue, ready, close: () => clearInterval(timer),
     stats: () => ({ ...counters, entries: entries.size, pending: pending.size, ttlHours: AVATAR_TTL / (60 * 60_000) }),
     async image(hash) {
       if (!/^[a-f0-9]{64}$/.test(hash)) return null;

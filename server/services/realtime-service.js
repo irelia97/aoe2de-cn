@@ -99,18 +99,31 @@ export function createRealtimeService(deps) {
     timer.unref?.();
   }
   const unattributedQueueIds = new Set();
+  function queueEventTime(entry) {
+    const { data } = entry;
+    return Date.parse((data.status === 'matched' ? data.matchedAt || data.queueingSince : data.queueingSince) || '');
+  }
+
+  function compareQueueEvents(left, right) {
+    const leftTime = queueEventTime(left), rightTime = queueEventTime(right);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
+    return (left.firstSeenAt ?? left.seenAt) - (right.firstSeenAt ?? right.seenAt);
+  }
+
   function queueState(profileId) {
     const group=[...queueSocketGroups.values()].find(group=>group.ids.includes(String(profileId)));
     if (group?.socket?.readyState !== 1) return null;
     const queueEntries=group.entries;
     const now = Date.now();
-    for (const [id, entry] of queueEntries) {
+    let newest = null;
+    for (const entry of queueEntries.values()) {
       if (now - entry.seenAt > 300000) void recheckExpiredQueues();
       const data = entry.data;
       if (!(data.players || []).some(p => String(p.profileId) === String(profileId))) continue;
-      return { profileId: String(profileId), status: data.status, match: null, queue: data };
+      const order = newest ? compareQueueEvents(entry, newest) : 1;
+      if (order > 0 || (order === 0 && data.status === 'matched')) newest = entry;
     }
-    return null;
+    return newest ? { profileId: String(profileId), status: newest.data.status, match: null, queue: newest.data } : null;
   }
   function connectQueueSocket(group) {
     if (!WebSocket) return;
@@ -136,7 +149,7 @@ export function createRealtimeService(deps) {
         const upstreamTimestamp = Date.parse(upstreamTime || '');
         if (affected.length) {
           queueDiagnostics.lastRelevantEventAt = queueDiagnostics.lastMessageAt;
-          trace.event('queue-event', { group:group.index+1, type:message.type, queueId:String(data.id), profileIds:affected, status:data.status || previousQueue?.status || null, matchId:data.matchId || previousQueue?.matchId || null, reason:data.reason || null, removedProfileIds:data.profileIds || [], queueingSince:data.queueingSince || null, matchedAt:data.matchedAt || null, upstreamAgeMs:Number.isFinite(upstreamTimestamp) ? Date.now()-upstreamTimestamp : null });
+          trace.event('queue-event', { group:group.index+1, type:message.type, queueId:String(data.id), profileIds:affected, status:data.status || previousQueue?.status || null, matchId:data.matchId || previousQueue?.matchId || null, reason:data.reason || null, removedProfileIds:data.profileIds || [], fields:Object.keys(data), queueingSince:data.queueingSince || null, matchedAt:data.matchedAt || null, upstreamAgeMs:Number.isFinite(upstreamTimestamp) ? Date.now()-upstreamTimestamp : null });
         }
         if (!(data.players || previousQueue?.players || []).length && /^m_/.test(String(data.id)) && message.type !== 'queueingRemoved') {
           queueDiagnostics.unattributedMatchedEvents++;
@@ -147,7 +160,55 @@ export function createRealtimeService(deps) {
           }
         }
         if (message.type === 'queueingRemoved') {
+          // A party can span subscriptions. Explicit departures identify the
+          // affected players globally, even if only one shard gets the event.
+          if (data.reason === 'left' && Array.isArray(data.profileIds) && data.profileIds.length) {
+            const leftIds = new Set(data.profileIds.map(String));
+            for (const peer of queueSocketGroups.values()) {
+              if (peer === group) continue;
+              const entry = peer.entries.get(data.id);
+              if (entry?.data.status !== 'queueing') continue;
+              const departed = (entry.data.players || []).filter(player => leftIds.has(String(player.profileId)) && peer.ids.includes(String(player.profileId)));
+              if (!departed.length) continue;
+              rememberQueueGrace({ ...entry.data, players:departed });
+              const players = (entry.data.players || []).filter(player => !leftIds.has(String(player.profileId)));
+              if (players.some(player => peer.ids.includes(String(player.profileId)))) peer.entries.set(data.id, { ...entry, data:{ ...entry.data, players, partyLeaderProfileId:leftIds.has(String(entry.data.partyLeaderProfileId)) ? null : entry.data.partyLeaderProfileId } });
+              else peer.entries.delete(data.id);
+              trace.event('queue-cross-group-left', { group:peer.index+1, sourceGroup:group.index+1, queueId:String(data.id), profileIds:departed.map(player=>String(player.profileId)) });
+              changed = true;
+            }
+          }
           const prior = queueEntries.get(data.id)?.data;
+          // The upstream occasionally skips the separate matched event and
+          // removes the party queue with reason=started and no matchId.  Keep
+          // a short matched placeholder so the UI does not jump directly
+          // from queueing to offline/game while the game socket catches up.
+          if (data.reason === 'started' && prior?.status === 'queueing') {
+            const matchedAt = new Date().toISOString();
+            const synthetic = {
+              ...prior,
+              status:'matched',
+              matchedAt,
+              syntheticMatched:true
+            };
+            const previousEntry = queueEntries.get(data.id);
+            const entry = {
+              data:synthetic,
+              seenAt:Date.now(),
+              firstSeenAt:previousEntry?.firstSeenAt ?? previousEntry?.seenAt ?? Date.now()
+            };
+            queueEntries.set(data.id,entry);
+            for (const player of synthetic.players || []) queueGrace.delete(String(player.profileId));
+            const timer = setTimeout(() => {
+              if (queueEntries.get(data.id) !== entry) return;
+              queueEntries.delete(data.id);
+              scheduleRealtimeSocketPublish();
+            },90*1000);
+            timer.unref?.();
+            trace.event('queue-synthetic-matched', { group:group.index+1, queueId:String(data.id), profileIds:affected, reason:data.reason });
+            changed = true;
+            continue;
+          }
           if (data.reason === 'left' && prior?.status === 'queueing' && Array.isArray(data.profileIds) && data.profileIds.length) {
             const leftIds = new Set(data.profileIds.map(String));
             const departed = (prior.players || []).filter(player => leftIds.has(String(player.profileId)));
@@ -155,7 +216,7 @@ export function createRealtimeService(deps) {
             if (departed.length) {
               rememberGroupGrace({ ...prior, players:departed });
               if (remaining.length) {
-                queueEntries.set(data.id, { data:{ ...prior, players:remaining, partyLeaderProfileId:leftIds.has(String(prior.partyLeaderProfileId)) ? null : prior.partyLeaderProfileId }, seenAt:Date.now() });
+                queueEntries.set(data.id, { ...queueEntries.get(data.id), data:{ ...prior, players:remaining, partyLeaderProfileId:leftIds.has(String(prior.partyLeaderProfileId)) ? null : prior.partyLeaderProfileId }, seenAt:Date.now() });
               } else queueEntries.delete(data.id);
               changed = true;
             }
@@ -164,6 +225,31 @@ export function createRealtimeService(deps) {
           if (prior?.status === 'queueing') rememberGroupGrace(prior);
           if (data.reason === 'cancelled' && prior?.status === 'matched') {
             const cancellingIds = new Set((Array.isArray(data.profileIds) ? data.profileIds : []).map(String));
+            const monitoredPlayers = (prior.players || []).filter(player=>group.ids.includes(String(player.profileId)));
+            const monitoredCancelled = monitoredPlayers.some(player=>cancellingIds.has(String(player.profileId)));
+            // When an opponent declines/cancels a found match, matchmaking
+            // automatically returns our monitored player to the queue.  The
+            // upstream often emits no fresh queueingAdded event for that
+            // transition, so retain a synthetic queue until a later event
+            // replaces it or the normal expiry recheck confirms it is gone.
+            if (cancellingIds.size && monitoredPlayers.length && !monitoredCancelled) {
+              const queueingSince = new Date().toISOString();
+              const requeued = {
+                id:String(data.id),
+                status:'queueing',
+                players:monitoredPlayers,
+                partyLeaderProfileId:monitoredPlayers[0]?.profileId ?? null,
+                queueingSince,
+                syntheticRequeue:true,
+                displaySeed:prior.displaySeed ?? Math.random()
+              };
+              const previousEntry=queueEntries.get(data.id);
+              queueEntries.set(data.id,{data:requeued,seenAt:Date.now(),firstSeenAt:previousEntry?.firstSeenAt ?? previousEntry?.seenAt ?? Date.now()});
+              for (const player of monitoredPlayers) queueGrace.delete(String(player.profileId));
+              trace.event('queue-synthetic-requeue',{group:group.index+1,queueId:String(data.id),profileIds:monitoredPlayers.map(player=>String(player.profileId)),cancelledProfileIds:[...cancellingIds]});
+              changed=true;
+              continue;
+            }
             rememberGroupGrace({ ...prior, players:(prior.players || []).filter(player => !cancellingIds.has(String(player.profileId))) });
             const members = new Set((prior.players || []).map(p => String(p.profileId)));
             for (const id of Array.isArray(data.profileIds) ? data.profileIds : []) {
@@ -178,12 +264,33 @@ export function createRealtimeService(deps) {
           if (queueEntries.delete(data.id)) changed = true;
           continue;
         }
-        const prior = queueEntries.get(data.id)?.data || {};
+        const previousEntry = queueEntries.get(data.id);
+        const prior = previousEntry?.data || {};
         const merged = { ...prior, ...data };
         if (!(merged.players || []).some(p => group.ids.includes(String(p.profileId)))) continue;
+        const incomingIds = new Set((merged.players || []).map(player=>String(player.profileId)));
+        for (const [queueId,entry] of queueEntries) {
+          if (queueId === data.id || !(entry.data.syntheticMatched || entry.data.syntheticRequeue)) continue;
+          if (!(entry.data.players || []).some(player=>incomingIds.has(String(player.profileId)))) continue;
+          queueEntries.delete(queueId);
+        }
         for (const player of (merged.players || []).filter(player=>group.ids.includes(String(player.profileId)))) { cancelledPlayers.delete(String(player.profileId)); queueGrace.delete(String(player.profileId)); }
         merged.displaySeed = prior.displaySeed ?? Math.random();
-        queueEntries.set(data.id, { data: merged, seenAt: Date.now() });
+        const seenAt = Date.now();
+        const next = { data: merged, seenAt, firstSeenAt: previousEntry?.firstSeenAt ?? previousEntry?.seenAt ?? seenAt };
+        if (merged.status === 'matched') {
+          const matchedIds = new Set(merged.players.map(player => String(player.profileId)).filter(id => group.ids.includes(id)));
+          for (const [queueId, entry] of queueEntries) {
+            if (queueId === data.id || entry.data.status !== 'queueing' || compareQueueEvents(entry, next) > 0) continue;
+            const players = (entry.data.players || []).filter(player => !matchedIds.has(String(player.profileId)));
+            if (players.length === entry.data.players?.length) continue;
+            if (players.some(player => group.ids.includes(String(player.profileId)))) {
+              const partyLeaderProfileId = matchedIds.has(String(entry.data.partyLeaderProfileId)) ? null : entry.data.partyLeaderProfileId;
+              queueEntries.set(queueId, { ...entry, data: { ...entry.data, players, partyLeaderProfileId } });
+            } else queueEntries.delete(queueId);
+          }
+        }
+        queueEntries.set(data.id, next);
         changed = true;
       }
       if (changed) scheduleRealtimeSocketPublish();
@@ -320,9 +427,25 @@ export function createRealtimeService(deps) {
         else if (grace?.until > Date.now()) return { ...state, status:'offline', graceUntil:grace.until, queueGrace:grace };
         return state;
       }
-      // A new queue supersedes stale game/grace records. A confirmed game
-      // supersedes the matching countdown for that same match.
-      if (queued.status === 'matched' && state.status === 'game' && String(state.match?.id) === String(queued.queue.matchId)) return state;
+      // Queue removal may be missing on one account's subscription. A game
+      // that started after this queue supersedes it; a genuinely newer queue
+      // still takes precedence over a stale game from the previous round.
+      const queueTime = Date.parse(queued.queue.queueingSince || queued.queue.matchedAt || '');
+      const gameTime = Number(state.match?.started) * 1000;
+      const sameMatch = queued.status === 'matched' && String(state.match?.id) === String(queued.queue.matchId);
+      if (state.status === 'game' && (queued.queue.syntheticMatched || sameMatch || (Number.isFinite(queueTime) && gameTime > 0 && queueTime <= gameTime))) {
+        const id = String(state.profileId);
+        const group = [...queueSocketGroups.values()].find(group => group.ids.includes(id));
+        const entry = group?.entries.get(queued.queue.id);
+        if (entry) {
+          const players = (entry.data.players || []).filter(player => String(player.profileId) !== id);
+          if (players.some(player => group.ids.includes(String(player.profileId)))) group.entries.set(queued.queue.id, { ...entry, data:{ ...entry.data, players } });
+          else group.entries.delete(queued.queue.id);
+          trace.event('queue-superseded-by-game', { profileId:id, queueId:queued.queue.id, matchId:String(state.match.id), queueTime:Number.isFinite(queueTime) ? queueTime : null, gameTime });
+        }
+        queueGrace.delete(id);
+        return state;
+      }
       return queued;
     });
     const liveByProfile = new Map();
