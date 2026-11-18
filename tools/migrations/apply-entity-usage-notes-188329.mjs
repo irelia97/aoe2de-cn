@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const entitiesPath = resolve(import.meta.dirname, '../public/tech-tree-data/entities.json');
+const entitiesPath = resolve(import.meta.dirname, '../../public/tech-tree-data/entities.json');
 const entities = JSON.parse(readFileSync(entitiesPath, 'utf8'));
 const marker = '\n补充说明与用途：\n';
 

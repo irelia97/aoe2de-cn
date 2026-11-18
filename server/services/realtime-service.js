@@ -5,7 +5,7 @@ import { createVisibilityGrace } from './realtime-visibility-grace.js';
 import { createLobbyListener } from './realtime-lobbies.js';
 import { createRealtimeRatings } from './realtime-ratings.js';
 import { createRealtimeRecovery } from './realtime-recovery.js';
-import { cleanRealtimePlayerName, realtimePlayerNameOverrides, realtimePlayerIdentityOverrides } from './realtime-player-names.js';
+import { realtimeExcludedProfileIds, cleanRealtimePlayerName, realtimePlayerNameOverrides, realtimePlayerIdentityOverrides } from './realtime-player-names.js';
 
 export function createRealtimeService(deps) {
   const {
@@ -782,7 +782,7 @@ export function createRealtimeService(deps) {
     } catch (error) { group.connected = false; console.warn(`[realtime] match-updated group ${group.index + 1} failed:`, error.message); }
   }
   async function startRealtimeWebSockets(profileIds) {
-    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && !realtimeExcludedProfileIds.has(value) && Number(value) > 0))];
     const key = ids.join(',');
     if (key === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size) return;
     realtimeSocketGeneration += 1;
@@ -844,12 +844,12 @@ export function createRealtimeService(deps) {
     startRealtimeValidationLoop();
   }
   function realtimeWebSocketsHealthy(profileIds) {
-    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value)))];
+    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && !realtimeExcludedProfileIds.has(value)))];
     return ids.join(',') === realtimeSocketProfileIds.join(',') && realtimeSocketGroups.size > 0 && [...realtimeSocketGroups.values()].every(group => group.connected);
   }
 
   async function refreshRealtimePayload(profileIds) {
-    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && !realtimeExcludedProfileIds.has(value) && Number(value) > 0))];
     const key = ids.join(',');
     if (realtimeRefreshPromise) return realtimeRefreshPromise;
     realtimeRefreshPromise = (async () => {
@@ -880,7 +880,7 @@ export function createRealtimeService(deps) {
   }
 
   async function fetchRealtimeStates(profileIds) {
-    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && !realtimeExcludedProfileIds.has(value) && Number(value) > 0))];
     // Each player is checked once per polling round using the one-row query.
     // Requests run together so the page can render the round promptly.
     const states = [];
@@ -923,7 +923,7 @@ export function createRealtimeService(deps) {
 
 
   async function getCachedPayload(profileIds) {
-    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && Number(value) > 0))];
+    const ids = [...new Set((Array.isArray(profileIds) ? profileIds : []).map(value => String(value).trim()).filter(value => /^\d+$/.test(value) && !realtimeExcludedProfileIds.has(value) && Number(value) > 0))];
     const key = ids.join(',');
     if (!realtimePayloadCache) {
       try {

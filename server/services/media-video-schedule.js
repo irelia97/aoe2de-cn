@@ -10,3 +10,16 @@ export function nextScheduledVideoRound(timestamp) {
   local.setUTCHours(8, 30, 0, 0);
   return local.getTime() - offset;
 }
+
+export function mediaVideoSourceKey(source) {
+  return `${source.platform || 'other'}:${source.bvid || source.id || source.channelId || source.feedUrl || source.url || source.name || 'unknown'}`;
+}
+
+export function shuffledMediaVideoKeys(keys, random = Math.random) {
+  const order = [...new Set(keys)];
+  for (let i = order.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}

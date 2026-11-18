@@ -34,7 +34,7 @@ try {
   assert.equal(chat.announceLiveEnd({ name: 'Clearlove', url: notice.url }), null);
   assert.equal(chat.announceLiveEnd({ name:'Clearlove', url:'https://www.twitch.tv/clearlove' }), null);
   const match={id:'match-1',tournament:{name:'测试杯',url:'https://liquipedia.net/ageofempires/Test'},opponents:[{name:'Yo'},{name:'Vivi'}],score:['3','2']};
-  assert.match(chat.announceMatch({phase:'start',match,tier:'S'}).content,/S级赛事开始/);
+  assert.equal(chat.announceMatch({phase:'start',match,tier:'S'}).content,'S级赛事开始: 测试杯 │ Yo vs Vivi');
   assert.equal(chat.announceMatch({phase:'start',match,tier:'S'}),null);
   assert.match(chat.announceMatch({phase:'end',match,tier:'S'}).content,/3–2/);
   assert.match(chat.announceSchedule({day:'2026-10-27',matches:[{timestamp:clock/1000+3600,tier:'A',opponents:[{name:'A'},{name:'B'}]}]}).content,/未来24小时比赛预告/);

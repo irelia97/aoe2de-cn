@@ -151,8 +151,8 @@ export function createRealtimeChat({ path, now = Date.now } = {}) {
       const prefix = tier ? `${tier}级赛事` : '赛事';
       const score = Array.isArray(match?.score) ? match.score.slice(0, 2).map(value=>clean(value || '0')) : ['0','0'];
       const content = phase === 'end'
-        ? `${prefix}结束：${tournament}｜${opponents[0]} ${score[0]}–${score[1]} ${opponents[1]}`
-        : `${prefix}开始：${tournament}｜${opponents[0]} vs ${opponents[1]}`;
+        ? `${prefix}结束： ${tournament} │ ${opponents[0]} ${score[0]}–${score[1]} ${opponents[1]}`
+        : `${prefix}开始： ${tournament} │ ${opponents[0]} vs ${opponents[1]}`;
       return announceSystem({ content, url, key: `match-${phase}:${match?.id}`, repeatMs: 45 * 24 * 60 * 60_000 });
     },
     announceSchedule({ day, matches }) {
@@ -163,8 +163,8 @@ export function createRealtimeChat({ path, now = Date.now } = {}) {
           ? `${match.tournament.mainName || match.tournament.name} - ${match.tournament.round}`
           : match.tournament?.name || match.tournament?.mainName || '未命名赛事');
         const bestOf = Number(match.bestOf);
-        const format = Number.isInteger(bestOf) && bestOf > 0 ? `BO${bestOf}｜` : '';
-        return `${time} ${scheduleTierLabel(match)}｜${tournament}｜${format}${opponents[0]} vs ${opponents[1]}`;
+        const format = Number.isInteger(bestOf) && bestOf > 0 ? `BO${bestOf} │ ` : '';
+        return `${time} ${scheduleTierLabel(match)} │ ${tournament} │ ${format}${opponents[0]} vs ${opponents[1]}`;
       });
       const content = rows.length ? `未来24小时比赛预告：${rows.join('；')}` : '未来24小时暂无B级及以上或有中国选手参赛的比赛';
       return announceSystem({ content, key:`match-preview:${day}`, repeatMs:36 * 60 * 60_000 });

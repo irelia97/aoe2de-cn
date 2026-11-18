@@ -5,7 +5,11 @@ export function createProfileAccountsReader({ readCached, refresh, localProfileD
     if((refreshAfter.get(id)||0)>now())return;
     refreshAfter.set(id,now()+15*60_000);
     refreshStates.set(id,'loading');
-    Promise.resolve().then(()=>refresh(id)).then(()=>refreshStates.delete(id)).catch(error=>{refreshStates.set(id,'unavailable');console.warn(`[accounts] upstream unavailable for ${id}; retaining local data: ${error.message}`);});
+    Promise.resolve().then(()=>refresh(id)).then(()=>refreshStates.delete(id)).catch(error=>{
+      refreshStates.set(id,'unavailable');
+      refreshAfter.set(id,Math.max(now()+60_000,Number(error?.retryAt)||0));
+      console.warn(`[accounts] upstream unavailable for ${id}; retaining local data: ${error.message}`);
+    });
   }
   return async function readAccounts(profileId) {
     const id=String(profileId),references=await loadReferences();

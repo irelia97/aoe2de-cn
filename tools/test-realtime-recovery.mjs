@@ -31,7 +31,7 @@ test('fresh socket connection recovers an ongoing game absent from the persisted
   assert.equal(payload.states[0].status,'game');assert.equal(payload.states[0].match.id,123);
 });
 
-test('lobby departures and queue started events do not trigger recovery lookups',async()=>{
+test('lobby departures and queue started events do not trigger recovery, including reconnect while matched',async()=>{
   const sockets=[];let lookups=0;
   class Socket{constructor(url){this.url=url;this.handlers={};this.readyState=1;sockets.push(this);}addEventListener(key,fn){this.handlers[key]=fn;}close(){}}
   const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache');},writeFile:async()=>{},localProfileDetails:()=>null,
@@ -42,5 +42,9 @@ test('lobby departures and queue started events do not trigger recovery lookups'
   send('lobbies',[{type:'lobbyAdded',data:{matchId:123,name:'Room'}},{type:'slotAdded',data:{matchId:123,slot:0,profileId:42}},{type:'slotRemoved',data:{matchId:123,slot:0}},{type:'lobbyRemoved',data:{matchId:123}}]);
   send('queueing',[{type:'queueingAdded',data:{id:'q1',status:'queueing',players:[{profileId:42}]}},{type:'queueingRemoved',data:{id:'q1',reason:'started',matchId:123}}]);
   await flush();assert.equal(lookups,0);
-  sockets.find(socket=>socket.url.includes('handler=match-updated')).handlers.open();await flush();assert.equal(lookups,1);
+  // The queue's started event keeps a short matched state while the game feed catches up.
+  // Reconnect recovery only looks up players without a known state.
+  sockets.find(socket=>socket.url.includes('handler=match-updated')).handlers.open();
+  await flush();
+  assert.equal(lookups,0);
 });

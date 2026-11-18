@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {cleanRealtimePlayerName,createVerifiedRealtimeNames,realtimePlayerNameOverrides,realtimePlayerIdentityOverrides,realtimePinnedProfileIds} from '../server/services/realtime-player-names.js';
+import {cleanRealtimePlayerName,createVerifiedRealtimeNames,realtimePlayerNameOverrides,realtimePlayerIdentityOverrides,realtimePinnedProfileIds,realtimeExcludedProfileIds} from '../server/services/realtime-player-names.js';
 import {createRealtimeService} from '../server/services/realtime-service.js';
 test('requested Chinese names and PiggyKitty alternate accounts share display identities',()=>{
   assert.equal(realtimePlayerNameOverrides.get('7576082'),'徐泽');
@@ -12,6 +12,13 @@ test('requested Chinese names and PiggyKitty alternate accounts share display id
   assert.equal(realtimePlayerIdentityOverrides.get('21227185'),'811511');
   assert.equal(realtimePinnedProfileIds.length,14);
   for(const id of realtimePinnedProfileIds){assert.equal(realtimePlayerNameOverrides.get(id),'恶魔大师');assert.equal(realtimePlayerIdentityOverrides.get(id),'211846');}
+});
+test('Mantis accounts are excluded from realtime status monitoring without removing identity links',()=>{
+  const ids=['1821855','25200090','25023269','25033998','25005502','25002546','10055765','22668606','21333358','9890965','17144934','9818491','15270651'];
+  for(const id of ids){
+    assert.equal(realtimeExcludedProfileIds.has(id),true);
+    assert.equal(realtimePlayerIdentityOverrides.get(id),'1821855');
+  }
 });
 test('clan decorations are removed without damaging recognizable player names',()=>{
   for(const [raw,clean]of [['VIT | Hera','Hera'],['_LY_抖音肥龙','抖音肥龙'],['TAG_Sora Kuma','Sora Kuma'],['CNZS_CC','CC'],['Oni.TheViper','TheViper'],['Mr.Bean','Mr.Bean'],['Andre_2i','Andre_2i'],['F1Re','F1Re'],['_Barles_','Barles']])assert.equal(cleanRealtimePlayerName(raw),clean);

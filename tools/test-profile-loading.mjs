@@ -1,7 +1,7 @@
+import {createProfileRoutes} from '../server/routes/profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { createProfileLeaderboardLoader } from '../public/profile-leaderboards.js';
 import { createProfileService } from '../server/services/profile-service.js';
 
 const deferred = () => { let resolve,reject; const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject}; };
@@ -59,44 +59,46 @@ test('ranked request failures reject both views and allow a subsequent retry',as
   const result=await api.fetchPersonalLeaderboardStats('42');assert.equal(result[0].rating,2200);
 });
 
-const source=readFileSync(new URL('../server.js',import.meta.url),'utf8');
-const start=source.indexOf('      if (progressive) {');
-const end=source.indexOf('\n      const pageNumber',start);
-const handler=`async function run(){${source.slice(start,end)}}`;
+async function readProgressiveMatches(deps) {
+  const url = new URL('http://localhost/api/profile-matches?id=42&progressive=1');
+  const route = createProfileRoutes(deps).get(url.pathname);
+  return route(url, { writeHead() {}, end: value => JSON.parse(value) });
+}
+
 test('cached first match batch is returned while the latest-match refresh is still pending',async()=>{
   let calls=0,refreshes=0;const cached=Array.from({length:100},(_,i)=>({id:100-i}));
-  const ctx={progressive:true,profileId:'42',worldsEdgeMatchCacheTtl:600000,
+  const ctx={worldsEdgeMatchCacheTtl:600000,
     readWorldsEdgeMatchesCache:async()=>({matches:cached,savedAt:0}),
     fetchProfileMatchesOnce:async()=>{calls++;throw new Error('must not block on upstream');},
     getWorldsEdgeMatches:()=>{refreshes++;return new Promise(()=>{});},
-    res:{writeHead(){},end:value=>JSON.parse(value)},console};
-  vm.createContext(ctx);vm.runInContext(handler,ctx);
-  const result=await ctx.run();
+    };
+  const result=await readProgressiveMatches(ctx);
   assert.equal(result.matches.length,20);assert.equal(result.matches[0].id,100);
   assert.equal(result.cached,true);assert.equal(result.stale,true);assert.equal(calls,0);assert.equal(refreshes,1);
 });
 
 test('uncached first match batch still loads genuine upstream matches',async()=>{
-  const ctx={progressive:true,profileId:'42',worldsEdgeMatchCacheTtl:600000,
+  const ctx={worldsEdgeMatchCacheTtl:600000,
     readWorldsEdgeMatchesCache:async()=>null,
     fetchProfileMatchesOnce:async()=>({matches:[{id:99}]}),getWorldsEdgeMatches:async()=>({matches:[{id:99}]}),
-    res:{writeHead(){},end:value=>JSON.parse(value)},console};
-  vm.createContext(ctx);vm.runInContext(handler,ctx);
-  const result=await ctx.run();assert.equal(result.cached,false);assert.equal(result.matches[0].id,99);
+    };
+  const result=await readProgressiveMatches(ctx);assert.equal(result.cached,false);assert.equal(result.matches[0].id,99);
 });
 
 test('ranked cards render before lobby completion and old profile responses cannot overwrite a newer player',async()=>{
-  const frontend=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
-  const start=frontend.indexOf('let profileLeaderboardsRequestId = 0;');
-  const code=frontend.slice(start,frontend.indexOf('\nfunction profileMatchCategory',start));
   const a=deferred(),b=deferred(),renders=[];
-  const ctx={location:{pathname:'/profile/42'},document:{querySelector:()=>({})},profileSectionLoadingMarkup:()=>'',
-    renderProfileLeaderboards:rows=>renders.push(rows),fetch:async url=>url.includes('progressive=1')?{ok:true,json:async()=>({leaderboards:[{id:3,player:url.includes('id=42')?'42':'43'},{id:0,pending:true}]})}:url.includes('id=42')?a.promise:b.promise};
-  vm.createContext(ctx);vm.runInContext(code,ctx);
-  ctx.loadProfileLeaderboards('42');await new Promise(r=>setImmediate(r));assert.equal(renders[0][0].player,'42');
-  ctx.location.pathname='/profile/43';ctx.loadProfileLeaderboards('43');await new Promise(r=>setImmediate(r));
-  a.resolve({ok:true,json:async()=>({leaderboards:[{id:3,player:'42-old'}]})});await new Promise(r=>setImmediate(r));
+  const location={pathname:'/profile/42'};
+  const load=createProfileLeaderboardLoader({
+    location, document:{querySelector:()=>({})}, profileSectionLoadingMarkup:()=>'',
+    renderProfileLeaderboards:rows=>renders.push(rows),
+    fetchProfileSection:async url=>url.includes('progressive=1')
+      ? {leaderboards:[{id:3,player:url.includes('id=42')?'42':'43'},{id:0,pending:true}]}
+      : url.includes('id=42')?a.promise:b.promise
+  });
+  const first=load('42');await new Promise(r=>setImmediate(r));assert.equal(renders[0][0].player,'42');
+  location.pathname='/profile/43';const second=load('43');await new Promise(r=>setImmediate(r));
+  a.resolve({leaderboards:[{id:3,player:'42-old'}]});await first;
   assert.equal(renders.at(-1)[0].player,'43');
-  b.resolve({ok:true,json:async()=>({leaderboards:[{id:3,player:'43-complete'}]})});await new Promise(r=>setImmediate(r));
+  b.resolve({leaderboards:[{id:3,player:'43-complete'}]});await second;
   assert.equal(renders.at(-1)[0].player,'43-complete');
 });

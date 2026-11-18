@@ -56,6 +56,16 @@ test('loading, failed lookup and a confirmed single account are distinct',async(
  const data=await single('9');assert.equal(data.status,'single-account');assert.deepEqual(data.accounts[0].akas,['Old']);
 });
 
+test('failed lookup retries after the request gate cools down',async()=>{
+ let clock=1_000,calls=0,cached=null;
+ const read=createProfileAccountsReader({now:()=>clock,loadReferences:async()=>new Map(),localProfileDetails:()=>null,
+  readCached:async()=>cached,refresh:async()=>{calls++;if(calls===1)throw Object.assign(Error('cooldown'),{retryAt:clock+90_000});cached={savedAt:clock,profile:{...summary,accounts:[{id:'9'}]}};}});
+ assert.equal((await read('9')).status,'loading');await flush();
+ clock+=60_000;assert.equal((await read('9')).status,'unavailable');await flush();assert.equal(calls,1);
+ clock+=30_000;assert.equal((await read('9')).status,'loading');await flush();assert.equal(calls,2);
+ assert.equal((await read('9')).status,'single-account');
+});
+
 test('clicking aliases refreshes a legacy cache that lacks activity and player summaries',async()=>{
  let calls=0;
  const read=createProfileAccountsReader({loadReferences:async()=>new Map(),localProfileDetails:()=>null,

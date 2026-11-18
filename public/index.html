@@ -13,7 +13,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.onload=null;this.media='all'" />
   <script>try{const stored=localStorage.getItem('aoe2de:theme'),t=stored==='light'||stored==='dark'?stored:'dark';if(stored!==t)localStorage.setItem('aoe2de:theme',t);document.documentElement.dataset.theme=t;document.documentElement.dataset.resolvedTheme=t}catch{document.documentElement.dataset.theme='dark';document.documentElement.dataset.resolvedTheme='dark'}</script>
-  <link rel="stylesheet" href="/styles.css?v=profile-recs-avatars-v51" />
+  <link rel="stylesheet" href="/styles.css?v=profile-match-flags-v59" />
+  <link rel="stylesheet" href="/home.css?v=home-v8" />
   <link rel="stylesheet" href="/civilizations.css?v=22" />
   <link rel="stylesheet" href="/civilization-combobox.css?v=3" />
   <link rel="stylesheet" href="/tech-tree.css?v=25" />
@@ -22,6 +23,7 @@
 <body>
   <script>
     const isReplayAnalysisRoute = /^\/replay-analysis\/?$/.test(location.pathname);
+    if (location.pathname === '/') document.body.classList.add("page-home");
     if (/^\/realtime\/?$/.test(location.pathname)) document.body.classList.add("page-realtime");
     if (isReplayAnalysisRoute) document.body.classList.add("page-replay-analysis");
   </script>
@@ -31,11 +33,44 @@
         <span class="brand-mark"><img src="/assets/brand-feast.png" alt="" aria-hidden="true"></span>
         <span class="brand-copy"><strong><em>帝国2</em><b>大杂烩</b></strong><small>AOE II · COMMUNITY HUB</small></span>
       </a>
-      <nav><a class="nav-item active" data-page="leaderboard" href="/"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4" r="2"/><circle cx="5" cy="7" r="1.7"/><circle cx="19" cy="7" r="1.7"/><path d="M9 9h6v11H9zM2 12h7v8H2zM15 12h7v8h-7z"/></svg></span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 5 3 2 3-4 3 4 3-2-1 5H7z"/><circle cx="12" cy="12" r="3"/><path d="M5 21c.5-3.2 2.8-5 7-5s6.5 1.8 7 5"/></svg></span>玩家资料<span class="nav-dot"></span></a><a class="nav-item" data-page="realtime" href="/realtime"><span class="nav-icon nav-ranked-swords" aria-hidden="true">⚔</span>实时对局<span class="nav-dot"></span></a><a class="nav-item" data-page="events" href="/events"><span class="nav-icon" aria-hidden="true">♜</span>赛事信息<span class="nav-dot"></span></a><a class="nav-item" data-page="media" href="/media"><span class="nav-icon">▶</span>视频直播<span class="nav-dot"></span></a><a class="nav-item" href="/guess/index.html"><span class="nav-icon" aria-hidden="true">?</span>猜一把<span class="nav-dot"></span></a><span class="nav-section-divider" role="separator" aria-orientation="horizontal"></span><a class="nav-item" data-page="civilizations" href="/civilizations"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="M8 14v-3m4 5V8m4 6v-4"/></svg></span>民族统计<span class="nav-dot"></span></a><a class="nav-item" data-page="updates" href="/updates"><span class="nav-icon">✦</span>更新汇总<span class="nav-dot"></span></a><a class="nav-item" data-page="build-orders" href="/build-orders"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5c3.4-.9 6.4-.3 9 1.7v13c-2.6-2-5.6-2.6-9-1.7zM21 5.5c-3.4-.9-6.4-.3-9 1.7v13c2.6-2 5.6-2.6 9-1.7z"/></svg></span>开局指南<span class="nav-dot"></span></a><a class="nav-item" data-page="feedback" href="/feedback"><span class="nav-icon" aria-hidden="true">✎</span>反馈区<span class="nav-dot"></span></a></nav>
+      <nav><a class="nav-item active" data-page="leaderboard" href="/leaderboard"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4" r="2"/><circle cx="5" cy="7" r="1.7"/><circle cx="19" cy="7" r="1.7"/><path d="M9 9h6v11H9zM2 12h7v8H2zM15 12h7v8h-7z"/></svg></span>天梯榜单<span class="nav-dot"></span></a><a class="nav-item" data-page="profile" href="/profile"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 5 3 2 3-4 3 4 3-2-1 5H7z"/><circle cx="12" cy="12" r="3"/><path d="M5 21c.5-3.2 2.8-5 7-5s6.5 1.8 7 5"/></svg></span>玩家资料<span class="nav-dot"></span></a><a class="nav-item" data-page="realtime" href="/realtime"><span class="nav-icon nav-ranked-swords" aria-hidden="true">⚔</span>实时对局<span class="nav-dot"></span></a><a class="nav-item" data-page="events" href="/events"><span class="nav-icon" aria-hidden="true">♜</span>赛事信息<span class="nav-dot"></span></a><a class="nav-item" data-page="media" href="/media"><span class="nav-icon">▶</span>视频直播<span class="nav-dot"></span></a><a class="nav-item" href="/guess/index.html"><span class="nav-icon" aria-hidden="true">?</span>猜一把<span class="nav-dot"></span></a><span class="nav-section-divider" role="separator" aria-orientation="horizontal"></span><a class="nav-item" data-page="civilizations" href="/civilizations"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="M8 14v-3m4 5V8m4 6v-4"/></svg></span>民族统计<span class="nav-dot"></span></a><a class="nav-item" data-page="updates" href="/updates"><span class="nav-icon">✦</span>更新汇总<span class="nav-dot"></span></a><a class="nav-item" data-page="build-orders" href="/build-orders"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5c3.4-.9 6.4-.3 9 1.7v13c-2.6-2-5.6-2.6-9-1.7zM21 5.5c-3.4-.9-6.4-.3-9 1.7v13c2.6-2 5.6-2.6 9-1.7z"/></svg></span>开局指南<span class="nav-dot"></span></a><a class="nav-item" data-page="feedback" href="/feedback"><span class="nav-icon" aria-hidden="true">✎</span>反馈区<span class="nav-dot"></span></a></nav>
     </aside>
 
     <main id="leaderboard">
       <header class="topbar"><div class="breadcrumbs">数据中心 <span>/</span> <b>天梯榜单</b></div><div class="topbar-share"><button type="button" id="siteShareButton" class="topbar-share-button" aria-label="复制网址 aoe2cn.cc"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4"/></svg><span>复制链接</span></button><span class="topbar-share-copy">喜欢的话就分享给其他帝友吧</span><span id="siteShareStatus" class="topbar-share-status" role="status" aria-live="polite" hidden></span></div><form id="profileSearchForm" class="profile-search-form topbar-search"><label class="sr-only" for="profileSearchInput">输入玩家昵称</label><div id="player-search" class="profile-search-input-wrap"><input id="profileSearchInput" name="q" type="search" minlength="2" maxlength="80" placeholder="输入玩家昵称" autocomplete="off" required /><div id="profileSearchSuggestions" class="profile-suggestions" role="listbox" aria-label="玩家候选" hidden></div></div><div id="profileSearchMeta" class="sr-only" aria-live="polite"></div></form><div class="top-right"><div class="daily-usage" aria-label="今日网站使用情况"><span>今日使用人数 <b id="todayUsers">—</b></span><span>今日浏览次数 <b id="todayViews">—</b></span></div><span class="top-divider"></span><div class="theme-tabs" id="themeTabs" role="group" aria-label="网页色调"><button type="button" data-theme-value="light">白天</button><button type="button" data-theme-value="dark">夜间</button></div></div></header>
+      <section class="home-page" id="home-page" hidden aria-labelledby="homeTitle">
+        <section class="home-hero">
+          <div class="home-hero-copy"><span class="home-overline">AGE OF EMPIRES II · CHINESE COMMUNITY</span><h1 id="homeTitle">一处看懂<br><em>帝国时代 II</em> 中文赛场</h1><p>从天梯排名、实时对局到赛事与录像分析，把散落的数据整理成清晰、可靠、随时可查的中文工具站。</p><div class="home-actions"><a class="home-action-primary" href="/realtime">查看实时对局 <span>→</span></a><a class="home-action-secondary" href="/leaderboard">浏览天梯榜单</a></div><div class="home-hero-notes"><span>实时状态</span><span>玩家近 100 场</span><span>赛事与直播</span></div></div>
+          <div class="home-hero-scene" aria-hidden="true"><img alt=""><span class="home-scene-frame"></span><small>帝国汇聚于此</small></div>
+        </section>
+        <section class="home-intro" aria-labelledby="homeFeaturesTitle"><div><span class="home-section-index">01 / 功能导览</span><h2 id="homeFeaturesTitle">从一名玩家，到整个赛场</h2></div><p>无需在多个站点之间反复切换。这里把排名、状态、历史、赛事和直播串在同一套中文体验里。</p></section>
+        <section class="home-feature-grid">
+          <a class="home-feature" href="/realtime"><span class="home-feature-image"><img src="/assets/home/realtime-preview.png" alt="实时对局页面截图" loading="lazy"></span><span class="home-feature-body"><small>LIVE / 实时</small><strong>现在，谁正在战斗？</strong><p>查看排队、匹配、大厅和游戏中状态，并关联地图、战队与直播间。</p><b>进入实时对局 →</b></span></a>
+          <a class="home-feature" href="/leaderboard"><span class="home-feature-image"><img src="/assets/home/leaderboard-preview.png" alt="天梯榜单页面截图" loading="lazy"></span><span class="home-feature-body"><small>RANKED / 天梯</small><strong>榜单不只是一串分数</strong><p>查看 1v1、团队及帝国战争榜单，按国家和页码快速定位。</p><b>浏览天梯 →</b></span></a>
+          <a class="home-feature" href="/profile"><span class="home-feature-image"><img src="/assets/home/profile-preview.png" alt="玩家资料页面截图" loading="lazy"></span><span class="home-feature-body"><small>PROFILE / 玩家</small><strong>认识每一位对手</strong><p>整合分数、排名、账号别名、活跃时段、常见队友与最近 100 场。</p><b>搜索玩家 →</b></span></a>
+          <a class="home-feature" href="/events"><span class="home-feature-image"><img src="/assets/home/events-preview.png" alt="赛事信息页面截图" loading="lazy"></span><span class="home-feature-body"><small>EVENTS / 赛事</small><strong>不错过值得看的比赛</strong><p>聚合 S、A级赛事与中国选手赛程，区分正在进行和即将开始。</p><b>查看赛事 →</b></span></a>
+          <a class="home-feature" href="/replay-analysis"><span class="home-feature-image"><img src="/assets/home/replay-analysis-preview.png" alt="录像分析页面截图" loading="lazy"></span><span class="home-feature-body"><small>REPLAY / 复盘</small><strong>让录像讲清楚胜负</strong><p>解析地图、资源、科技、军事与时间线，用数据还原一场比赛的关键节点。</p><b>解析录像 →</b></span></a>
+        </section>
+        <section class="home-module-section"><div class="home-section-heading"><div><span class="home-section-index">02 / 游戏资料</span><h2>理解文明，也理解每一步选择</h2></div><p>从数据、科技关系到实战流程，每项工具都可以独立使用。</p></div><div class="home-feature-grid">
+          <a class="home-feature" href="/civilizations"><span class="home-feature-image"><img src="/assets/home/civilizations-preview.png" alt="民族统计页面截图" loading="lazy"></span><span class="home-feature-body"><small>DATA / 民族</small><strong>用数据认识每个文明</strong><p>查看民族胜率、选取率、对局数量与不同分段中的实际表现。</p><b>查看民族统计 →</b></span></a>
+          <a class="home-feature" href="/tech-tree"><span class="home-feature-image"><img src="/assets/home/tech-tree-preview.png" alt="民族科技树页面截图" loading="lazy"></span><span class="home-feature-body"><small>TECH / 科技树</small><strong>看清单位与科技关系</strong><p>用中文浏览各民族单位、建筑、科技与升级路线，快速比较差异。</p><b>浏览民族科技树 →</b></span></a>
+          <a class="home-feature" href="/build-orders"><span class="home-feature-image"><img src="/assets/home/build-orders-preview.png" alt="开局指南页面截图" loading="lazy"></span><span class="home-feature-body"><small>GUIDE / 开局</small><strong>把思路变成可执行流程</strong><p>按时间、人口与资源分配推进开局，逐步掌握常用实战打法。</p><b>查看开局指南 →</b></span></a>
+        </div></section>
+        <section class="home-module-section"><div class="home-section-heading"><div><span class="home-section-index">03 / 社区内容</span><h2>数据之外，也有完整的中文社区入口</h2></div><p>直播、互动内容、版本整理与意见反馈分别呈现，按需直达。</p></div><div class="home-feature-grid">
+          <a class="home-feature" href="/media"><span class="home-feature-image"><img src="/assets/home/media-preview.png" alt="视频直播页面截图" loading="lazy"></span><span class="home-feature-body"><small>MEDIA / 直播</small><strong>找到正在播的帝国内容</strong><p>汇总视频与直播入口，更快找到赛事转播、玩家直播和社区节目。</p><b>查看视频直播 →</b></span></a>
+          <a class="home-feature" href="/guess/index.html"><span class="home-feature-image"><img src="/assets/home/guess-preview.png" alt="猜一把页面截图" loading="lazy"></span><span class="home-feature-body"><small>GAME / 猜一把</small><strong>用线索猜出职业选手</strong><p>根据成绩与生涯线索挑战帝国时代 II 选手知识。</p><b>开始猜一把 →</b></span></a>
+          <a class="home-feature" href="/updates"><span class="home-feature-image"><img src="/assets/home/updates-preview.png" alt="更新汇总页面截图" loading="lazy"></span><span class="home-feature-body"><small>UPDATES / 更新</small><strong>集中查看版本变化</strong><p>整理游戏更新、平衡调整与重要改动，减少遗漏关键信息。</p><b>查看更新汇总 →</b></span></a>
+          <article class="home-feature">
+            <a class="home-feature-link" href="/feedback"><span class="home-feature-image"><img src="/assets/home/feedback.jpg" alt="反馈建议页面截图" loading="lazy"></span><span class="home-feature-body"><small>FEEDBACK / 反馈</small><strong>让网站继续变得更好</strong><p>提交问题、建议与功能需求，帮助持续改善数据与使用体验。</p><b>提出反馈建议 →</b></span></a>
+            <div class="home-author-contact">
+              <span class="home-author-label">联系作者</span>
+              <a class="home-author-channel" href="https://wpa.qq.com/msgrd?v=3&amp;uin=2227030420&amp;site=qq&amp;menu=yes" target="_blank" rel="noopener noreferrer"><img src="/assets/icons/qq.svg" alt="">QQ 2227030420</a>
+              <a class="home-author-channel" href="https://space.bilibili.com/22968889" target="_blank" rel="noopener noreferrer"><img src="/assets/icons/bilibili.svg" alt="">B 站</a>
+              <span class="home-author-channel"><img src="/assets/icons/weixin.svg" alt="">微信 q2227030420</span>
+            </div>
+          </article>
+        </div></section>
+      </section>
       <section class="intro"><div class="intro-copy"><div class="eyebrow"><span></span> RANKED LADDER <span class="eyebrow-line"></span></div><div class="intro-title-line"><h1>天梯<span>榜单</span></h1><img class="leaderboard-title-art" src="/assets/title.png" alt="" aria-hidden="true"></div><p>榜单只收录前2000名选手</p></div></section>
 
       <section class="stats-strip">
@@ -68,8 +103,8 @@
         <div class="realtime-columns">
         <div class="realtime-left">
         <div class="profile-loading-animation realtime-loading-animation" id="realtimeLoading" role="status" aria-label="少女加载中"><img src="/assets/ui/profile-loading-girl.png" alt=""><span>少女加载中</span></div>
-        <div class="realtime-status-panel" id="realtimeStatusPanel" hidden><table class="realtime-status-table"><thead><tr><th>分数</th><th>玩家</th><th><span class="realtime-column-heading">战队<button type="button" class="realtime-column-hide" data-toggle-realtime-column="team" aria-label="收起战队列" title="收起战队列" aria-expanded="true"><svg viewBox="0 0 18 16" aria-hidden="true"><path d="m11 4-5 4 5 4"/></svg></button></span></th><th>状态</th><th><span class="realtime-column-heading">赛事<button type="button" class="realtime-column-hide" data-toggle-realtime-column="tournament" aria-label="收起赛事列" title="收起赛事列" aria-expanded="true"><svg viewBox="0 0 18 16" aria-hidden="true"><path d="m11 4-5 4 5 4"/></svg></button></span></th><th><span class="realtime-column-heading">直播<button type="button" class="realtime-column-hide" data-toggle-realtime-column="live" aria-label="收起直播列" title="收起直播列" aria-expanded="true"><svg viewBox="0 0 18 16" aria-hidden="true"><path d="m11 4-5 4 5 4"/></svg></button></span></th></tr></thead><tbody id="realtimeStatusRows"></tbody></table></div>
-        <section id="realtimeSchedulePreview" class="realtime-schedule-panel" aria-label="比赛预告" hidden></section>
+        <div class="realtime-status-panel" id="realtimeStatusPanel" hidden><table class="realtime-status-table"><thead><tr><th>分数</th><th>玩家</th><th><span class="realtime-column-heading">战队<button type="button" class="realtime-column-hide" data-toggle-realtime-column="team" aria-label="收起战队列" title="收起战队列" aria-expanded="true"><svg viewBox="0 0 18 16" aria-hidden="true"><path d="m11 4-5 4 5 4"/></svg></button></span></th><th>状态</th><th><span class="realtime-column-heading">直播<button type="button" class="realtime-column-hide" data-toggle-realtime-column="live" aria-label="收起直播列" title="收起直播列" aria-expanded="true"><svg viewBox="0 0 18 16" aria-hidden="true"><path d="m11 4-5 4 5 4"/></svg></button></span></th></tr></thead><tbody id="realtimeStatusRows"></tbody></table></div>
+        <section id="realtimeSchedulePreview" class="realtime-schedule-panel" aria-label="赛事" hidden></section>
         <section class="realtime-chat" aria-label="实时对局聊天区"><button class="realtime-chat-toggle" id="realtimeChatToggle" type="button" aria-expanded="true" aria-controls="realtimeChatBody"><span>聊天区</span><span class="realtime-chat-chevron" aria-hidden="true">⌄</span></button><div class="realtime-chat-body" id="realtimeChatBody"><div class="realtime-chat-messages" id="realtimeChatMessages" role="log" aria-live="polite" aria-label="聊天记录"><p class="realtime-chat-empty">正在加载聊天记录……</p></div><form class="realtime-chat-form" id="realtimeChatForm"><label class="realtime-chat-name-label" for="realtimeChatName">昵称</label><input id="realtimeChatName" name="name" maxlength="20" autocomplete="nickname" required><label class="realtime-chat-message-label" for="realtimeChatMessage">发言</label><input id="realtimeChatMessage" name="message" maxlength="127" placeholder="文明交流，请勿发布链接或联系方式" autocomplete="off" required><button id="realtimeChatSend" type="submit">发送</button></form><div class="realtime-chat-profile"><span id="realtimeChatIdentity">正在获取访客身份……</span><button id="realtimeChatSaveName" type="button" hidden>保存昵称</button></div><p class="realtime-chat-hint">昵称最多20字，发言最多127字；昵称修改后15天内不可再次修改；每分钟5条、每天100条；发言间隔至少10秒。</p><p class="realtime-chat-status" id="realtimeChatStatus" role="status" aria-live="polite"></p></div></section>
         </div>
         <div class="realtime-grid" id="realtimePlayers" hidden></div>
@@ -126,7 +161,15 @@
         <article class="build-order-detail" id="buildOrderDetail" hidden><button class="build-order-back" id="buildOrderBack" type="button">← 返回全部开局</button><div id="buildOrderDetailBody"></div></article>
       </section>
       <section class="feedback-page" id="feedback-page" hidden>
-        <div class="feedback-heading"><div><div class="section-kicker">FEEDBACK</div><h2>反馈区</h2><p>欢迎留下您的建议或反馈，每个 IP 每天最多提交 5 次。</p></div></div>
+        <div class="feedback-heading">
+          <div><div class="section-kicker">FEEDBACK</div><h2>反馈区</h2><p>欢迎留下您的建议或反馈，每个 IP 每天最多提交 5 次。</p></div>
+          <div class="home-author-contact">
+            <span class="home-author-label">联系作者</span>
+            <a class="home-author-channel" href="https://wpa.qq.com/msgrd?v=3&amp;uin=2227030420&amp;site=qq&amp;menu=yes" target="_blank" rel="noopener noreferrer"><img src="/assets/icons/qq.svg" alt="">QQ 2227030420</a>
+            <a class="home-author-channel" href="https://space.bilibili.com/22968889" target="_blank" rel="noopener noreferrer"><img src="/assets/icons/bilibili.svg" alt="">B 站</a>
+            <span class="home-author-channel"><img src="/assets/icons/weixin.svg" alt="">微信 q2227030420</span>
+          </div>
+        </div>
         <div class="feedback-layout"><div class="feedback-compose">
         <div class="feedback-card">
           <form id="feedbackForm">
@@ -145,7 +188,11 @@
       <footer><span>AOE II · DEFINITIVE EDITION</span><span>数据由 World's Edge 游戏服务提供</span></footer>
     </main>
   </div>
-  <script src="/app.js?v=leaderboard-avatar-page-v145" defer></script>
+  <script src="/realtime-card-format.js?v=1" defer></script>
+  <script src="/realtime-polling.js?v=1" defer></script>
+  <script src="/profile-page.js?v=1" defer></script>
+  <script src="/realtime-page.js?v=1" defer></script>
+  <script src="/app.js?v=page-module-refactor-v1" defer></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const icon = document.querySelector('[data-page="updates"] .nav-icon');

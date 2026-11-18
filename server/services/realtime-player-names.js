@@ -22,7 +22,13 @@ const displayGroups = [
 export const realtimePlayerNameOverrides = new Map(displayGroups.flatMap(group=>group.accounts.map(id=>[id,group.name])));
 export const realtimePlayerIdentityOverrides = new Map(displayGroups.flatMap(group=>group.accounts.map(id=>[id,group.id])));
 export const realtimePinnedProfileIds = displayGroups.filter(group=>group.alwaysMonitor).flatMap(group=>group.accounts);
-export const realtimeExcludedProfileIds = new Set(['10044347','2203765','18385002']);
+export const realtimeExcludedProfileIds = new Set([
+  '10044347','2203765','18385002',
+  // Keep Mantis's profile/live links, but do not subscribe to these accounts
+  // in the realtime status bar.
+  '1821855','25200090','25023269','25033998','25005502','25002546','10055765',
+  '22668606','21333358','9890965','17144934','9818491','15270651'
+]);
 
 export function cleanRealtimePlayerName(value, clan = '') {
   let name = String(value || '').normalize('NFKC').trim();

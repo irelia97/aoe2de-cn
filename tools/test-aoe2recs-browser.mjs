@@ -22,7 +22,7 @@ const page={
   }
 };
 const browser={isConnected:()=>true,newContext:async()=>({pages:()=>[page]})};
-const client=createAoE2RecsBrowser({connect:async()=>browser,timeoutMs:1000,sleep:async()=>{}});
+const client=createAoE2RecsBrowser({connect:async()=>browser,timeoutMs:1000,sleep:async()=>{},maxRecoveryAttempts:0});
 
 assert.equal((await client.read(197964)).player.name,'P197964');
 assert.equal(url,'https://aoe2recs.com/profile/197964');
@@ -35,8 +35,32 @@ await assert.rejects(client.read('bad'),/无效/);
 socket.readyState=3;
 await assert.rejects(client.read(3),/WebSocket/);
 
-const challengePage={...page,title:async()=>'Just a moment...'};
+let challengeNow=0;
+const challengePage={...page,title:async()=>'Just a moment...',frames:()=>[]};
 const challengeBrowser={isConnected:()=>true,newContext:async()=>({pages:()=>[challengePage]})};
-const challenged=createAoE2RecsBrowser({connect:async()=>challengeBrowser,timeoutMs:1000,sleep:async()=>{}});
+const challenged=createAoE2RecsBrowser({connect:async()=>challengeBrowser,timeoutMs:1000,
+  verificationTimeoutMs:1000,now:()=>challengeNow,sleep:async ms=>{challengeNow+=ms;},maxRecoveryAttempts:0});
 await assert.rejects(challenged.read(4),error=>error.code==='AOE2RECS_VERIFICATION_REQUIRED');
+
+let recoveryCalls=0;
+socket.readyState=3;
+const recovered=createAoE2RecsBrowser({connect:async()=>browser,timeoutMs:1000,sleep:async()=>{},
+  recoverVerification:async()=>{recoveryCalls++;if(recoveryCalls===3)socket.readyState=1;}});
+assert.equal((await recovered.read(5)).player.name,'P5');
+assert.equal(recoveryCalls,3,'browser verification should be retried three times before succeeding');
+assert.equal(recovered.stats().recoveryAttempts,3);
+assert.equal(recovered.stats().recoverySuccesses,1);
+
+socket.readyState=3;
+let failedRecoveryCalls=0;
+const unrecovered=createAoE2RecsBrowser({connect:async()=>browser,timeoutMs:1000,sleep:async()=>{},
+  recoverVerification:async()=>{failedRecoveryCalls++;}});
+await assert.rejects(unrecovered.read(6),/WebSocket/);
+assert.equal(failedRecoveryCalls,3,'only three recovery attempts should run before the error reaches the cooldown gate');
+
+let thrownRecoveryCalls=0;
+const thrownRecovery=createAoE2RecsBrowser({connect:async()=>browser,timeoutMs:1000,sleep:async()=>{},
+  recoverVerification:async()=>{thrownRecoveryCalls++;throw Error('验证点击失败');}});
+await assert.rejects(thrownRecovery.read(7),/验证点击失败/);
+assert.equal(thrownRecoveryCalls,3,'a failed verification action should itself be repeated three times');
 console.log('Persistent Chrome WebSocket: response matching, serial reuse and disconnect handling passed');

@@ -16,7 +16,7 @@ assert.equal(scheduleTierLabel({tournament:{tier:''}}),'未定级');
 const chat=createRealtimeChat({path:':memory:'});
 try {
   const notice=chat.announceSchedule({day:'china-test',matches:[{timestamp:Date.now()/1000+3600,tournament:{name:'中国选手测试赛'},opponents:[{name:'A',countryCode:'CN'},{name:'B'}]}]});
-  assert.match(notice.content,/未定级[|｜]中国选手测试赛/);
+  assert.match(notice.content,/未定级 │ 中国选手测试赛/);
   assert.doesNotMatch(notice.content,/undefined/);
 } finally {chat.close();}
 console.log('schedule qualification and notice tests passed');

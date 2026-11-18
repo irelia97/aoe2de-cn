@@ -9,9 +9,16 @@ export function hasChinaOpponent(match) {
     [player?.countryCode, player?.country].some(value => chinaRegions.has(String(value || '').trim().toUpperCase())));
 }
 export function qualifiesForSchedule(match) {
-  return /^(S|A)([- ]?TIER)?$/i.test(String(match?.tournament?.tier || match?.tier || '').trim()) || hasChinaOpponent(match);
+  return match?.hasTournamentEloTop32Player === true
+    || /^(S|A)([- ]?TIER)?$/i.test(String(match?.tournament?.tier || match?.tier || '').trim())
+    || hasChinaOpponent(match);
 }
 export function scheduleTierLabel(match) {
   const tier = String(match?.tournament?.tier || match?.tier || '').trim();
-  return tier ? `${tier}级` : '未定级';
+  if (!tier) return '未定级';
+  const type = String(match?.tournament?.tierType || match?.tierType || '').trim();
+  if (/^show\s*match$/i.test(type) || /^show\s*match$/i.test(tier)) return '表演赛';
+  const rank = tier.match(/^([SABC])(?:[- ]?TIER)?$/i)?.[1];
+  if (rank) return `${rank.toUpperCase()}级`;
+  return tier;
 }

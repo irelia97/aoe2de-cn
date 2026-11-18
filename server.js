@@ -1,3 +1,6 @@
+import { createMediaScheduler } from './server/services/media-scheduler.js';
+import { createMediaVideoStateStore } from './server/services/media-video-state.js';
+import { createProfileRoutes } from './server/routes/profile.js';
 import { chromium } from 'playwright';
 import { createAoE2RecsBrowser } from './server/services/aoe2recs-browser.js';
 import { createAoE2RecsRequestGate } from './server/services/aoe2recs-request-gate.js';
@@ -15,7 +18,6 @@ import { resolveTournament } from './server/services/tournament-identity.js';
 import { createVerifiedRealtimeNames } from './server/services/realtime-player-names.js';
 import { parseTournamentRounds, findTournamentRound } from './server/services/tournament-rounds.js';
 import http from 'node:http';
-import { nextScheduledVideoRound } from './server/services/media-video-schedule.js';
 import { appendFile, readFile, open, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +34,6 @@ import { mediaSources, mediaVideoWhitelist } from './config/media.js';
 import { createLeaderboardDumpSummary } from './server/services/leaderboard-dump-summary.js';
 import { createRealtimeService } from './server/services/realtime-service.js';
 import { createRealtimeChat } from './server/services/realtime-chat.js';
-import { liveNotificationChanges } from './server/services/live-notifications.js';
 import { recentFeedback } from './server/services/feedback-feed.js';
 import { createFeedbackLikes } from './server/services/feedback-likes.js';
 import { createMatchesService } from './server/services/matches-service.js';
@@ -69,6 +70,9 @@ const siteDailyArchivePath = join(dataDir, 'site-daily-archive.jsonl');
 const liquipediaMatchesCachePath = join(dataDir, 'liquipedia-matches.json');
 const liquipediaTournamentsCachePath = join(dataDir, 'liquipedia-tournaments.json');
 const liquipediaResultsCachePath = join(dataDir, 'liquipedia-tournament-results.json');
+const liquipediaMatchTiersCachePath = join(dataDir, 'liquipedia-match-tiers.json');
+const tournamentEloTop32CachePath = join(dataDir, 'tournament-elo-top32.json');
+const tournamentEloTop32RefreshInterval = 24 * 60 * 60_000;
 const liquipediaMatchesRefreshInterval = 60_000;
 const liquipediaTournamentsRefreshInterval = 6 * 60 * 60_000;
 const liquipediaResultsRefreshInterval = 12 * 60 * 60_000;
@@ -122,6 +126,15 @@ const leaderboardRefreshes = new Map();
 const leaderboardAvatarWarmup = { running:false, lastStartedAt:null, lastCompletedAt:null, result:null, error:null };
 let tournamentEloPlayersCache = null;
 let tournamentEloPlayersFetchedAt = 0;
+let tournamentEloTop32Cache = null;
+let tournamentEloTop32CacheLoadPromise = null;
+let tournamentEloTop32RefreshPromise = null;
+let tournamentEloTop32RetryAfter = 0;
+let liquipediaMatchTiersCache = null;
+let liquipediaMatchTiersCacheLoadPromise = null;
+const liquipediaMatchTierQueue = [];
+const liquipediaMatchTierQueued = new Set();
+let liquipediaMatchTierQueueRunning = false;
 const personalStatsCache = new BoundedCache(512);
 const personalStatsCacheTtl = 10 * 60_000;
 const livePlayerStatsCache = new BoundedCache(512);
@@ -267,18 +280,7 @@ const mediaCache = {
   videosSavedAt: 0,
   liveSavedAt: 0
 };
-let mediaVideosRefreshPromise = null;
-let mediaVideoSchedulerTimer = null;
-let mediaVideoStateLoaded = false;
-let mediaVideoNextRequestAt = 0;
-let mediaVideoBlockedUntil = 0;
-let bilibiliApiBlockedUntil = 0;
-let mediaVideoRateLimitStrikes = 0;
-const mediaVideoSourceStates = new Map();
-const mediaVideoCycleSeen = new Set();
-let mediaVideoCycleOrder = [];
-let mediaVideoCycleActive = false;
-let mediaLiveRefreshPromise = null;
+const { state: mediaVideoState, load: loadPersistentMediaVideoState, save: savePersistentMediaVideoState } = createMediaVideoStateStore(mediaVideoStatePath);
 let mediaPersistentVideosLoaded = false;
 let mediaPersistentLiveLoaded = false;
 let selectedStreamers = null;
@@ -346,11 +348,11 @@ function mediaXmlTag(block, tag) {
 }
 
 const bilibiliRequestGate = createBilibiliRequestGate({
-  getBlockedUntil: host => host === 'api.bilibili.com' ? bilibiliApiBlockedUntil : 0,
+  getBlockedUntil: host => host === 'api.bilibili.com' ? mediaVideoState.apiBlockedUntil : 0,
   onRisk: async ({host, blockedUntil}) => {
     if (host !== 'api.bilibili.com') return;
     await loadPersistentMediaVideoState();
-    bilibiliApiBlockedUntil = Math.max(bilibiliApiBlockedUntil, blockedUntil);
+    mediaVideoState.apiBlockedUntil = Math.max(mediaVideoState.apiBlockedUntil, blockedUntil);
     await savePersistentMediaVideoState();
   }
 });
@@ -794,159 +796,10 @@ async function loadPersistentMediaLive() {
   return mediaCache.data.live;
 }
 
-function randomMediaDelay(min, max) {
-  return Math.round(min + Math.random() * Math.max(0, max - min));
-}
-
-function mediaVideoSourceKey(source) {
-  return `${source.platform || 'other'}:${source.bvid || source.id || source.channelId || source.feedUrl || source.url || source.name || 'unknown'}`;
-}
-
-function mediaTimestamp(value) {
-  const parsed = typeof value === 'number' ? value : Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-async function loadPersistentMediaVideoState() {
-  if (mediaVideoStateLoaded) return;
-  mediaVideoStateLoaded = true;
-  try {
-    const saved = JSON.parse(await readFile(mediaVideoStatePath, 'utf8'));
-    mediaVideoNextRequestAt = mediaTimestamp(saved.nextRequestAt);
-    mediaVideoBlockedUntil = mediaTimestamp(saved.blockedUntil);
-    bilibiliApiBlockedUntil = mediaTimestamp(saved.apiBlockedUntil);
-    mediaVideoRateLimitStrikes = Math.max(0, Number(saved.rateLimitStrikes) || 0);
-    mediaVideoCycleOrder = [...new Set(Array.isArray(saved.cycleOrder) ? saved.cycleOrder.map(String) : [])];
-    for (const key of Array.isArray(saved.cycleSeen) ? saved.cycleSeen : []) mediaVideoCycleSeen.add(String(key));
-    for (const [key, value] of Object.entries(saved.sources || {})) {
-      mediaVideoSourceStates.set(key, {
-        nextCheckAt: mediaTimestamp(value.nextCheckAt),
-        lastAttemptAt: mediaTimestamp(value.lastAttemptAt),
-        lastSuccessAt: mediaTimestamp(value.lastSuccessAt),
-        failureCount: Math.max(0, Number(value.failureCount) || 0),
-        idleSuccesses: Math.max(0, Number(value.idleSuccesses) || 0)
-      });
-    }
-    if (saved.scheduleVersion === 'fixed-beijing-v1') {
-      mediaVideoCycleActive = saved.cycleActive === true;
-    } else {
-      mediaVideoCycleSeen.clear();
-      mediaVideoCycleOrder = [];
-      mediaVideoNextRequestAt = nextScheduledVideoRound(Date.now());
-      for (const state of mediaVideoSourceStates.values()) state.nextCheckAt = 0;
-    }
-  } catch {
-    // The scheduler state is optional and will be created after the first check.
-    mediaVideoNextRequestAt = nextScheduledVideoRound(Date.now());
-  }
-}
-
-function shuffledMediaVideoKeys(keys, random = Math.random) {
-  const order = [...new Set(keys)];
-  for (let i = order.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(random() * (i + 1));
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-  return order;
-}
-function ensureMediaVideoSourceStates() {
-  const keys = (mediaSources.videos || []).map(mediaVideoSourceKey);
-  mediaVideoCycleOrder = mediaVideoCycleOrder.filter(key => keys.includes(key));
-  const missing = keys.filter(key => !mediaVideoCycleOrder.includes(key));
-  mediaVideoCycleOrder.push(...shuffledMediaVideoKeys(missing));
-  const now = Date.now();
-  for (const source of Array.isArray(mediaSources.videos) ? mediaSources.videos : []) {
-    const key = mediaVideoSourceKey(source);
-    if (!mediaVideoSourceStates.has(key)) {
-      mediaVideoSourceStates.set(key, { nextCheckAt: now, lastAttemptAt: 0, lastSuccessAt: 0, failureCount: 0, idleSuccesses: 0 });
-    }
-  }
-}
-
-async function savePersistentMediaVideoState() {
-  const sources = {};
-  for (const [key, value] of mediaVideoSourceStates) {
-    sources[key] = {
-      nextCheckAt: value.nextCheckAt ? new Date(value.nextCheckAt).toISOString() : null,
-      lastAttemptAt: value.lastAttemptAt ? new Date(value.lastAttemptAt).toISOString() : null,
-      lastSuccessAt: value.lastSuccessAt ? new Date(value.lastSuccessAt).toISOString() : null,
-      failureCount: value.failureCount,
-      idleSuccesses: value.idleSuccesses
-    };
-  }
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(mediaVideoStatePath, JSON.stringify({
-    savedAt: new Date().toISOString(),
-    nextRequestAt: mediaVideoNextRequestAt ? new Date(mediaVideoNextRequestAt).toISOString() : null,
-    blockedUntil: mediaVideoBlockedUntil ? new Date(mediaVideoBlockedUntil).toISOString() : null,
-    apiBlockedUntil: bilibiliApiBlockedUntil ? new Date(bilibiliApiBlockedUntil).toISOString() : null,
-    videoFetchMode: 'browser-dynamic-v1',
-    scheduleVersion: 'fixed-beijing-v1',
-    cycleActive: mediaVideoCycleActive,
-    rateLimitStrikes: mediaVideoRateLimitStrikes,
-    cycleOrder: mediaVideoCycleOrder,
-    cycleSeen: [...mediaVideoCycleSeen],
-    sources
-  }, null, 2), 'utf8');
-}
-
-
 function isBilibiliRateLimit(error) {
   return error?.riskResponse === true || error?.cooldown === true || [403, 412, 429].includes(Number(error?.status)) || [-412, -352, -403].includes(Number(error?.bilibiliCode));
 }
 
-function mediaVideoNextDueAt() {
-  const sources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
-  if (!sources.length) return 0;
-  if (!mediaVideoCycleActive) return mediaVideoNextRequestAt || nextScheduledVideoRound(Date.now());
-  const due = sources.filter(source => !mediaVideoCycleSeen.has(mediaVideoSourceKey(source))).map(source => {
-    const state = mediaVideoSourceStates.get(mediaVideoSourceKey(source));
-    const sourceDue = state?.nextCheckAt || Date.now();
-    return source.platform === 'bilibili' ? Math.max(sourceDue, mediaVideoBlockedUntil) : sourceDue;
-  });
-  return Math.max(mediaVideoNextRequestAt, Math.min(...due));
-}
-
-function updateMediaVideoNextRefreshAt() {
-  if (mediaVideoPaused()) {
-    mediaCache.data.nextVideosRefreshAt = null;
-    mediaCache.data.nextRefreshAt = mediaCache.data.nextLiveRefreshAt || null;
-    return;
-  }
-  const nextAt = mediaVideoNextDueAt();
-  mediaCache.data.nextVideosRefreshAt = nextAt ? new Date(nextAt).toISOString() : null;
-  const liveNext = mediaTimestamp(mediaCache.data.nextLiveRefreshAt);
-  const nextRefresh = [nextAt, liveNext].filter(Boolean);
-  mediaCache.data.nextRefreshAt = nextRefresh.length ? new Date(Math.min(...nextRefresh)).toISOString() : null;
-}
-
-function scheduleMediaVideoRefresh() {
-  if (mediaVideoSchedulerTimer) clearTimeout(mediaVideoSchedulerTimer);
-  if (mediaVideoPaused()) {
-    const resumeAt = mediaVideoPauseUntil();
-    if (resumeAt > Date.now()) {
-      mediaVideoSchedulerTimer = setTimeout(() => {
-        mediaVideoSchedulerTimer = null;
-        refreshMediaVideos()
-          .catch(error => console.warn('[media] 视频刷新失败:', error.message))
-          .finally(scheduleMediaVideoRefresh);
-      }, Math.max(0, resumeAt - Date.now()));
-    } else {
-      mediaVideoSchedulerTimer = null;
-    }
-    updateMediaVideoNextRefreshAt();
-    return;
-  }
-  const nextAt = mediaVideoNextDueAt();
-  updateMediaVideoNextRefreshAt();
-  if (!nextAt) return;
-  mediaVideoSchedulerTimer = setTimeout(() => {
-    mediaVideoSchedulerTimer = null;
-    refreshMediaVideos()
-      .catch(error => console.warn('[media] video refresh failed:', error.message))
-      .finally(scheduleMediaVideoRefresh);
-  }, Math.max(0, nextAt - Date.now()));
-}
 
 async function fetchBilibiliLive(source) {
   const payload = await fetchMediaJson(`https://api.live.bilibili.com/room/v1/Room/get_info?id=${encodeURIComponent(source.roomId)}`);
@@ -1192,207 +1045,14 @@ async function fetchMediaLive() {
   return sorted;
 }
 
-function refreshMediaVideos() {
-  if (mediaVideoPaused()) {
-    updateMediaVideoNextRefreshAt();
-    return Promise.resolve(mediaCache.data);
-  }
-  if (mediaVideosRefreshPromise) return mediaVideosRefreshPromise;
-  mediaVideosRefreshPromise = (async () => {
-    await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
-    ensureMediaVideoSourceStates();
-    const now = Date.now();
-    if (now < mediaVideoNextRequestAt) {
-      updateMediaVideoNextRefreshAt();
-      return mediaCache.data;
-    }
-
-    const videoSources = Array.isArray(mediaSources.videos) ? mediaSources.videos : [];
-    if (!mediaVideoCycleActive) {
-      mediaVideoCycleActive = true;
-      mediaVideoCycleSeen.clear();
-      mediaVideoCycleOrder = shuffledMediaVideoKeys(videoSources.map(mediaVideoSourceKey));
-      for (const state of mediaVideoSourceStates.values()) state.nextCheckAt = now;
-      await savePersistentMediaVideoState();
-    }
-    const candidates = videoSources
-      .map(source => ({ source, state: mediaVideoSourceStates.get(mediaVideoSourceKey(source)) }))
-      .filter(({ source, state }) => state && !mediaVideoCycleSeen.has(mediaVideoSourceKey(source)) && state.nextCheckAt <= now && (source.platform !== 'bilibili' || now >= mediaVideoBlockedUntil))
-      .sort((a, b) => {
-        return mediaVideoCycleOrder.indexOf(mediaVideoSourceKey(a.source)) - mediaVideoCycleOrder.indexOf(mediaVideoSourceKey(b.source));
-      });
-    const candidate = candidates[0];
-    if (!candidate) {
-      updateMediaVideoNextRefreshAt();
-      return mediaCache.data;
-    }
-
-    const { source, state } = candidate;
-    const key = mediaVideoSourceKey(source);
-    state.lastAttemptAt = now;
-    mediaVideoNextRequestAt = now + randomMediaDelay(mediaVideoRequestGapMin, mediaVideoRequestGapMax);
-    try {
-      const videos = await fetchMediaVideoSource(source);
-      const cachedIds = new Set(mediaCache.data.videos.map(item => String(item?.id || '')).filter(Boolean));
-      const hasNewVideo = videos.some(item => item?.id && !cachedIds.has(String(item.id)));
-      mediaVideoCycleSeen.add(key);
-      state.lastSuccessAt = Date.now();
-      state.failureCount = 0;
-      state.idleSuccesses = hasNewVideo ? 0 : Math.min(4, state.idleSuccesses + 1);
-      state.nextCheckAt = Date.now();
-      if (source.platform === 'bilibili' && mediaVideoRateLimitStrikes > 0) mediaVideoRateLimitStrikes -= 1;
-
-      if (videos.length) {
-        const mergedById = new Map();
-        for (const item of mediaCache.data.videos) if (item?.id) mergedById.set(String(item.id), item);
-        for (const item of videos) if (item?.id) mergedById.set(String(item.id), item);
-        mediaCache.data.videos = [...mergedById.values()]
-          .sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))
-          .slice(0, 50);
-        await mkdir(dataDir, { recursive: true });
-        await writeFile(mediaVideoCachePath, JSON.stringify({ savedAt: new Date(state.lastSuccessAt).toISOString(), videos: mediaCache.data.videos }, null, 2), 'utf8');
-      }
-      mediaCache.videosSavedAt = state.lastSuccessAt;
-      mediaCache.data.videosUpdatedAt = new Date(state.lastSuccessAt).toISOString();
-      mediaCache.data.updatedAt = mediaCache.data.videosUpdatedAt;
-      console.log(`[media] video source checked: ${source.name || key}; next check ${new Date(state.nextCheckAt).toISOString()}`);
-    } catch (error) {
-      state.failureCount += 1;
-      if (source.platform === 'bilibili' && isBilibiliRateLimit(error)) {
-        mediaVideoRateLimitStrikes += 1;
-        const baseBackoff = Math.min(mediaVideoCircuitMaxDelay, mediaVideoCircuitBaseDelay * (2 ** (mediaVideoRateLimitStrikes - 1)));
-        const backoff = Math.min(mediaVideoCircuitMaxDelay, randomMediaDelay(baseBackoff * 0.85, baseBackoff * 1.15));
-        mediaVideoBlockedUntil = Date.now() + Math.max(backoff, Number(error.retryAfterMs) || 0);
-        state.nextCheckAt = mediaVideoBlockedUntil;
-        console.warn(`[media] B站触发风控，暂停视频检测至 ${new Date(mediaVideoBlockedUntil).toISOString()}: ${source.name || key}；原因：${error.message}`);
-      } else {
-        state.nextCheckAt = Date.now() + 10 * 60_000;
-        console.warn(`[media] video source failed: ${source.name || key}`, error.message);
-      }
-    }
-    const cycleComplete = videoSources.length > 0 && videoSources.every(videoSource => mediaVideoCycleSeen.has(mediaVideoSourceKey(videoSource)));
-    if (cycleComplete) {
-      const cycleNextAt = nextScheduledVideoRound(Date.now() + 1);
-      mediaVideoCycleActive = false;
-      for (const videoSource of videoSources) {
-        const videoState = mediaVideoSourceStates.get(mediaVideoSourceKey(videoSource));
-        if (videoState) videoState.nextCheckAt = cycleNextAt;
-      }
-      mediaVideoCycleSeen.clear();
-      mediaVideoNextRequestAt = cycleNextAt;
-      console.log(`[media] video cycle complete; next cycle ${new Date(cycleNextAt).toISOString()}`);
-    } else {
-      mediaVideoNextRequestAt = Date.now() + randomMediaDelay(mediaVideoRequestGapMin, mediaVideoRequestGapMax);
-    }
-    updateMediaVideoNextRefreshAt();
-    await savePersistentMediaVideoState();
-    return mediaCache.data;
-  })().finally(() => { mediaVideosRefreshPromise = null; });
-  return mediaVideosRefreshPromise;
-}
-
-function refreshMediaLive() {
-  if (mediaLiveRefreshPromise) return mediaLiveRefreshPromise;
-  const refreshStartedAt = Date.now();
-  const refreshWork = loadPersistentMediaLive().then(() => fetchMediaLive()).then(async live => {
-    if (Date.now() - refreshStartedAt >= mediaLiveRoundTimeout) {
-      throw new Error('直播刷新结果已超过整轮时限，丢弃过期结果');
-    }
-    const failedSourceKeys = live.failedSourceKeys || new Set();
-    const merged = [...live];
-    const mergedKeys = new Set(merged.map(item => `${item.platform || ''}|${item.url || ''}`));
-    const mergeNow = Date.now();
-    for (const previous of Array.isArray(mediaCache.data.live) ? mediaCache.data.live : []) {
-      const key = `${previous.platform || ''}|${previous.url || ''}`;
-      const checkedAt = Date.parse(previous.checkedAt || '');
-      const withinFailureGrace = Number.isFinite(checkedAt) && mergeNow - checkedAt <= mediaLiveFailedSourceGrace;
-      if (failedSourceKeys.has(key) && !mergedKeys.has(key) && withinFailureGrace) {
-        merged.push(previous);
-        mergedKeys.add(key);
-      }
-    }
-    merged.sort((a, b) => {
-      if (a.isCN && b.isCN) return Number(a.sourceOrder ?? Number.MAX_SAFE_INTEGER) - Number(b.sourceOrder ?? Number.MAX_SAFE_INTEGER);
-      if (!a.isCN && !b.isCN) return Number(b.viewers || 0) - Number(a.viewers || 0);
-      return a.isCN ? -1 : 1;
-    });
-    const previousLive = Array.isArray(mediaCache.data.live) ? mediaCache.data.live : [];
-    const notices = liveNotificationChanges(previousLive, merged, failedSourceKeys);
-    const now = Date.now();
-    mediaCache.data.live = merged;
-    for (const item of notices.started) {
-      try { realtimeChat.announceLive(item); } catch (error) { console.warn('[realtime-chat] live notice failed:', error.message); }
-    }
-    for (const item of notices.ended) {
-      try { realtimeChat.announceLiveEnd(item); } catch (error) { console.warn('[realtime-chat] live end notice failed:', error.message); }
-    }
-    mediaCache.data.liveUpdatedAt = new Date(now).toISOString();
-    mediaCache.data.nextLiveRefreshAt = new Date(now + mediaLiveRefreshInterval).toISOString();
-    mediaCache.data.updatedAt = new Date(now).toISOString();
-    mediaCache.data.nextRefreshAt = new Date(Math.min(
-      Date.parse(mediaCache.data.nextVideosRefreshAt || mediaCache.data.nextLiveRefreshAt),
-      Date.parse(mediaCache.data.nextLiveRefreshAt)
-    )).toISOString();
-    mediaCache.liveSavedAt = now;
-    await writeFile(mediaLiveCachePath, JSON.stringify({ savedAt: new Date(now).toISOString(), live: merged }, null, 2), 'utf8');
-    console.log(`[media] live refresh complete: ${merged.length} live streams; next refresh ${mediaCache.data.nextLiveRefreshAt}`);
-    return mediaCache.data;
-  });
-  mediaLiveRefreshPromise = withMediaTimeout(refreshWork, mediaLiveRoundTimeout, '直播刷新整轮任务')
-    .finally(() => { mediaLiveRefreshPromise = null; });
-  return mediaLiveRefreshPromise;
-}
-
-async function startMediaVideoScheduler() {
-  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState()]);
-  ensureMediaVideoSourceStates();
-  if (process.env.MEDIA_VIDEO_RESET === '1') {
-    const resetAt = Date.now();
-    mediaVideoNextRequestAt = nextScheduledVideoRound(resetAt);
-    mediaVideoCycleActive = false;
-    mediaVideoBlockedUntil = 0;
-    mediaVideoRateLimitStrikes = 0;
-    mediaVideoCycleOrder = shuffledMediaVideoKeys((mediaSources.videos || []).map(mediaVideoSourceKey));
-    mediaVideoCycleSeen.clear();
-    for (const source of Array.isArray(mediaSources.videos) ? mediaSources.videos : []) {
-      const state = mediaVideoSourceStates.get(mediaVideoSourceKey(source));
-      if (state) {
-        state.nextCheckAt = resetAt;
-        state.lastAttemptAt = 0;
-        state.lastSuccessAt = 0;
-        state.failureCount = 0;
-        state.idleSuccesses = 0;
-      }
-    }
-    await savePersistentMediaVideoState();
-    console.log('[media] video scheduler reset; starting from the first configured source');
-  }
-  await refreshMediaVideos();
-  await savePersistentMediaVideoState();
-  scheduleMediaVideoRefresh();
-  return mediaCache.data;
-}
-
-function refreshMediaCache() {
-  return Promise.all([startMediaVideoScheduler(), refreshMediaLive()]).then(() => mediaCache.data);
-}
-
-async function getMediaCache() {
-  await Promise.all([loadPersistentMediaVideos(), loadPersistentMediaVideoState(), loadPersistentMediaLive()]);
-  ensureMediaVideoSourceStates();
-  if (!mediaVideoSchedulerTimer && !mediaVideosRefreshPromise) scheduleMediaVideoRefresh();
-  const now = Date.now();
-  const liveStale = !mediaCache.liveSavedAt || now - mediaCache.liveSavedAt >= mediaLiveRefreshInterval;
-  if (!mediaCache.data.videos.length && mediaVideoNextDueAt() <= now) {
-    await refreshMediaVideos();
-    scheduleMediaVideoRefresh();
-  }
-  if (liveStale) {
-    const refresh = refreshMediaLive();
-    refresh.catch(error => console.warn('[media] 后台直播刷新失败:', error.message));
-  }
-  return mediaCache.data;
-}
+const { refreshMediaLive, refreshMediaCache, getMediaCache } = createMediaScheduler({
+    mediaCache, mediaSources, mediaVideoState, mediaVideoPaused, mediaVideoPauseUntil,
+    loadPersistentMediaVideos, loadPersistentMediaVideoState, savePersistentMediaVideoState,
+    loadPersistentMediaLive, fetchMediaVideoSource, fetchMediaLive, isBilibiliRateLimit,
+    mediaVideoRequestGapMin, mediaVideoRequestGapMax, mediaVideoCircuitMaxDelay, mediaVideoCircuitBaseDelay,
+    mediaLiveRoundTimeout, mediaLiveFailedSourceGrace, mediaLiveRefreshInterval, withMediaTimeout,
+    dataDir, mediaVideoCachePath, mediaLiveCachePath, realtimeChat
+});
 
 const gameAssetService = createGameAssetService({ join, readFile, writeFile, mkdir, fetch, gameAssetCacheDir, gameAssetRefreshes });
 const { getGameAsset } = gameAssetService;
@@ -1475,6 +1135,85 @@ async function fetchTournamentEloLeaderboard(pageCount = 3, startPage = 1) {
     updatedAt: new Date().toISOString(),
     rows: allRows.slice(start, end)
   };
+}
+
+async function loadTournamentEloTop32Cache() {
+  if (tournamentEloTop32Cache) return tournamentEloTop32Cache;
+  if (!tournamentEloTop32CacheLoadPromise) tournamentEloTop32CacheLoadPromise = (async () => {
+    try {
+      const cached = JSON.parse(await readFile(tournamentEloTop32CachePath, 'utf8'));
+      if (cached?.fetchedAt && Array.isArray(cached.players)) tournamentEloTop32Cache = cached;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') console.warn('[events] tournament Elo top-32 cache unavailable:', error.message);
+    }
+    return tournamentEloTop32Cache;
+  })();
+  return tournamentEloTop32CacheLoadPromise;
+}
+
+function refreshTournamentEloTop32Cache() {
+  if (tournamentEloTop32RefreshPromise) return tournamentEloTop32RefreshPromise;
+  tournamentEloTop32RefreshPromise = (async () => {
+    const board = await fetchTournamentEloLeaderboard(1, 1);
+    const players = (board.rows || [])
+      .filter(row => Number(row.rank) > 0 && Number(row.rank) <= 32 && String(row.name || '').trim())
+      .map(row => ({ profileId: String(row.profileId || ''), name: String(row.name).trim(), rank: Number(row.rank) }));
+    if (!players.length) throw new Error('赛事积分榜单没有有效的前32名数据');
+    const next = { fetchedAt: new Date().toISOString(), players };
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(`${tournamentEloTop32CachePath}.tmp`, JSON.stringify(next, null, 2), 'utf8');
+    await rename(`${tournamentEloTop32CachePath}.tmp`, tournamentEloTop32CachePath);
+    tournamentEloTop32Cache = next;
+    console.log(`[events] tournament Elo top-32 cache refreshed: ${players.length} players`);
+    return next;
+  })().catch(error => {
+    tournamentEloTop32RetryAfter = Date.now() + 60 * 60_000;
+    throw error;
+  }).finally(() => { tournamentEloTop32RefreshPromise = null; });
+  return tournamentEloTop32RefreshPromise;
+}
+
+async function getTournamentEloTop32Cache() {
+  const cached = await loadTournamentEloTop32Cache();
+  const fetchedAt = Date.parse(cached?.fetchedAt || 0);
+  if ((!cached || !Number.isFinite(fetchedAt) || Date.now() - fetchedAt >= tournamentEloTop32RefreshInterval) && Date.now() >= tournamentEloTop32RetryAfter) {
+    refreshTournamentEloTop32Cache().catch(error => console.warn('[events] tournament Elo top-32 refresh failed:', error.message));
+  }
+  return cached;
+}
+
+async function addTournamentEloTop32Qualification(data) {
+  const cache = await getTournamentEloTop32Cache();
+  const names = new Set((cache?.players || []).map(player => normalizeEventPlayerName(player.name)).filter(Boolean));
+  const mark = match => {
+    const hasTop32Player = (match.opponents || []).some(opponent => {
+      const namesOnSide = [...(Array.isArray(opponent.members) ? opponent.members : []), opponent.name];
+      return namesOnSide.some(name => names.has(normalizeEventPlayerName(name)));
+    });
+    return { ...match, hasTournamentEloTop32Player: hasTop32Player };
+  };
+  const qualified = {
+    ...data,
+    tournamentEloTop32UpdatedAt: cache?.fetchedAt || null,
+    upcoming: (data.upcoming || []).map(mark),
+    completed: (data.completed || []).map(mark)
+  };
+  queueMissingLiquipediaMatchTiers(qualified).catch(error => console.warn('[events] match tier metadata queue failed:', error.message));
+  return qualified;
+}
+
+function scheduleDailyTournamentEloTop32Refresh() {
+  const now = Date.now();
+  const chinaNow = new Date(now + 8 * 60 * 60_000);
+  let target = Date.UTC(chinaNow.getUTCFullYear(), chinaNow.getUTCMonth(), chinaNow.getUTCDate(), 4, 30) - 8 * 60 * 60_000;
+  if (target <= now) target += 24 * 60 * 60_000;
+  const timer = setTimeout(async () => {
+    try { await refreshTournamentEloTop32Cache(); }
+    catch (error) { console.warn('[events] daily tournament Elo top-32 refresh failed:', error.message); }
+    scheduleDailyTournamentEloTop32Refresh();
+  }, Math.max(1_000, target - now));
+  timer.unref?.();
+  void getTournamentEloTop32Cache();
 }
 
 async function fetchLeaderboardSummary(leaderboardId, country) {
@@ -2513,6 +2252,7 @@ let liquipediaMatchesRefreshPromise = null;
 let liquipediaMatchesLastError = null;
 const liquipediaLivePlayerTournaments = new Map();
 let liquipediaTournamentsCache = null;
+let liquipediaTournamentsCacheLoadPromise = null;
 let liquipediaTournamentsRefreshPromise = null;
 let liquipediaResultsCache = null;
 let liquipediaResultsCachePromise = null;
@@ -2673,14 +2413,23 @@ function parseLiquipediaTournaments(html) {
   return items;
 }
 
-async function loadLiquipediaTournaments() {
-  if (liquipediaTournamentsCache && Date.now() - Date.parse(liquipediaTournamentsCache.fetchedAt || 0) < liquipediaTournamentsRefreshInterval) return liquipediaTournamentsCache;
-  if (liquipediaTournamentsRefreshPromise) return liquipediaTournamentsRefreshPromise;
-  liquipediaTournamentsRefreshPromise = (async () => {
+async function loadLiquipediaTournamentsCache() {
+  if (liquipediaTournamentsCache) return liquipediaTournamentsCache;
+  if (!liquipediaTournamentsCacheLoadPromise) liquipediaTournamentsCacheLoadPromise = (async () => {
     try {
       const cached = JSON.parse(await readFile(liquipediaTournamentsCachePath, 'utf8'));
-      if (cached?.fetchedAt && Date.now() - Date.parse(cached.fetchedAt) < liquipediaTournamentsRefreshInterval) { liquipediaTournamentsCache = cached; return cached; }
-    } catch {}
+      if (cached?.fetchedAt && Array.isArray(cached.tournaments)) liquipediaTournamentsCache = cached;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') console.warn('[events] tournament cache unavailable:', error.message);
+    }
+    return liquipediaTournamentsCache;
+  })();
+  return liquipediaTournamentsCacheLoadPromise;
+}
+
+function refreshLiquipediaTournaments() {
+  if (liquipediaTournamentsRefreshPromise) return liquipediaTournamentsRefreshPromise;
+  liquipediaTournamentsRefreshPromise = (async () => {
     const payload = await queueLiquipediaParse(async () => {
       const response = await fetch(`${liquipediaApiUrl}?action=parse&page=Main_Page&prop=text&format=json`, { headers: { accept: 'application/json', 'user-agent': liquipediaUserAgent }, signal: AbortSignal.timeout(25_000) });
       if (!response.ok) throw new Error(`Liquipedia 首页返回 HTTP ${response.status}`);
@@ -2694,6 +2443,15 @@ async function loadLiquipediaTournaments() {
     return next;
   })().finally(() => { liquipediaTournamentsRefreshPromise = null; });
   return liquipediaTournamentsRefreshPromise;
+}
+
+async function getLiquipediaTournamentsSnapshot() {
+  const cached = await loadLiquipediaTournamentsCache();
+  const fetchedAt = Date.parse(cached?.fetchedAt || 0);
+  if (!cached || !Number.isFinite(fetchedAt) || Date.now() - fetchedAt >= liquipediaTournamentsRefreshInterval) {
+    refreshLiquipediaTournaments().catch(error => console.warn('[events] tournament refresh failed:', error.message));
+  }
+  return cached;
 }
 
 async function loadLiquipediaResultsCache() {
@@ -3226,8 +2984,103 @@ function parseLiquipediaMatches(html) {
 }
 
 function normalizedTournamentTier(value) {
-  const match = String(value || '').trim().toUpperCase().match(/^([SAB])(?:[- ]?TIER)?$/);
-  return match?.[1] || '';
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const match = raw.toUpperCase().match(/^([SAB])(?:[- ]?TIER)?$/);
+  if (match) return match[1];
+  if (/^showm(?:atch)?\.?$/i.test(raw)) return 'Showmatch';
+  return raw;
+}
+
+function liquipediaMatchTierPage(match) {
+  try {
+    const url = new URL(match?.tournament?.url || '');
+    if (url.hostname !== 'liquipedia.net') return '';
+    const pathname = decodeURIComponent(url.pathname);
+    if (!pathname.startsWith('/ageofempires/')) return '';
+    return pathname.slice('/ageofempires/'.length).replace(/\/+$/, '');
+  } catch { return ''; }
+}
+
+async function loadLiquipediaMatchTiersCache() {
+  if (liquipediaMatchTiersCache) return liquipediaMatchTiersCache;
+  if (!liquipediaMatchTiersCacheLoadPromise) liquipediaMatchTiersCacheLoadPromise = (async () => {
+    try {
+      const cached = JSON.parse(await readFile(liquipediaMatchTiersCachePath, 'utf8'));
+      if (cached?.version === 1 && cached.pages && typeof cached.pages === 'object') liquipediaMatchTiersCache = cached;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') console.warn('[events] match tier cache unavailable:', error.message);
+    }
+    if (!liquipediaMatchTiersCache) liquipediaMatchTiersCache = { version: 1, pages: {} };
+    return liquipediaMatchTiersCache;
+  })();
+  return liquipediaMatchTiersCacheLoadPromise;
+}
+
+function parseLiquipediaMatchTier(wikitext) {
+  const field = name => String(wikitext || '').match(new RegExp(`^\\s*\\|\\s*${name}\\s*=\\s*([^\\r\\n|]+)`, 'im'))?.[1]?.trim() || '';
+  const tier = normalizedTournamentTier(field('liquipediatier'));
+  const tierType = field('liquipediatiertype');
+  return { tier, tierType };
+}
+
+async function persistLiquipediaMatchTiersCache() {
+  const cache = await loadLiquipediaMatchTiersCache();
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(`${liquipediaMatchTiersCachePath}.tmp`, JSON.stringify(cache, null, 2), 'utf8');
+  await rename(`${liquipediaMatchTiersCachePath}.tmp`, liquipediaMatchTiersCachePath);
+}
+
+async function runLiquipediaMatchTierQueue() {
+  if (liquipediaMatchTierQueueRunning) return;
+  liquipediaMatchTierQueueRunning = true;
+  try {
+    const cache = await loadLiquipediaMatchTiersCache();
+    while (liquipediaMatchTierQueue.length) {
+      const page = liquipediaMatchTierQueue.shift();
+      try {
+        const payload = await queueLiquipediaParse(async () => {
+          const url = new URL(liquipediaApiUrl);
+          url.search = new URLSearchParams({ action: 'parse', page, prop: 'wikitext', format: 'json', formatversion: '2' });
+          const response = await fetch(url, { headers: { 'user-agent': liquipediaUserAgent }, signal: AbortSignal.timeout(25_000) });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.json();
+        }, 1);
+        cache.pages[page] = { ...parseLiquipediaMatchTier(payload?.parse?.wikitext), fetchedAt: new Date().toISOString() };
+        await persistLiquipediaMatchTiersCache();
+        console.log(`[events] Liquipedia tier metadata cached for ${page}: ${cache.pages[page].tierType || cache.pages[page].tier || 'unknown'}`);
+      } catch (error) {
+        cache.pages[page] = { tier: '', tierType: '', fetchedAt: new Date().toISOString(), error: error.message };
+        await persistLiquipediaMatchTiersCache().catch(() => {});
+        console.warn(`[events] Liquipedia tier metadata failed for ${page}:`, error.message);
+      } finally {
+        liquipediaMatchTierQueued.delete(page);
+      }
+    }
+  } finally {
+    liquipediaMatchTierQueueRunning = false;
+    if (liquipediaMatchTierQueue.length) void runLiquipediaMatchTierQueue();
+  }
+}
+
+async function queueMissingLiquipediaMatchTiers(data) {
+  const cache = await loadLiquipediaMatchTiersCache();
+  const pages = new Set();
+  for (const match of data.upcoming || []) {
+    if (!qualifiesForSchedule(match) || match.tournament?.tier) continue;
+    const page = liquipediaMatchTierPage(match);
+    if (!page || page.includes(':')) continue;
+    const fetchedAt = Date.parse(cache.pages[page]?.fetchedAt || 0);
+    if (Number.isFinite(fetchedAt) && Date.now() - fetchedAt < 7 * 24 * 60 * 60_000) continue;
+    pages.add(page);
+  }
+  for (const page of pages) {
+    if (liquipediaMatchTierQueued.has(page) || liquipediaMatchTierQueue.length >= 24) continue;
+    liquipediaMatchTierQueued.add(page);
+    liquipediaMatchTierQueue.push(page);
+  }
+  if (liquipediaMatchTierQueue.length) console.log(`[events] Liquipedia tier metadata queued: ${liquipediaMatchTierQueue.length} pages`);
+  if (liquipediaMatchTierQueue.length) void runLiquipediaMatchTierQueue();
 }
 
 const tournamentRoundCache = new Map();
@@ -3270,10 +3123,14 @@ async function addMatchRounds(parsed) {
 }
 async function addMatchTiers(parsed, includeRounds = true) {
   let tournaments = [];
-  try { tournaments = (await loadLiquipediaTournaments()).tournaments || []; } catch {}
+  try { tournaments = (await getLiquipediaTournamentsSnapshot())?.tournaments || []; } catch {}
+  const tierCache = await loadLiquipediaMatchTiersCache();
   const apply = match => {
     const parent = resolveTournament(match.tournament, tournaments);
-    return { ...match, tournament: { ...match.tournament, mainName: parent?.name || match.tournament?.name || '', tier: normalizedTournamentTier(parent?.tier) } };
+    const pageMetadata = tierCache.pages[liquipediaMatchTierPage(match)] || {};
+    const tier = normalizedTournamentTier(parent?.tier || pageMetadata.tier || match.tournament?.tier);
+    const tierType = String(parent?.tierType || pageMetadata.tierType || match.tournament?.tierType || '').trim();
+    return { ...match, tournament: { ...match.tournament, mainName: parent?.name || match.tournament?.mainName || match.tournament?.name || '', tier, ...(tierType ? { tierType } : {}) } };
   };
   const result = { upcoming:parsed.upcoming.map(apply), completed:parsed.completed.map(apply) };
   return includeRounds ? addMatchRounds(result) : result;
@@ -3312,7 +3169,10 @@ async function refreshLiquipediaMatches() {
   liquipediaMatchesRefreshPromise = (async () => {
     await loadLiquipediaMatchesCache();
     const cachedAt = Date.parse(liquipediaMatchesCache?.fetchedAt || 0);
-    if (Number.isFinite(cachedAt) && Date.now() - cachedAt < liquipediaMatchesRefreshInterval) return addMatchRounds(liquipediaMatchesCache);
+    if (Number.isFinite(cachedAt) && Date.now() - cachedAt < liquipediaMatchesRefreshInterval) {
+      const rounded = await addMatchRounds(liquipediaMatchesCache);
+      return addTournamentEloTop32Qualification(await addMatchTiers(rounded, false));
+    }
     const sourceText = '<div data-aoe2cn-section="upcoming">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=upcoming|limit=50|filterbuttons-game=Age of Empires II}}</div><div data-aoe2cn-section="recent">{{#invoke:Lua|invoke|module=MatchTicker/Custom|fn=mainPage|type=recent|limit=50|filterbuttons-game=Age of Empires II}}</div>';
     const form = new URLSearchParams({ action: 'parse', text: sourceText, title: 'Liquipedia:Upcoming and ongoing matches', prop: 'text', format: 'json', formatversion: '2' });
     const payload = await queueLiquipediaParse(async () => {
@@ -3333,7 +3193,8 @@ async function refreshLiquipediaMatches() {
     const html = String(payload?.parse?.text || '');
     if (!html.includes('match-info')) throw new Error('Liquipedia API 未返回比赛信息');
     const previous = liquipediaMatchesCache;
-    const parsed = await addMatchTiers(parseLiquipediaMatches(html));
+    const tiered = await addMatchTiers(parseLiquipediaMatches(html));
+    const parsed = await addTournamentEloTop32Qualification(tiered);
     const next = {
       fetchedAt: new Date().toISOString(),
       refreshIntervalMs: liquipediaMatchesRefreshInterval,
@@ -3421,6 +3282,13 @@ function sendVersionedJson(req, res, data, version, maxAgeSeconds) {
   return res.end(JSON.stringify(data));
 }
 
+const profileRoutes = createProfileRoutes({
+  localProfileDetails, loadRlReference, loadPlayerTeams, readAoE2RecsProfileCache,
+  aoe2RecsProfileInsights, readProfileAccounts, fetchLatestProfileMatchOnce,
+  readWorldsEdgeMatchesCache, getWorldsEdgeMatches, repairOlderUnfinishedMatches,
+  fetchProfileMatchesOnce, worldsEdgeMatchCacheTtl, fetchPersonalLeaderboardStats
+});
+
 const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const protectionIp = requestClientIp(req);
@@ -3484,17 +3352,17 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
     const cached = await loadLiquipediaMatchesCache();
     if (!cached) return sendNoStoreJson(res, 503, { error: '赛事数据正在首次同步，请稍后重试' });
-    const data = { ...cached, stale: Boolean(liquipediaMatchesLastError) };
-    return sendVersionedJson(req, res, data, `events-${cached.fetchedAt}`, 60);
+    const tiered = await addMatchTiers(cached, false);
+    const qualified = await addTournamentEloTop32Qualification(tiered);
+    const data = { ...qualified, stale: Boolean(liquipediaMatchesLastError) };
+    return sendVersionedJson(req, res, data, `events-${cached.fetchedAt}-${qualified.tournamentEloTop32UpdatedAt || 'top32-unavailable'}`, 60);
   }
   if (url.pathname === '/api/tournaments') {
     if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
-    try {
-      const data = await loadLiquipediaTournaments();
-      return sendVersionedJson(req, res, data, `tournaments-${data.fetchedAt}`, 60);
-    } catch (error) {
-      return sendNoStoreJson(res, 502, { error: error.message || '赛事列表获取失败' });
-    }
+    const data = await getLiquipediaTournamentsSnapshot();
+    if (!data) return sendNoStoreJson(res, 202, { status: 'syncing', error: '赛事列表正在首次同步，请稍后重试' });
+    const stale = Date.now() - Date.parse(data.fetchedAt || 0) >= liquipediaTournamentsRefreshInterval;
+    return sendVersionedJson(req, res, { ...data, stale }, `tournaments-${data.fetchedAt}`, 60);
   }
   if (url.pathname === '/api/tournament-results') {
     if (req.method !== 'GET') return sendNoStoreJson(res, 405, { error: '仅支持 GET 请求' });
@@ -3647,116 +3515,8 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       return res.end(JSON.stringify({ error: error.message || '查询玩家资料失败' }));
     }
   }
-  if (url.pathname === '/api/profile-details') {
-    const profileId = url.searchParams.get('id') || '';
-    if (!/^\d+$/.test(profileId)) {
-      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ error: '无效的选手 ID' }));
-    }
-    try {
-      const profile = localProfileDetails(profileId);
-      if (!profile) throw new Error('本地资料库中没有该选手');
-      const rlReference = (await loadRlReference()).get(String(profileId)) || null;
-      const teams=await loadPlayerTeams([profileId]);
-      profile.player={...profile.player,team:teams.get(profileId) || ''};
-      const recsCached = await readAoE2RecsProfileCache(profileId);
-      const insights = aoe2RecsProfileInsights(profileId, recsCached?.profile);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300' });
-      return res.end(JSON.stringify({ ...profile, rlReference, insights, cached: true, stale: false, source: 'profile-dump' }));
-    } catch (error) {
-      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify({ error: error.message || '获取选手资料失败' }));
-    }
-  }
-  if (url.pathname === '/api/profile-accounts') {
-    const profileId = url.searchParams.get('id') || '';
-    if (!/^\d+$/.test(profileId)) {
-      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ error: '无效的选手 ID' }));
-    }
-    try {
-      const result = await readProfileAccounts(profileId);
-      let recsCached = await readAoE2RecsProfileCache(profileId);
-      if (!recsCached?.profile) for (const account of result.accounts || []) {
-        recsCached = await readAoE2RecsProfileCache(String(account.id || ''));
-        if (recsCached?.profile) break;
-      }
-      const insights = aoe2RecsProfileInsights(profileId, recsCached?.profile);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': result.stale ? 'no-cache' : 'public, max-age=300' });
-      return res.end(JSON.stringify({ ...result, insights }));
-    } catch (error) {
-      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify({ error: error.message || '获取账号与曾用名失败' }));
-    }
-  }
-  if (url.pathname === '/api/profile-matches') {
-    const profileId = url.searchParams.get('id') || '';
-    if (!/^\d+$/.test(profileId)) {
-      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ error: '无效的选手 ID' }));
-    }
-    if (url.searchParams.get('latest') === '1') {
-      try {
-        const latest = await fetchLatestProfileMatchOnce(profileId);
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-        return res.end(JSON.stringify({ matches: latest ? [latest] : [], latest: true }));
-      } catch {
-        try {
-          const fallback = await readWorldsEdgeMatchesCache(profileId);
-          if (!fallback?.matches?.length) throw new Error('查询失败，暂无可用对局缓存');
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-          return res.end(JSON.stringify({ matches: fallback.matches?.[0] ? [fallback.matches[0]] : [], latest: true, stale: true }));
-        } catch (error) {
-          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-          return res.end(JSON.stringify({ error: error.message || '获取最新对局失败' }));
-        }
-      }
-    }
-    const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
-    const limit = Math.min(100, Math.max(20, Number(url.searchParams.get('limit') || 100)));
-    const progressive = url.searchParams.get('progressive') === '1' && offset === 0;
-    try {
-      if (url.searchParams.get('snapshot') === '1' && offset === 0) {
-        // Return the whole stored window before making any latest-match query.
-        // A cold profile needs one full history request, never a 20-match prefetch.
-        const cached = await readWorldsEdgeMatchesCache(profileId);
-        const snapshot = cached?.matches?.length ? cached : await getWorldsEdgeMatches(profileId, 1);
-        repairOlderUnfinishedMatches(profileId, snapshot).catch(error => console.warn(`选手 ${profileId} 旧对局校正失败:`, error.message));
-        res.writeHead(200, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store' });
-        return res.end(JSON.stringify({ matches:snapshot.matches.slice(0,100), hasMore:false,
-          cached:Boolean(cached?.matches?.length), stale:Boolean(snapshot.stale), savedAt:snapshot.savedAt }));
-      }
-      if (progressive) {
-        let initial = await readWorldsEdgeMatchesCache(profileId);
-        const cachedFirst = Boolean(initial?.matches?.length);
-        if (!cachedFirst) try {
-          initial = await fetchProfileMatchesOnce(profileId, 1, 20);
-        } catch {
-          // If the initial lookup fails, use an existing snapshot without
-          // starting another series of upstream retries.
-          const fallback = await readWorldsEdgeMatchesCache(profileId);
-          if (!fallback?.matches?.length) throw new Error('查询失败，暂无可用对局缓存');
-          initial = { matches: fallback.matches.slice(0, 20), hasMore: false };
-        }
-        // Continue the cache refresh in the background. The first 20 matches
-        // are already available to the client and can be rendered immediately.
-        getWorldsEdgeMatches(profileId, 1).catch(error => console.error(`选手 ${profileId} 对局缓存更新失败:`, error.message));
-        const page = initial.matches.slice(0, 20);
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-        return res.end(JSON.stringify({ matches: page, offset: 0, total: page.length, hasMore: true, progressive: true, cached:cachedFirst,
-          stale:cachedFirst && Date.now()-initial.savedAt >= worldsEdgeMatchCacheTtl }));
-      }
-      const pageNumber = Math.floor(offset / 100) + 1;
-      const cached = await getWorldsEdgeMatches(profileId, pageNumber);
-      const matches = cached.matches;
-      const page = matches.slice(offset, offset + limit);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': cached.stale ? 'no-store' : 'public, max-age=60' });
-      return res.end(JSON.stringify({ matches: page, offset, total: matches.length, hasMore: offset + page.length < matches.length || cached.hasMore, stale:Boolean(cached.stale) }));
-    } catch (error) {
-      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify({ error: error.message || '获取近期对局失败' }));
-    }
-  }
+  const profileRoute = profileRoutes.get(url.pathname);
+  if (profileRoute) return profileRoute(url, res);
   if (url.pathname === '/api/replay-match-info') {
     const matchId = url.searchParams.get('matchId') || '';
     if (!/^[1-9]\d{0,15}$/.test(matchId)) {
@@ -3812,21 +3572,6 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
       if (res.headersSent) throw error;
       res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ error: error.message || '录像下载失败' }));
-    }
-  }
-  if (url.pathname === '/api/profile-leaderboards') {
-    const profileId = url.searchParams.get('id') || '';
-    if (!/^\d+$/.test(profileId)) {
-      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ error: '无效的选手 ID' }));
-    }
-    try {
-      const leaderboards = await fetchPersonalLeaderboardStats(profileId, { rankedOnly:url.searchParams.get('progressive') === '1' });
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': leaderboards.some(row => row.pending || row.stale) ? 'no-store' : 'public, max-age=600' });
-      return res.end(JSON.stringify({ leaderboards, source: 'getPersonalStat' }));
-    } catch (error) {
-      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(JSON.stringify({ error: error.message || '获取个人天梯数据失败' }));
     }
   }
   if (url.pathname.startsWith('/assets/game/')) {
@@ -3963,7 +3708,7 @@ const httpServer = http.createServer(safeHttpHandler(async (req, res) => {
     }
   }
 
-  const relative = url.pathname === '/' || /^\/(?:profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events(?:\/results)?|feedback|civilizations|tech-tree|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : url.pathname.slice(1);
+  const relative = url.pathname === '/' || /^\/(?:leaderboard|profile(?:\/\d+)?|media(?:\/videos)?|replay-analysis|updates|realtime|events(?:\/results)?|feedback|civilizations|tech-tree|build-orders(?:\/[a-z0-9-]+)?)\/?$/i.test(url.pathname) ? 'index.html' : url.pathname.slice(1);
   const path = await staticFilePath(join(root, 'public'), relative);
   try {
     const data = await readFile(path);
@@ -3984,6 +3729,7 @@ httpServer.keepAliveTimeout = 5000;
 httpServer.maxHeadersCount = 100;
 httpServer.listen(port, '127.0.0.1', () => {
   console.log(`AoE2DE Ladder running at http://localhost:${port}`);
+  scheduleDailyTournamentEloTop32Refresh();
   startLiquipediaMatchesLifecycle().catch(error => console.warn('[events] lifecycle startup failed:', error.message));
   collectGuessTournamentSources().catch(error => console.warn('[guess-eligibility] tournament sources failed:', error.message));
   runGuessResultsBackfill().catch(error => console.warn('[guess-results] backfill paused:', error.message));
