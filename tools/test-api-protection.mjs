@@ -19,6 +19,17 @@ function response() {
 }
 const path = '/api/replay-analysis';
 
+test('opening many distinct profiles has no separate player-count quota', () => {
+  const guard = createApiProtection({ now: () => 1000 });
+  const endpoints = ['details', 'matches', 'accounts', 'leaderboards'];
+  for (let id = 1; id <= 101; id++) {
+    assert.equal(guard.allow(request(), response(), '/profile/' + id, 'browser'), true);
+    const endpoint = endpoints[(id - 1) % endpoints.length];
+    const req = { ...request(), url: '/api/profile-' + endpoint + '?id=' + id };
+    assert.equal(guard.allow(req, response(), '/api/profile-' + endpoint, 'browser'), true);
+  }
+});
+
 test('cache reads neither reserve analysis slots nor consume the submission quota', () => {
   const guard=createApiProtection();
   for(let i=0;i<5;i++) {
