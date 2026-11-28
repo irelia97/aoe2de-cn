@@ -2,6 +2,27 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRealtimeService } from '../server/services/realtime-service.js';
 
+for (const removeFirst of [true, false]) test(`opponent cancellation retains unmonitored premade teammates, removal first=${removeFirst}`, async () => {
+  const sockets=[];
+  class Socket { constructor(url){this.url=url;this.readyState=1;this.handlers={};sockets.push(this);} addEventListener(t,h){this.handlers[t]=h;} close(){this.readyState=3;} }
+  const service=createRealtimeService({WebSocket:Socket,readFile:async()=>{throw Error('no cache');},writeFile:async()=>{},localProfileDetails:()=>null,getMediaCache:async()=>({live:[]}),loadRlReference:async()=>new Map(),fetchPersonalLeaderboardStats:async()=>[],fetchLatestWorldsEdgeMatchOnce:async()=>null,forceChinaCountry:(_,c)=>c});
+  await service.startRealtimeWebSockets(['209118']);
+  const socket=sockets.find(s=>s.url.includes('handler=queueing'));
+  const send=rows=>socket.handlers.message({data:JSON.stringify(rows)});
+  const party=[{profileId:209118,name:'Sora Kuma'},{profileId:99,name:'Teammate'}];
+  send([{type:'queueingAdded',data:{id:'party',status:'queueing',players:party}}]);
+  if(removeFirst) send([{type:'queueingRemoved',data:{id:'party',reason:'matched'}}]);
+  send([{type:'queueingAdded',data:{id:'match',status:'matched',matchId:522416000,players:[...party.map(p=>({...p,team:1})),{profileId:100,name:'Random teammate',team:1},{profileId:15355778,name:'Opponent',team:2}]}}]);
+  // Partial updates must retain the original party until cancellation.
+  send([{type:'queueingUpdated',data:{id:'match',mapName:'Arabia'}}]);
+  send([{type:'queueingRemoved',data:{id:'match',reason:'cancelled',profileIds:[15355778]}}]);
+  const state=(await service.refreshRealtimePayload(['209118'])).states[0];
+  assert.equal(state.status,'queueing');
+  assert.equal(state.queue.syntheticRequeue,true);
+  assert.deepEqual(state.queue.players.map(p=>p.profileId),[209118,99]);
+  assert.equal(state.queue.players[1].name,'Teammate');
+});
+
 test('queue states apply only to monitored players, merge maps, and clear on removal', async () => {
   const sockets = [];
   class Socket {

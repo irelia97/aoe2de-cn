@@ -14,11 +14,11 @@ function setup(fetchImpl){
  const status=element(),body=element(),more=element(),filter={value:'all'};
  const nodes={'#profileMatchesRefreshStatus':status,'#profileMatchesBody':body,'#profileMatchesMore':more,'#profileMatchesFilter':filter};
  let displayed=[],limit=0,saved=0;
- const context={AbortSignal,setTimeout,requestAnimationFrame:fn=>fn(),document:{querySelector:selector=>nodes[selector]||null},location:{pathname:'/profile/42'},profileDetailsRequestId:1,
+ const context={AbortSignal,setTimeout,requestAnimationFrame:fn=>fn(),document:{querySelector:selector=>nodes[selector]||null},location:{pathname:'/players/42'},profileDetailsRequestId:1,
   readProfileMatchesLocalCache:()=>({matches:baseline,savedAt:0}),
   profileRecentResultsByLeaderboard:()=>new Map(),profileRecentStatsByLeaderboard:()=>new Map(),profileRecentModeCounts:()=>new Map(),
   filterProfileMatches:items=>items,renderProfileModeCharts(){},renderProfileLeaderboards(){},renderProfileLastMatchFromMatch(){},currentProfileLeaderboardRows:[],
-  saveProfileMatchesLocalCache(){saved++;},renderProfileMatches:(_,items,count)=>{displayed=items;limit=count.length;},fetch:fetchImpl};
+  saveProfileMatchesLocalCache(){saved++;},renderProfileMatches:(_,items,count)=>{displayed=items;limit=count.length;},fetchProfileData:fetchImpl};
  vm.createContext(context);vm.runInContext(code,context);
  return {context,status,body,more,filter,displayed:()=>displayed,limit:()=>limit,saved:()=>saved};
 }

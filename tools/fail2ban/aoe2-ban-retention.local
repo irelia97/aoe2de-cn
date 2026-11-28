@@ -1,0 +1,3 @@
+[Definition]
+# Retain records past the 90-day ban so Fail2ban can restore active entries.
+dbpurgeage = 7862400

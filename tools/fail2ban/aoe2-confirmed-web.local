@@ -1,0 +1,9 @@
+[aoe2-confirmed-web]
+enabled = true
+backend = polling
+filter = aoe2-confirmed-web
+logpath = /var/log/nginx/access.log
+banaction = nftables-multiport
+port = http,https
+bantime = 90d
+bantime.increment = false

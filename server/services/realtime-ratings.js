@@ -42,7 +42,7 @@ export function createRealtimeRatings({ fetchStats, onChange, concurrency = 8, n
         const players = [state.player,...(state.match?.players || []),...(state.lobby?.players || []),...(state.queue?.players || [])];
         for (const player of players) {
           const id = String(player?.profileId || '');
-          const rating = Number(player?.rating1v1 ?? player?.rating);
+          const rating = Number(player && Object.hasOwn(player,'accountRating') ? player.accountRating : player?.rating1v1 ?? player?.rating);
           if (id && Number.isFinite(rating) && rating > 0 && !cache.has(id)) cache.set(id,{rating,refreshAt:now()});
         }
       }

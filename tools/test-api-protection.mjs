@@ -19,11 +19,17 @@ function response() {
 }
 const path = '/api/replay-analysis';
 
-test('opening many distinct profiles has no separate player-count quota', () => {
+test('profile data stays available after other requests exhaust their budget', () => {
   const guard = createApiProtection({ now: () => 1000 });
   const endpoints = ['details', 'matches', 'accounts', 'leaderboards'];
-  for (let id = 1; id <= 101; id++) {
-    assert.equal(guard.allow(request(), response(), '/profile/' + id, 'browser'), true);
+  for (let i = 0; i < 120; i++) {
+    assert.equal(guard.allow(request(), response(), '/api/avatar', 'browser'), true);
+  }
+  const blocked = response();
+  assert.equal(guard.allow(request(), blocked, '/api/avatar', 'browser'), false);
+  assert.equal(blocked.status, 429);
+  for (let id = 1; id <= 121; id++) {
+    assert.equal(guard.allow(request(), response(), '/players/' + id, 'browser'), true);
     const endpoint = endpoints[(id - 1) % endpoints.length];
     const req = { ...request(), url: '/api/profile-' + endpoint + '?id=' + id };
     assert.equal(guard.allow(req, response(), '/api/profile-' + endpoint, 'browser'), true);
@@ -69,7 +75,7 @@ test('normal browser and internal commands work, while API responses discourage 
   assert.equal(res.headers['x-robots-tag'], 'noindex, nofollow'); res.end();
   assert.equal(guard.allow(request({ 'user-agent': 'Python-urllib/3', 'x-aoe2-client': undefined }), response(), path, '127.0.0.1', true), true);
   assert.equal(guard.allow(request({ 'user-agent': 'Googlebot' }), response(), '/api/realtime', 'public-ip'), true);
-  assert.equal(guard.allow(request({ 'user-agent': 'Googlebot' }), response(), '/profile/197964', 'public-ip'), true);
+  assert.equal(guard.allow(request({ 'user-agent': 'Googlebot' }), response(), '/players/197964', 'public-ip'), true);
 });
 
 test('browser downloads require a same-site referring page', () => {
@@ -77,7 +83,7 @@ test('browser downloads require a same-site referring page', () => {
   const denied = response();
   assert.equal(guard.allow(request(), denied, '/api/match-replay', 'public-ip'), false);
   const allowed = response();
-  assert.equal(guard.allow(request({ referer: 'https://aoe2cn.cc/profile/197964', 'x-aoe2-client': undefined }), allowed, '/api/match-replay', 'public-ip'), true);
+  assert.equal(guard.allow(request({ referer: 'https://aoe2cn.cc/players/197964', 'x-aoe2-client': undefined }), allowed, '/api/match-replay', 'public-ip'), true);
   allowed.end();
 });
 
@@ -117,10 +123,10 @@ test('analysis slot is reserved for internal work and disconnect cannot bypass c
 test('rate-limit storage is bounded and inactive entries expire', () => {
   let clock = 0;
   const guard = createApiProtection({ maxEntries: 1, now: () => clock });
-  assert.equal(guard.allow(request(), response(), '/api/profile-details', 'first'), true);
-  assert.equal(guard.allow(request(), response(), '/api/profile-details', 'second'), false);
+  assert.equal(guard.allow(request(), response(), '/api/avatar', 'first'), true);
+  assert.equal(guard.allow(request(), response(), '/api/avatar', 'second'), false);
   clock = 3600000;
-  assert.equal(guard.allow(request(), response(), '/api/profile-details', 'second'), true);
+  assert.equal(guard.allow(request(), response(), '/api/avatar', 'second'), true);
   assert.equal(guard.stats().trackedClients, 1);
 });
 

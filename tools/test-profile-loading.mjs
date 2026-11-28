@@ -87,7 +87,7 @@ test('uncached first match batch still loads genuine upstream matches',async()=>
 
 test('ranked cards render before lobby completion and old profile responses cannot overwrite a newer player',async()=>{
   const a=deferred(),b=deferred(),renders=[];
-  const location={pathname:'/profile/42'};
+  const location={pathname:'/players/42'};
   const load=createProfileLeaderboardLoader({
     location, document:{querySelector:()=>({})}, profileSectionLoadingMarkup:()=>'',
     renderProfileLeaderboards:rows=>renders.push(rows),
@@ -96,7 +96,7 @@ test('ranked cards render before lobby completion and old profile responses cann
       : url.includes('id=42')?a.promise:b.promise
   });
   const first=load('42');await new Promise(r=>setImmediate(r));assert.equal(renders[0][0].player,'42');
-  location.pathname='/profile/43';const second=load('43');await new Promise(r=>setImmediate(r));
+  location.pathname='/players/43';const second=load('43');await new Promise(r=>setImmediate(r));
   a.resolve({leaderboards:[{id:3,player:'42-old'}]});await first;
   assert.equal(renders.at(-1)[0].player,'43');
   b.resolve({leaderboards:[{id:3,player:'43-complete'}]});await second;

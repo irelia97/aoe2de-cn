@@ -2,6 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRealtimeRatings } from '../server/services/realtime-ratings.js';
 
+test('restoring pool maxima never assigns the highest account rating to a lower account', () => {
+  const ratings=createRealtimeRatings({onChange:()=>{},fetchStats:async()=>[]});
+  ratings.restore([{player:{profileId:'42',rating:2800,accountRating:2100}},{player:{profileId:'43',rating:2800,accountRating:null}}]);
+  const result=ratings.get(['42','43']);
+  assert.equal(result.get('42'),2100);
+  assert.equal(result.has('43'),false);
+});
+
 test('rating lookups return immediately, share pending work and cap concurrency', async () => {
   const waiting = new Map();
   let changes = 0;

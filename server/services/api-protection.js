@@ -4,7 +4,8 @@ import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const replayPaths = new Set(['/api/replay-analysis', '/api/replay-analysis/status', '/api/replay-match-info', '/api/match-replay']);
-const profilePaths = new Set(['/api/feedback/like', '/api/profile-matches', '/api/profile-details', '/api/profile-accounts', '/api/profile-leaderboards', '/api/avatar', '/api/civilization-stats', '/api/civilization-stats/meta']);
+const profileDataPaths = new Set(['/api/profile-matches', '/api/profile-details', '/api/profile-accounts', '/api/profile-leaderboards']);
+const profilePaths = new Set(['/api/feedback/like', '/api/avatar', '/api/civilization-stats', '/api/civilization-stats/meta']);
 const automatedAgent = /bot\b|crawler|spider|slurp|bingpreview|headlesschrome|python-requests|python-urllib|curl\//i;
 
 export function createApiProtection({ now = Date.now, maxEntries = 10000, statePath = null } = {}) {
@@ -53,7 +54,8 @@ export function createApiProtection({ now = Date.now, maxEntries = 10000, stateP
     allow(req, res, pathname, ip, internal = false) {
       if (!pathname.startsWith('/api/')) return true;
       res.setHeader('x-robots-tag', 'noindex, nofollow');
-      if (internal || (!replayPaths.has(pathname) && !profilePaths.has(pathname))) return true;
+      const profileData = profileDataPaths.has(pathname);
+      if (internal || (!profileData && !replayPaths.has(pathname) && !profilePaths.has(pathname))) return true;
       if (automatedAgent.test(String(req.headers['user-agent'] || ''))) {
         return deny(res, 403, 'bot', '自动抓取不可访问此接口');
       }
@@ -62,6 +64,7 @@ export function createApiProtection({ now = Date.now, maxEntries = 10000, stateP
       if ((site && site !== 'same-origin') || (origin && !sameOrigin(req, origin))) {
         return deny(res, 403, 'source', '请从本站页面访问');
       }
+      if (profileData) return true;
       if (replayPaths.has(pathname)) {
         const validSource = pathname === '/api/match-replay'
           ? sameOrigin(req, req.headers.referer)

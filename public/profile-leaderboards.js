@@ -2,7 +2,7 @@ export function createProfileLeaderboardLoader({ fetchProfileSection, profileSec
   let profileLeaderboardsRequestId = 0;
   function loadProfileLeaderboards(profileId) {
     const requestId = ++profileLeaderboardsRequestId;
-    const isCurrent = () => requestId === profileLeaderboardsRequestId && location.pathname === `/profile/${encodeURIComponent(profileId)}`;
+    const isCurrent = () => requestId === profileLeaderboardsRequestId && location.pathname === `/players/${encodeURIComponent(profileId)}`;
     const initialBody = document.querySelector('#profileLeaderboardBody');
     if (initialBody) initialBody.innerHTML = profileSectionLoadingMarkup();
     return fetchProfileSection(`/api/profile-leaderboards?id=${encodeURIComponent(profileId)}&progressive=1`, isCurrent)

@@ -49,12 +49,16 @@ async function refreshRealtimeSchedulePreview() {
   const upcoming = matches.filter(match => match.status !== 'ongoing' && match.timestamp*1000 > now-15*60*1000 && match.timestamp*1000 < now+24*60*60*1000 && qualifiesForSchedule(match)).sort((a,b)=>a.timestamp-b.timestamp);
   const fixtureMarkup = (match, includeTime) => {
     const tournament = match.tournament;
+    const untilStart = match.timestamp * 1000 - now;
+    const startsSoon = includeTime && untilStart > 0 && untilStart <= 2 * 60 * 60 * 1000;
     const name = tournament.round ? `${tournament.mainName || tournament.name} - ${tournament.round}` : tournament.name;
     const time = new Date(match.timestamp*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
     const bo = Number(match.bestOf);
     const key = String(match.id || `${match.tournament?.url || match.tournament?.name}:${match.timestamp}:${(match.opponents || []).map(p=>p.name).join('|')}`);
     const score = Array.isArray(match.score) && match.score.some(value => String(value ?? '').trim() !== '') ? `｜${match.score.map(value=>escapeHtml(String(value ?? ''))).join('–')}` : '';
-    return `<div class="realtime-schedule-fixture" data-schedule-key="${escapeHtml(key)}">${includeTime ? `<time>${escapeHtml(time)}</time> ` : ''}${escapeHtml(scheduleTierLabel(match))}｜${escapeHtml(name)}｜${Number.isInteger(bo)&&bo>0?`BO${bo}｜`:''}${(match.opponents||[]).slice(0,2).map(p=>escapeHtml(p.name||'待定')).join(' vs ')}${score}</div>`;
+    const details = `${escapeHtml(scheduleTierLabel(match))}｜${escapeHtml(name)}｜${Number.isInteger(bo)&&bo>0?`BO${bo}｜`:''}${(match.opponents||[]).slice(0,2).map(p=>escapeHtml(p.name||'待定')).join(' vs ')}${score}`;
+    const content = includeTime ? `<time>${escapeHtml(time)}</time> <span>${details}</span>` : details;
+    return `<div class="realtime-schedule-fixture${includeTime ? ' has-time' : ''}${startsSoon ? ' is-starting-soon' : ''}" data-schedule-key="${escapeHtml(key)}">${content}</div>`;
   };
   const sectionMarkup = (title, matches, empty, includeTime) => `<div class="realtime-event-section"><h3 data-schedule-key="${escapeHtml(title)}">${escapeHtml(title)}</h3>${matches.length ? matches.map(match=>fixtureMarkup(match,includeTime)).join('') : `<div class="realtime-event-empty">${escapeHtml(empty)}</div>`}</div>`;
   panel.hidden = false;
@@ -327,6 +331,7 @@ document.fonts?.ready.then(alignRealtimeStatusActivity);
 function playerTeamMarkup(value, stripAffixes = false) {
   const name = String(value || '').trim();
   const teams = new Map([
+    ['austral imperium',[stripAffixes ? 'AiM' : null,'Special:Search?search=Austral%20imperium']],
     ['ankr',[null,'ANKR']],
     ['blacksails',[null,'BLACKSAILS']],
     ['darkside',[null,'DarkSidE']],
@@ -482,9 +487,14 @@ function renderRealtimeStatus(states) {
     const numericRating = Number(player.rating);
     const rating = player.rating !== null && player.rating !== undefined && Number.isFinite(numericRating) ? numericRating.toLocaleString('zh-CN') : '—';
     const name = escapeHtml(player.name || `玩家 ${state.profileId || ''}`);
+    const accountRating = Number(player.accountRating);
+    const alternateAccount = Number.isFinite(accountRating) && accountRating > 0
+      && Number.isFinite(numericRating) && numericRating - accountRating > 200
+      && ['game', 'queueing', 'matched', 'lobby', 'cancelled'].includes(state.status);
+    const alternateBadge = alternateAccount ? '<span class="realtime-alt-account-badge" role="img" aria-label="该选手正在玩小号" title="该选手正在玩小号"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" stroke-linecap="round"><path d="M8 2 15 14H1Z M8 6v3.5 M8 11.6h.01"/></svg></span>' : '';
     const team = playerTeamMarkup(player.team, true);
     const live = state.live?.url ? `<a class="realtime-status-stream-link" href="${escapeHtml(state.live.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(state.live.title || '正在直播')}">${realtimePlatformIconMarkup(state.live.platform)}${escapeHtml(state.live.title || '正在直播')}</a>` : '';
-    return `<tr data-status-key="${escapeHtml(String(state.identity || state.profileId || ''))}"><td>${rating}</td><td><a class="realtime-status-player" title="${name}" href="/profile/${encodeURIComponent(String(state.identity || state.profileId || ''))}">${countryFlag(player.country)}<span>${name}</span></a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${live}</td></tr>`;
+    return `<tr data-status-key="${escapeHtml(String(state.identity || state.profileId || ''))}"><td>${rating}</td><td><a class="realtime-status-player" title="${name}" href="/players/${encodeURIComponent(String(state.identity || state.profileId || ''))}">${countryFlag(player.country)}<span class="realtime-status-name">${name}</span>${alternateBadge}</a></td><td>${team}</td><td class="${activity ? 'realtime-status-active' : ''}">${activity}</td><td>${live}</td></tr>`;
   }).join('');
   for (const icon of target.querySelectorAll('.realtime-queue-spinner')) {
     const previous = spinnerPhases.get(icon.dataset.queueKey);

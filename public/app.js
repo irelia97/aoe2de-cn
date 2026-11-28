@@ -18,7 +18,7 @@ function readSavedLeaderboardView() {
 function persistLeaderboardView() {
   const view = { ladder: selectedLadder, country: selectedCountry, page: currentPage };
   try { localStorage.setItem(leaderboardViewStorageKey, JSON.stringify(view)); } catch { /* Storage may be disabled. */ }
-  if (!location.pathname.startsWith('/profile')) {
+  if (!location.pathname.startsWith('/players')) {
     history.replaceState({ ...(history.state || {}), leaderboard: view }, '', location.href);
   }
 }
@@ -30,6 +30,7 @@ const leaderboardData = new Map();
 const leaderboardRequests = new Map();
 const leaderboardPageRequests = new Map();
 const leaderboardRetryAt = new Map();
+const leaderboardRequestTimeout = 25_000;
 const leaderboardSummaryCache = new Map();
 const leaderboardSummaryRequests = new Map();
 const leaderboardLocalCachePrefix = 'aoe2de:leaderboard-cache:v4:';
@@ -206,7 +207,7 @@ function rowMarkup(row, displayRank = Number(row.rank)) {
   const trophy = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v3h3v3a5 5 0 0 1-5 5h-.7a6 6 0 0 1-3.8 2.9V20h4v2H8.5v-2h4v-3.1A6 6 0 0 1 8.7 14H8a5 5 0 0 1-5-5V6h3V3Zm0 5H5v1a3 3 0 0 0 2.2 2.9A8 8 0 0 1 6 8Zm12 0a8 8 0 0 1-1.2 3.9A3 3 0 0 0 19 9V8h-1ZM8 5v3a4 4 0 0 0 8 0V5H8Z"/></svg>';
   const nameMarkup = selectedLadder === 15
     ? `<span class="player-name player-name-static">${escapeHtml(row.name)}</span>`
-    : `<a class="player-name" href="/profile/${encodeURIComponent(row.profileId)}">${escapeHtml(row.name)}</a>`;
+    : `<a class="player-name" href="/players/${encodeURIComponent(row.profileId)}">${escapeHtml(row.name)}</a>`;
   return `<tr class="player-row" data-profile="${row.profileId}" data-steam="${escapeHtml(row.steamId || '')}" data-ladder="${selectedLadder}"><td><span class="rank${medal}">${rank <= 3 ? `<span class="medal-mark" title="第${rank}名奖杯">${trophy}</span>` : rank}</span></td><td>${countryCell}</td><td><div class="player">${avatar}${nameMarkup}</div></td><td><div class="rating-stack"><span class="rating">${fmt.format(row.rating)}</span><span class="peak-rating">最高 ${fmt.format(row.highestRating ?? row.rating)}</span></div></td><td><span class="record"><b>${fmt.format(row.wins)}</b><i>/</i>${fmt.format(row.losses)}</span></td><td><span class="winrate-number">${totalRate === null ? '—' : `${totalRate}%`}</span></td><td>${streakCell}</td><td><span class="last-match-time" title="${escapeHtml(lastMatchTitle)}">${lastMatch || '暂无数据'}</span></td></tr>`;
 }
 const leaderboardAvatarRequests = new Map();
@@ -406,7 +407,7 @@ async function loadLeaderboard(force = false) {
     let response;
     while (true) {
       try {
-        response = await fetch(`/api/leaderboard?id=${ladderId}&avatarCache=1`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+        response = await fetch(`/api/leaderboard?id=${ladderId}&avatarCache=1`, { cache: 'no-store', signal: AbortSignal.timeout(leaderboardRequestTimeout) });
         data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         break;
@@ -443,7 +444,7 @@ async function loadLeaderboardPage(page) {
   if (leaderboardPageRequests.has(key)) return leaderboardPageRequests.get(key);
   const request = (async () => {
     try {
-      const response = await fetch(`/api/leaderboard?id=${encodeURIComponent(ladderId)}&page=${encodeURIComponent(requestedPage)}&avatarCache=1`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+      const response = await fetch(`/api/leaderboard?id=${encodeURIComponent(ladderId)}&page=${encodeURIComponent(requestedPage)}&avatarCache=1`, { cache: 'no-store', signal: AbortSignal.timeout(leaderboardRequestTimeout) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       const entry = leaderboardData.get(ladderId);
@@ -485,14 +486,13 @@ ladderChoices.querySelectorAll('.ladder-choice').forEach(button => button.addEve
   loadLeaderboard();
 }));
 function updateCountdown() {
-  if (!/^\/$/.test(location.pathname)) return;
+  if (!/^\/leaderboard\/?$/.test(location.pathname)) return;
   const cached = leaderboardData.get(selectedLadder);
   const updateAt = leaderboardRetryAt.get(selectedLadder) ?? cached?.expiresAt;
   const seconds = updateAt ? Math.max(0, Math.ceil((updateAt - Date.now()) / 1000)) : '—';
   document.querySelector('#countdown').textContent = leaderboardRequests.has(selectedLadder) ? '更新中' : seconds;
   if (seconds === 0 && !leaderboardRequests.has(selectedLadder)) loadLeaderboard();
 }
-if (/^\/$/.test(location.pathname)) loadLeaderboard();
 setInterval(updateCountdown, 1000);
 
 const profileSearchForm = document.querySelector('#profileSearchForm');
@@ -723,18 +723,19 @@ function civilizationNameZh(civilization) {
 }
 function routeToPlayerProfile(player) {
   if (!player?.profileId) return;
-  if (!location.pathname.startsWith('/profile')) history.replaceState({ ...(history.state || {}), leaderboard: { ladder: selectedLadder, country: selectedCountry, page: currentPage } }, '', location.href);
-  history.pushState({ profileId: String(player.profileId), name: String(player.name || '') }, '', `/profile/${encodeURIComponent(player.profileId)}`);
+  if (!location.pathname.startsWith('/players')) history.replaceState({ ...(history.state || {}), leaderboard: { ladder: selectedLadder, country: selectedCountry, page: currentPage } }, '', location.href);
+  history.pushState({ profileId: String(player.profileId), name: String(player.name || '') }, '', `/players/${encodeURIComponent(player.profileId)}`);
   hideProfileSuggestions();
   renderCurrentRoute(player);
 }
 function setProfileMessage(message, className = 'profile-details-empty') {
-  document.querySelector('#profileDetailsBody').innerHTML = `<tr><td colspan="4" class="${className}">${message}</td></tr>`;
+  document.querySelector('#profileDetailsBody').innerHTML = `<tr><td colspan="5" class="${className}">${message}</td></tr>`;
 }
 let mediaRequest = null;
-function mediaDate(value) {
+function mediaDate(value, approximate = false) {
   const time = Date.parse(String(value || ''));
-  return Number.isFinite(time) ? new Date(time).toLocaleString('zh-CN') : '';
+  if (!Number.isFinite(time)) return '';
+  return approximate ? `约 ${new Date(time).toLocaleDateString('zh-CN')}` : new Date(time).toLocaleString('zh-CN');
 }
 function mediaThumbnail(item, live = false) {
   if (!item?.thumbnail) return '';
@@ -805,7 +806,8 @@ function setupMediaHoverPreviews(root) {
   });
 }
 function renderMedia(data, showAllVideos = false) {
-  const videos = document.querySelector('#mediaVideos');
+  const videosCN = document.querySelector('#mediaVideosCN');
+  const videosForeign = document.querySelector('#mediaVideosForeign');
   const liveCN = document.querySelector('#mediaLiveCN');
   const liveForeign = document.querySelector('#mediaLiveForeign');
   const liveSection = document.querySelector('#mediaLiveSection');
@@ -819,12 +821,22 @@ function renderMedia(data, showAllVideos = false) {
   if (backLink) backLink.hidden = !showAllVideos;
   if (title) title.textContent = showAllVideos ? '全部视频' : '视频直播';
   if (subtitle) subtitle.textContent = showAllVideos ? '服务端当前保存的全部视频' : '开发者精选的帝国时代 II 视频与直播';
-  if (videosHint) videosHint.textContent = showAllVideos ? '服务端缓存' : '最新 10 个';
-  if (videos) {
-    const items = (Array.isArray(data?.videos) ? data.videos : []).slice(0, showAllVideos ? 50 : 10);
-    videos.innerHTML = items.length ? items.map(item => { const previewUrl = mediaPreviewUrl(item); return `<a class="media-card"${previewUrl ? ` data-preview-url="${escapeHtml(previewUrl)}"` : ''} href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener noreferrer"><div class="media-thumb">${item.thumbnail ? `<img src="${escapeHtml(mediaThumbnail(item))}" alt="" loading="lazy" onerror="this.parentElement.classList.add('no-image');this.remove()">` : ''}</div><div class="media-card-body"><strong title="${escapeHtml(item.title || '')}">${escapeHtml(item.title || '未命名视频')}</strong><span>${escapeHtml(item.channel || '')}${item.publishedAt ? ` · ${escapeHtml(mediaDate(item.publishedAt))}` : ''}</span></div></a>`; }).join('') : '<div class="media-empty">暂无已配置的视频源</div>';
-    setupMediaHoverPreviews(videos);
-  }
+  if (videosHint) videosHint.textContent = showAllVideos ? '服务端缓存' : '各区最新 10 个';
+  const items = Array.isArray(data?.videos) ? data.videos : [];
+  const videoLimit = showAllVideos ? 50 : 10;
+  const isChineseVideo = item => item.isCN ?? item.platform !== 'youtube';
+  const renderVideoGroup = (container, group, emptyText) => {
+    if (!container) return;
+    container.innerHTML = group.length ? group.slice(0, videoLimit).map(item => {
+      const previewUrl = mediaPreviewUrl(item);
+      const published = mediaDate(item.publishedAt, item.publishedAtApproximate);
+      const author = escapeHtml(item.channel || '');
+      return `<a class="media-card media-video-card"${previewUrl ? ` data-preview-url="${escapeHtml(previewUrl)}"` : ''} href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener noreferrer"><div class="media-thumb">${item.thumbnail ? `<img src="${escapeHtml(mediaThumbnail(item))}" alt="" loading="lazy" onerror="this.parentElement.classList.add('no-image');this.remove()">` : ''}</div><div class="media-card-body"><strong title="${escapeHtml(item.title || '')}">${escapeHtml(item.title || '未命名视频')}</strong><div class="media-video-meta"><span title="${author}">${author}</span>${published ? `<time datetime="${escapeHtml(item.publishedAt)}">${escapeHtml(published)}</time>` : ''}</div></div></a>`;
+    }).join('') : `<div class="media-empty">${emptyText}</div>`;
+    setupMediaHoverPreviews(container);
+  };
+  renderVideoGroup(videosCN, items.filter(isChineseVideo), '暂无中文视频');
+  renderVideoGroup(videosForeign, items.filter(item => !isChineseVideo(item)), '暂无外文视频');
   if (liveCN || liveForeign) {
     const items = Array.isArray(data?.live) ? data.live : [];
     const platformNames = { twitch: 'Twitch', youtube: 'YouTube', youtube_live: 'YouTube', douyin: '抖音', douyu: '斗鱼', bilibili: '哔哩哔哩', kick: 'Kick' };
@@ -837,7 +849,7 @@ function renderMedia(data, showAllVideos = false) {
       const ladders = `${ladderBadge('1v1', item.leaderboards?.randomMap1v1)}${ladderBadge('TG', item.leaderboards?.randomMapTeam)}`;
       const liveTitle = item.title || '正在直播';
       const previewUrl = mediaPreviewUrl(item, true);
-      return `<a class="media-card media-live-card is-live"${previewUrl ? ` data-preview-url="${escapeHtml(previewUrl)}"` : ''} href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener noreferrer"><div class="media-thumb">${item.thumbnail ? `<img src="${escapeHtml(mediaThumbnail(item, true))}" alt="" loading="lazy" onerror="this.parentElement.classList.add('no-image');this.remove()">` : ''}<span class="media-live-status">${escapeHtml(platform)}</span></div><div class="media-card-body"><strong class="media-live-title" title="${escapeHtml(liveTitle)}">${escapeHtml(liveTitle)}</strong><div class="media-live-bottom"><div class="media-live-host"><strong class="media-live-player-name" title="${escapeHtml(item.name || '未知主播')}">${escapeHtml(item.name || '未知主播')}</strong><span class="media-live-audience"><b class="media-spark" aria-hidden="true">✦</b> ${Number(item.viewers || 0).toLocaleString('zh-CN')} ${countLabel}</span></div>${ladders ? `<span class="media-live-ladders">${ladders}</span>` : ''}</div></div></a>`;
+      return `<a class="media-card media-live-card is-live"${previewUrl ? ` data-preview-url="${escapeHtml(previewUrl)}"` : ''} href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener noreferrer"><div class="media-thumb">${item.thumbnail ? `<img src="${escapeHtml(mediaThumbnail(item, true))}" alt="" loading="lazy" onload="this.style.visibility='';this.parentElement.classList.remove('no-image')" onerror="this.style.visibility='hidden';this.parentElement.classList.add('no-image')">` : ''}<span class="media-live-status">${escapeHtml(platform)}</span></div><div class="media-card-body"><strong class="media-live-title" title="${escapeHtml(liveTitle)}">${escapeHtml(liveTitle)}</strong><div class="media-live-bottom"><div class="media-live-host"><strong class="media-live-player-name" title="${escapeHtml(item.name || '未知主播')}">${escapeHtml(item.name || '未知主播')}</strong><span class="media-live-audience"><b class="media-spark" aria-hidden="true">✦</b> ${Number(item.viewers || 0).toLocaleString('zh-CN')} ${countLabel}</span></div>${ladders ? `<span class="media-live-ladders">${ladders}</span>` : ''}</div></div></a>`;
     }).join('') : '<div class="media-empty">暂无开播直播间</div>';
     if (liveCN) liveCN.innerHTML = markup(items.filter(item => item.isCN));
     if (liveForeign) liveForeign.innerHTML = markup(items.filter(item => !item.isCN));
@@ -846,9 +858,17 @@ function renderMedia(data, showAllVideos = false) {
   }
 }
 function loadMedia(showAllVideos = false) {
-  if (!mediaRequest) mediaRequest = fetch('/api/media', { cache: 'default', signal:AbortSignal.timeout(20_000) })
-    .then(response => response.ok ? response.json() : Promise.reject(new Error('视频直播请求失败')))
-    .finally(() => { mediaRequest = null; });
+  if (!mediaRequest) {
+    const initialData = window.initialMediaData;
+    delete window.initialMediaData;
+    mediaRequest = Promise.resolve(initialData)
+      .then(data => data ?? fetch('/api/media', {signal:AbortSignal.timeout(20_000)})
+        .then(response => {
+          if (!response.ok) throw new Error('视频直播请求失败');
+          return response.json();
+        }))
+      .finally(() => { mediaRequest = null; });
+  }
   return mediaRequest.then(data => {
     if (/^\/media(?:\/videos)?\/?$/.test(location.pathname)) renderMedia(data, /^\/media\/videos\/?$/.test(location.pathname));
     return data;
@@ -1199,7 +1219,7 @@ function replayStartTime(timestamp) {
 async function replayLoadMatchInfo(matchId, requestId, recordedStart) {
   try {
     const response = await fetch(`/api/replay-match-info?matchId=${encodeURIComponent(matchId)}`, { headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(15000) });
-    if (!response.ok) return;
+    if (reloadForCloudflareChallenge(response, 'replay') || !response.ok) return;
     const info = await response.json();
     if (requestId !== replayAnalysisRequest || String(info.matchId) !== String(matchId)) return;
     if (recordedStart > 0 && info.started > 0 && Math.abs(recordedStart - info.started) > 300) return;
@@ -1249,7 +1269,7 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   const replayGameSettings = document.querySelector('#replayGameSettings');
   if (replayGameSettings) replayGameSettings.innerHTML = replayGameSettingMarkup(settings, summary);
   const teamGroups = [...new Map(players.map(player => [player.teamIndex, players.filter(candidate => candidate.teamIndex === player.teamIndex)])).entries()];
-    document.querySelector('#replayPlayers').innerHTML = teamGroups.length ? teamGroups.map(([teamIndex, teamPlayers]) => `<section class="replay-team"><div class="replay-team-heading"><strong>队伍 ${Number(teamIndex) + 1}</strong>${replayResultBadge(teamPlayers, teamIndex)}</div><div class="replay-player-columns"><span aria-hidden="true"></span><span>玩家 / 文明</span><span>eAPM</span><span>最多队列单位</span></div>${teamPlayers.map(player => { const stat = playerStats.get(String(player.player_number)); const queued = replayQueuedUnitInfo(stat); const playerName = escapeHtml(player.name || `玩家 ${player.player_number ?? ''}`); const profileLink = player.profile_id ? `<a class="replay-player-name-link" href="/profile/${encodeURIComponent(String(player.profile_id))}">${playerName}</a>` : `<strong>${playerName}</strong>`; const civIcon = replayCivIcon(player); return `<div class="replay-player-row"><span class="replay-player-color" style="--player-color:${replayPlayerColor(player.color_id)}"></span><div><strong>${profileLink}</strong><small class="replay-player-civ">${civIcon ? `<img src="${escapeHtml(civIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(replayCivLabel(player))}</span></small></div><span class="replay-player-eapm">${stat ? stat.eapm.toFixed(1) : '—'}</span><span class="replay-player-queue">${queued.length ? queued.map(unit => `<span class="replay-player-queue-item" title="${escapeHtml(`${unit.name} × ${unit.count}`)}">${unit.icon ? `<img src="${escapeHtml(unit.icon)}" alt="${escapeHtml(unit.name)}" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(`${unit.name} × ${unit.count}`)}</span></span>`).join('') : '—'}</span></div>`; }).join('')}</section>`).join('') : '<div class="replay-empty">未读取到玩家资料。</div>';
+    document.querySelector('#replayPlayers').innerHTML = teamGroups.length ? teamGroups.map(([teamIndex, teamPlayers]) => `<section class="replay-team"><div class="replay-team-heading"><strong>队伍 ${Number(teamIndex) + 1}</strong>${replayResultBadge(teamPlayers, teamIndex)}</div><div class="replay-player-columns"><span aria-hidden="true"></span><span>玩家 / 文明</span><span>eAPM</span><span>最多队列单位</span></div>${teamPlayers.map(player => { const stat = playerStats.get(String(player.player_number)); const queued = replayQueuedUnitInfo(stat); const playerName = escapeHtml(player.name || `玩家 ${player.player_number ?? ''}`); const profileLink = player.profile_id ? `<a class="replay-player-name-link" href="/players/${encodeURIComponent(String(player.profile_id))}">${playerName}</a>` : `<strong>${playerName}</strong>`; const civIcon = replayCivIcon(player); return `<div class="replay-player-row"><span class="replay-player-color" style="--player-color:${replayPlayerColor(player.color_id)}"></span><div><strong>${profileLink}</strong><small class="replay-player-civ">${civIcon ? `<img src="${escapeHtml(civIcon)}" alt="" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(replayCivLabel(player))}</span></small></div><span class="replay-player-eapm">${stat ? stat.eapm.toFixed(1) : '—'}</span><span class="replay-player-queue">${queued.length ? queued.map(unit => `<span class="replay-player-queue-item" title="${escapeHtml(`${unit.name} × ${unit.count}`)}">${unit.icon ? `<img src="${escapeHtml(unit.icon)}" alt="${escapeHtml(unit.name)}" loading="lazy" onerror="this.hidden=true">` : ''}<span>${escapeHtml(`${unit.name} × ${unit.count}`)}</span></span>`).join('') : '—'}</span></div>`; }).join('')}</section>`).join('') : '<div class="replay-empty">未读取到玩家资料。</div>';
   document.querySelector('#replayPlayerCount').textContent = `${players.length} 人`;
   document.querySelector('#replayChatCount').textContent = `${chat.length} 条`;
   replayTimelineMarkup(full, players, summary?.duration);
@@ -1266,6 +1286,22 @@ function replaySummaryMarkup(summary, full, file, matchInfo = null) {
   document.querySelector('#replayResult').hidden = false;
 }
 let replayAnalysisRequest = 0;
+
+function cloudflareProtectedSection(path) {
+  if (/^\/players(?:\/\d+)?\/?$/i.test(path)) return 'profile';
+  if (/^\/replay-analysis\/?$/i.test(path)) return 'replay';
+  return '';
+}
+
+let cloudflareChallengeReloading = false;
+function reloadForCloudflareChallenge(response, section) {
+  if (response.headers.get('cf-mitigated') !== 'challenge') return false;
+  if (!cloudflareChallengeReloading && cloudflareProtectedSection(location.pathname) === section) {
+    cloudflareChallengeReloading = true;
+    location.reload();
+  }
+  return true;
+}
 async function loadServerReplay(matchId, profileId, startAnalysis = false) {
   const requestId = ++replayAnalysisRequest;
   const status = document.querySelector('#replayStatus');
@@ -1276,6 +1312,7 @@ async function loadServerReplay(matchId, profileId, startAnalysis = false) {
   status.textContent = '正在获取录像分析，请稍候……';
   try {
     let response = await fetch(`/api/replay-analysis?matchId=${encodeURIComponent(matchId)}&profileId=${encodeURIComponent(profileId)}`, { method: startAnalysis ? 'POST' : 'GET', headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(25000) });
+    if (reloadForCloudflareChallenge(response, 'replay')) return;
     let data = await response.json();
     if (!startAnalysis && response.status === 404 && data.code === 'ANALYSIS_REQUIRED') {
       if (requestId !== replayAnalysisRequest) return;
@@ -1295,6 +1332,7 @@ async function loadServerReplay(matchId, profileId, startAnalysis = false) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         if (requestId !== replayAnalysisRequest) return;
         response = await fetch(pollUrl, { headers: { 'X-AOE2-Client': 'web' }, signal: AbortSignal.timeout(25000), cache: 'no-store' });
+        if (reloadForCloudflareChallenge(response, 'replay')) return;
         data = await response.json();
         if (!response.ok) throw new Error(data.error || '获取录像分析失败');
       }
@@ -1707,7 +1745,6 @@ const realtimePolling = createRealtimePolling({
 });
 
 
-let lastCountedPageView = '';
 function renderSiteStats(data) {
   const users = document.querySelector('#todayUsers');
   const views = document.querySelector('#todayViews');
@@ -1721,12 +1758,28 @@ async function loadSiteStats() {
     renderSiteStats(await response.json());
   } catch {}
 }
-async function recordCurrentPageView() {
-  const route = `${location.pathname}${location.search}`;
-  if (lastCountedPageView === route) return;
-  lastCountedPageView = route;
+async function getSiteTrafficConfig() {
+  const response = await fetch('/api/page-view', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error('访问统计配置不可用');
+  return response.json();
+}
+async function recordSiteOpening() {
+  const type = performance.getEntriesByType('navigation')[0]?.type;
+  const sameTabSiteNavigation = history.length > 1 && document.referrer.startsWith(`${location.origin}/`);
+  if (type !== 'navigate' || sameTabSiteNavigation) return loadSiteStats();
   try {
-    const response = await fetch('/api/page-view', { method: 'POST', cache: 'no-store' });
+    const config = await getSiteTrafficConfig();
+    if (config.required && !config.siteKey) throw new Error('访问统计验证尚未配置');
+    let turnstileToken = null;
+    if (config.required) {
+      const { getTurnstileToken } = await import('/turnstile.js?v=1');
+      turnstileToken = await getTurnstileToken(config.siteKey, 'site_page_view');
+    }
+    const response = await fetch('/api/page-view', {
+      method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ navigation: 'document-open', turnstileToken })
+    });
     if (!response.ok) throw new Error('访问记录失败');
     renderSiteStats(await response.json());
   } catch {
@@ -1892,20 +1945,26 @@ function eventStatusLabel(match) {
   return `${hours}小时${minutes % 60}分钟后`;
 }
 
-function eventOpponentMarkup(opponent, score, side) {
-  const name = escapeHtml(opponent?.name || '待定');
-  const nameMarkup = opponent?.url
-    ? `<a href="${escapeHtml(opponent.url)}" target="_blank" rel="noopener noreferrer">${name}</a>`
-    : `<strong>${name}</strong>`;
+function eventOpponentCountryMarkup(opponent) {
   const countryName = eventCountryName(opponent);
   const countryCode = String(opponent?.countryCode || '').toUpperCase();
   const flagSource = countryCode === 'TW' ? 'https://flagcdn.com/w40/cn.png' : opponent?.flag;
   const flag = flagSource
     ? `<img class="events-country-flag" src="${escapeHtml(flagSource)}" alt="${escapeHtml(countryName)}国旗" loading="lazy" referrerpolicy="no-referrer">`
     : `<span class="events-country-flag is-emoji" aria-hidden="true">${eventCountryEmoji(opponent?.countryCode)}</span>`;
-  const country = `<small>${flag}<span>${escapeHtml(countryName)}</span></small>`;
-  const infoMarkup = `<div>${nameMarkup}${country}</div>`;
-  return `<div class="events-opponent is-${side}${opponent?.winner ? ' is-winner' : ''}${opponent?.loser ? ' is-loser' : ''}">${infoMarkup}</div>`;
+  return `<small>${flag}<span>${escapeHtml(countryName)}</span></small>`;
+}
+
+function eventOpponentMarkup(opponent, side, isTeamMatch) {
+  const name = escapeHtml(opponent?.name || '待定');
+  const nameMarkup = opponent?.url
+    ? `<a href="${escapeHtml(opponent.url)}" target="_blank" rel="noopener noreferrer">${name}</a>`
+    : `<strong>${name}</strong>`;
+  const logo = opponent?.logo
+    ? `<small><img class="events-team-logo" src="${escapeHtml(opponent.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer"></small>`
+    : '';
+  const details = isTeamMatch ? logo : eventOpponentCountryMarkup(opponent);
+  return `<div class="events-opponent is-${side}${opponent?.winner ? ' is-winner' : ''}${opponent?.loser ? ' is-loser' : ''}"><div>${nameMarkup}${details}</div></div>`;
 }
 
 function eventCardMarkup(match) {
@@ -1928,7 +1987,8 @@ function eventCardMarkup(match) {
     ? `<span class="events-tournament-logo"><img class="events-logo-light" src="${escapeHtml(logoLight)}" alt="" loading="lazy" referrerpolicy="no-referrer"><img class="events-logo-dark" src="${escapeHtml(logoDark)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`
     : (logoLight || logoDark) ? `<span class="events-tournament-logo"><img src="${escapeHtml(logoLight || logoDark)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>` : '';
   const statusClass = match.status === 'ongoing' ? ' is-live' : match.status === 'completed' ? ' is-completed' : '';
-  return `<article class="events-match-card${statusClass}"><div class="events-match-meta"><time datetime="${escapeHtml(match.startTime || '')}">${escapeHtml(timeText)}</time><span>${escapeHtml(eventStatusLabel(match))}</span></div><div class="events-matchup">${eventOpponentMarkup(opponents[0], scores[0], 'left')}${center}${eventOpponentMarkup(opponents[1], scores[1], 'right')}</div><div class="events-tournament">${tournamentLogo}${tournament}</div></article>`;
+  const isTeamMatch = opponents.some(opponent => opponent?.isTeam);
+  return `<article class="events-match-card${statusClass}"><div class="events-match-meta"><time datetime="${escapeHtml(match.startTime || '')}">${escapeHtml(timeText)}</time><span>${escapeHtml(eventStatusLabel(match))}</span></div><div class="events-matchup">${eventOpponentMarkup(opponents[0], 'left', isTeamMatch)}${center}${eventOpponentMarkup(opponents[1], 'right', isTeamMatch)}</div><div class="events-tournament">${tournamentLogo}${tournament}</div></article>`;
 }
 
 function eventTournamentMainName(tournament) {
@@ -2162,13 +2222,20 @@ let currentRoutePath = '';
 let routeRenderSequence = 0;
 function renderCurrentRoute(selectedPlayer = null) {
   const routeSequence = ++routeRenderSequence;
+  const protectedSection = cloudflareProtectedSection(location.pathname);
+  if (currentRoutePath && protectedSection && cloudflareProtectedSection(currentRoutePath) !== protectedSection) {
+    if (/^\/players\/?$/i.test(location.pathname)) {
+      history.replaceState({ ...(history.state || {}), profileId:defaultProfileId, name:'_LY_Yo' }, '', `/players/${defaultProfileId}`);
+    }
+    location.reload();
+    return;
+  }
   stopMediaHoverPreviews();
   if (currentRoutePath !== location.pathname) {
     window.scrollTo({ top:0, behavior:'instant' });
     currentRoutePath = location.pathname;
   }
-  recordCurrentPageView();
-  const match = location.pathname.match(/^\/profile(?:\/(\d+))?\/?$/);
+  const match = location.pathname.match(/^\/players(?:\/(\d+))?\/?$/);
   const isHomePage = location.pathname === '/';
   const isProfilePage = Boolean(match);
   const isCivilizationsPage = /^\/civilizations\/?$/.test(location.pathname);
@@ -2319,7 +2386,6 @@ function renderCurrentRoute(selectedPlayer = null) {
     if (heroImage && !heroImage.hasAttribute('src')) {
       heroImage.src = moduleArtworkFiles[Math.floor(Math.random() * moduleArtworkFiles.length)];
     }
-    document.querySelectorAll('#home-page .home-feature-image img').forEach(image => { image.loading = 'eager'; });
     return;
   }
   if (!isProfilePage) {
@@ -2353,7 +2419,7 @@ function renderCurrentRoute(selectedPlayer = null) {
     const aliasesButton = document.querySelector('#profileAliasesButton');
     if (aliasesButton) aliasesButton.hidden = true;
     setProfileAccountsModal(false);
-    history.replaceState({ ...(history.state || {}), profileId:defaultProfileId, name:'_LY_Yo' }, '', `/profile/${defaultProfileId}`);
+    history.replaceState({ ...(history.state || {}), profileId:defaultProfileId, name:'_LY_Yo' }, '', `/players/${defaultProfileId}`);
     return renderCurrentRoute();
   }
   currentProfileId = String(profileId);
@@ -2474,7 +2540,7 @@ if (techTreeNavLink) {
 }
 document.querySelectorAll('.sidebar .nav-item[data-page]').forEach(link => link.addEventListener('click', event => {
   event.preventDefault();
-  const target = link.dataset.page === 'tech-tree' ? '/tech-tree' : link.dataset.page === 'civilizations' ? '/civilizations' : link.dataset.page === 'profile' ? '/profile' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'events' ? '/events' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'replay-analysis' ? '/replay-analysis' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : link.dataset.page === 'feedback' ? '/feedback' : '/leaderboard';
+  const target = link.dataset.page === 'tech-tree' ? '/tech-tree' : link.dataset.page === 'civilizations' ? '/civilizations' : link.dataset.page === 'profile' ? '/players' : link.dataset.page === 'realtime' ? '/realtime' : link.dataset.page === 'events' ? '/events' : link.dataset.page === 'media' ? '/media' : link.dataset.page === 'replay-analysis' ? '/replay-analysis' : link.dataset.page === 'updates' ? '/updates' : link.dataset.page === 'build-orders' ? '/build-orders' : link.dataset.page === 'feedback' ? '/feedback' : '/leaderboard';
   history.pushState({}, '', target);
   renderCurrentRoute();
 }));
@@ -2487,7 +2553,7 @@ document.addEventListener('click',event=>{
 });
 document.addEventListener('click', event => {
   const link = event.target.closest('.player-name');
-  if (!link || link.tagName !== 'A' || location.pathname.startsWith('/profile')) return;
+  if (!link || link.tagName !== 'A' || location.pathname.startsWith('/players')) return;
   const row = link.closest('.player-row');
   const profileId = row?.dataset.profile;
   const player = currentRows.find(item => String(item.profileId) === String(profileId));
@@ -2499,12 +2565,19 @@ document.addEventListener('click', event => {
   const link = event.target.closest('a[href]');
   if (!link || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || link.hasAttribute('download') || (link.target && link.target !== '_self')) return;
   const url = new URL(link.href, location.href);
-  const match = url.origin === location.origin && url.pathname.match(/^\/profile\/(\d+)\/?$/);
+  if (location.pathname === '/' && url.origin === location.origin && url.pathname === '/leaderboard' && link.closest('#home-page')) {
+    event.preventDefault();
+    history.pushState({}, '', url.href);
+    renderCurrentRoute();
+    return;
+  }
+  const match = url.origin === location.origin && url.pathname.match(/^\/players\/(\d+)\/?$/);
   if (!match) return;
   event.preventDefault();
   routeToPlayerProfile({ profileId:match[1], name:link.textContent.trim() });
 });
 window.addEventListener('popstate', () => renderCurrentRoute());
+void recordSiteOpening();
 renderCurrentRoute();
 refreshProfileSearchStatus();
 setInterval(refreshProfileSearchStatus, 5000);

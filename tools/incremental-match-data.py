@@ -97,13 +97,14 @@ def merge(root, previous, batch, output):
             folder.mkdir()
             replacements[mode] = con.execute('SELECT count(*) FROM read_parquet(?) WHERE matchId IN (SELECT matchId FROM incoming)', [str(previous/mode/'matches.parquet')]).fetchone()[0]
             # Replace whole accepted matches, never combine players from different versions.
+            # Consumers aggregate by key, so export directly without materializing or sorting the history.
             for name in ['players.parquet', 'matches.parquet']:
-                con.execute('''CREATE OR REPLACE TABLE merged AS
-                    SELECT * FROM read_parquet(?) WHERE matchId NOT IN (SELECT matchId FROM incoming)
-                    UNION ALL BY NAME SELECT * FROM read_parquet(?)''', [str(previous/mode/name), str(batch/mode/name)])
                 target = "'"+str(folder/name).replace("'", "''")+"'"
-                con.execute(f'COPY (SELECT * FROM merged ORDER BY matchId) TO {target} (FORMAT PARQUET, COMPRESSION ZSTD)')
-                con.execute('DROP TABLE merged')
+                con.execute(f'''COPY (
+                    SELECT * FROM read_parquet(?) WHERE matchId NOT IN (SELECT matchId FROM incoming)
+                    UNION ALL BY NAME SELECT * FROM read_parquet(?)
+                ) TO {target} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 32768)''',
+                    [str(previous/mode/name), str(batch/mode/name)])
     finally:
         con.close()
     classifications, hashes = verify(root, output)

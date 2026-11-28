@@ -19,7 +19,7 @@ export function createProfileRoutes({
         profile.player={...profile.player,team:teams.get(profileId) || ''};
         const recsCached = await readAoE2RecsProfileCache(profileId);
         const insights = aoe2RecsProfileInsights(profileId, recsCached?.profile);
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300' });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-store' });
         return res.end(JSON.stringify({ ...profile, rlReference, insights, cached: true, stale: false, source: 'profile-dump' }));
       } catch (error) {
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -40,7 +40,7 @@ export function createProfileRoutes({
           if (recsCached?.profile) break;
         }
         const insights = aoe2RecsProfileInsights(profileId, recsCached?.profile);
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': result.stale ? 'no-cache' : 'public, max-age=300' });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-store' });
         return res.end(JSON.stringify({ ...result, insights }));
       } catch (error) {
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -108,7 +108,7 @@ export function createProfileRoutes({
         const cached = await getWorldsEdgeMatches(profileId, pageNumber);
         const matches = cached.matches;
         const page = matches.slice(offset, offset + limit);
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': cached.stale ? 'no-store' : 'public, max-age=60' });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-store' });
         return res.end(JSON.stringify({ matches: page, offset, total: matches.length, hasMore: offset + page.length < matches.length || cached.hasMore, stale:Boolean(cached.stale) }));
       } catch (error) {
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -123,7 +123,7 @@ export function createProfileRoutes({
       }
       try {
         const leaderboards = await fetchPersonalLeaderboardStats(profileId, { rankedOnly:url.searchParams.get('progressive') === '1' });
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': leaderboards.some(row => row.pending || row.stale) ? 'no-store' : 'public, max-age=600' });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-store' });
         return res.end(JSON.stringify({ leaderboards, source: 'getPersonalStat' }));
       } catch (error) {
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });

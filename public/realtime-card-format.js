@@ -30,7 +30,7 @@ function createRealtimeCardFormat({ escapeHtml, realtimePlayerColor, countryFlag
     const number=Number.isFinite(color)&&color>0?color:index+1;
     const rating=player.ratingMode==='rm_1v1'?Number(player.rating):NaN;
     const ratingText=Number.isFinite(rating)&&rating>0?rating.toLocaleString('zh-CN'):'—';
-    return `<div class="realtime-player-row"><span class="realtime-player-number" style="background:${escapeHtml(realtimePlayerColor(number,index))}">${number}</span><span class="realtime-country">${countryFlag(player.country)}</span><a class="realtime-player-name" href="/profile/${encodeURIComponent(String(player.profileId||null))}"><strong>${escapeHtml(player.name||`玩家 ${player.profileId||''}`)}</strong></a><span class="realtime-player-civ">${realtimeCivIconMarkup(player.civilizationId)}${escapeHtml(civilizationNameZh(player.civilization||'未知文明'))}</span><span class="realtime-player-rating" title="1v1 随机地图分数">${ratingText}</span></div>`;
+    return `<div class="realtime-player-row"><span class="realtime-player-number" style="background:${escapeHtml(realtimePlayerColor(number,index))}">${number}</span><span class="realtime-country">${countryFlag(player.country)}</span><a class="realtime-player-name" href="/players/${encodeURIComponent(String(player.profileId||null))}"><strong>${escapeHtml(player.name||`玩家 ${player.profileId||''}`)}</strong></a><span class="realtime-player-civ">${realtimeCivIconMarkup(player.civilizationId)}${escapeHtml(civilizationNameZh(player.civilization||'未知文明'))}</span><span class="realtime-player-rating" title="1v1 随机地图分数">${ratingText}</span></div>`;
   }
   return { realtimeGroupedPlayers, realtimeLeaderboardLabel, realtimePlayerRow };
 }

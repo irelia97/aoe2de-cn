@@ -45,6 +45,15 @@ export function createRealtimeService(deps) {
   });
   const realtimeRatings = createRealtimeRatings({ fetchStats:fetchPersonalLeaderboardStats, onChange:() => scheduleRealtimeSocketPublish() });
   const queueSocketGroups = new Map();
+  // Keep the premade party across the queue-removal / match-added event pair.
+  // A matched team can also contain strangers assigned by matchmaking.
+  const recentMatchedParties = new Map();
+  function rememberMatchedParty(data) {
+    for (const player of data.players || []) {
+      const id = String(player.profileId);
+      if (realtimeSocketProfileIds.includes(id)) recentMatchedParties.set(id, { at:Date.now(), players:data.players });
+    }
+  }
   let queueRecheckPromise = null, nextQueueRecheckAt = 0;
   async function recheckExpiredQueues() {
     if (queueRecheckPromise || Date.now() < nextQueueRecheckAt) return;
@@ -179,6 +188,7 @@ export function createRealtimeService(deps) {
             }
           }
           const prior = queueEntries.get(data.id)?.data;
+          if (data.reason === 'matched' && prior?.status === 'queueing') rememberMatchedParty(prior);
           // The upstream occasionally skips the separate matched event and
           // removes the party queue with reason=started and no matchId.  Keep
           // a short matched placeholder so the UI does not jump directly
@@ -234,10 +244,12 @@ export function createRealtimeService(deps) {
             // replaces it or the normal expiry recheck confirms it is gone.
             if (cancellingIds.size && monitoredPlayers.length && !monitoredCancelled) {
               const queueingSince = new Date().toISOString();
+              const partyIds = new Set(monitoredPlayers.flatMap(player => (prior.requeueParties?.[String(player.profileId)] || [player]).map(member => String(member.profileId))));
+              const requeuePlayers = (prior.players || []).filter(player => partyIds.has(String(player.profileId)) && !cancellingIds.has(String(player.profileId)));
               const requeued = {
                 id:String(data.id),
                 status:'queueing',
-                players:monitoredPlayers,
+                players:requeuePlayers,
                 partyLeaderProfileId:monitoredPlayers[0]?.profileId ?? null,
                 queueingSince,
                 syntheticRequeue:true,
@@ -280,6 +292,16 @@ export function createRealtimeService(deps) {
         const next = { data: merged, seenAt, firstSeenAt: previousEntry?.firstSeenAt ?? previousEntry?.seenAt ?? seenAt };
         if (merged.status === 'matched') {
           const matchedIds = new Set(merged.players.map(player => String(player.profileId)).filter(id => group.ids.includes(id)));
+          merged.requeueParties = { ...prior.requeueParties };
+          for (const entry of queueEntries.values()) {
+            if (entry.data.status === 'queueing' && compareQueueEvents(entry, next) <= 0 && (entry.data.players || []).some(player => matchedIds.has(String(player.profileId)))) rememberMatchedParty(entry.data);
+          }
+          for (const id of matchedIds) {
+            const party = recentMatchedParties.get(id);
+            if (!party || Date.now() - party.at > 90_000) continue;
+            const memberIds = new Set(merged.players.map(player => String(player.profileId)));
+            if (party.players.every(player => memberIds.has(String(player.profileId)))) merged.requeueParties[id] = party.players;
+          }
           for (const [queueId, entry] of queueEntries) {
             if (queueId === data.id || entry.data.status !== 'queueing' || compareQueueEvents(entry, next) > 0) continue;
             const players = (entry.data.players || []).filter(player => !matchedIds.has(String(player.profileId)));
@@ -470,11 +492,22 @@ export function createRealtimeService(deps) {
     }).map(id => String(id || '').trim()).filter(id => /^[1-9]\d*$/.test(id)))];
     // Publish status immediately using known ratings; new/expired ratings
     // refresh independently and trigger a later update for card ordering.
-    const ratingMap = realtimeRatings.get(activeProfileIds);
     const realtimeReferences = await loadRlReference();
     const nameIds = states.flatMap(state => [state.profileId,...(state.match?.players||[]).map(p=>p.profileId),...(state.queue?.players||[]).map(p=>p.profileId),...(state.cancellation?.players||[]).map(p=>p.profileId),...(state.lobby?.players||[]).map(p=>p.profileId)]);
     const canonicalIds = nameIds.map(id=>realtimePlayerIdentityOverrides.get(String(id)) || realtimeReferences.get(String(id))?.canonicalProfileId).filter(Boolean);
     const verifiedNames = deps.loadVerifiedRealtimeNames ? await deps.loadVerifiedRealtimeNames([...nameIds,...canonicalIds]) : new Map();
+    const identityFor = id => realtimePlayerIdentityOverrides.get(String(id)) || verifiedNames.get(String(id))?.canonicalProfileId || realtimeReferences.get(String(id))?.canonicalProfileId || String(id);
+    const poolIdentities = new Set(profileIds.map(identityFor));
+    const poolAccounts = new Map([...poolIdentities].map(identity => [identity,new Set([identity])]));
+    for (const id of new Set([...profileIds,...realtimePlayerIdentityOverrides.keys(),...realtimeReferences.keys(),...verifiedNames.keys()])) {
+      if (!/^[1-9]\d*$/.test(String(id))) continue;
+      poolAccounts.get(identityFor(id))?.add(String(id));
+    }
+    const ratingMap = realtimeRatings.get([...activeProfileIds,...[...poolAccounts.values()].flatMap(ids=>[...ids])]);
+    const poolRatings = new Map([...poolAccounts].map(([identity,ids]) => {
+      const ratings = [...ids].map(id=>ratingMap.get(id)).filter(rating=>Number.isFinite(rating) && rating>0);
+      return [identity,ratings.length ? Math.max(...ratings) : null];
+    }));
     const teams = deps.loadPlayerTeams ? await deps.loadPlayerTeams(profileIds,verifiedNames) : new Map(profileIds.map(id=>[String(id),verifiedNames.get(String(id))?.team || '']));
     const displayName = (id, name, clan='') => {
       const verified = verifiedNames.get(String(id));
@@ -525,7 +558,7 @@ export function createRealtimeService(deps) {
       const queue = state.queue ? { ...state.queue, players: (state.queue.players || []).map(p => ({ ...p, country:forceChinaCountry(p.profileId,p.country || ''), originalName:p.name, name:displayName(p.profileId,p.name,p.clan), rating1v1: ratingMap.get(String(p.profileId)) ?? null })) } : undefined;
       const cancellation = state.cancellation ? {...state.cancellation,players:(state.cancellation.players||[]).map(p=>({...p,name:displayName(p.profileId,p.name)}))} : undefined;
       if (state.lobby) state = { ...state, lobby:{...state.lobby, players:(state.lobby.players||[]).map(player=>({...player,country:forceChinaCountry(player.profileId,player.country || ''),name:displayName(player.profileId,player.name),rating:ratingMap.get(String(player.profileId))??null,ratingMode:'rm_1v1'}))} };
-      return { ...state, ...(queue ? { queue } : {}), ...(cancellation?{cancellation}:{}), match: ratedMatch, identity: realtimePlayerIdentityOverrides.get(String(state.profileId)) || verifiedNames.get(String(state.profileId))?.canonicalProfileId || reference?.canonicalProfileId || String(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), originalName:playerName, name:displayName(state.profileId,playerName,profile.team), team: teams.get(String(state.profileId)) || '', country: profile.country_code || own.country || '', rating: ratingMap.get(String(state.profileId)) ?? null } };
+      return { ...state, ...(queue ? { queue } : {}), ...(cancellation?{cancellation}:{}), match: ratedMatch, identity: identityFor(state.profileId), live: liveByProfile.get(String(state.profileId)) || null, player: { profileId: String(state.profileId), originalName:playerName, name:displayName(state.profileId,playerName,profile.team), team: teams.get(String(state.profileId)) || '', country: profile.country_code || own.country || '', accountRating: ratingMap.get(String(state.profileId)) ?? null, rating: poolRatings.get(identityFor(state.profileId)) ?? null } };
     });
     return { source, checkedAt: new Date().toISOString(), states: enrichedStates };
   }
@@ -793,6 +826,7 @@ export function createRealtimeService(deps) {
       try { previous?.close(); } catch {}
     }
     queueSocketGroups.clear();
+    recentMatchedParties.clear();
     for (const group of realtimeSocketGroups.values()) { clearTimeout(group.reconnectTimer); try { group.socket?.close(); } catch {} }
     realtimeSocketGroups.clear();
     realtimeSocketProfileIds = ids;

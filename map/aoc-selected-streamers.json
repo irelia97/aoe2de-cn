@@ -174,7 +174,7 @@
           "https://www.twitch.tv/lilybear_aoe"
         ]
       },
-      "isCN": true
+      "isCN": false
     },
     {
       "name": "Togawa__Sakikoi",
@@ -1270,6 +1270,12 @@
       "name": "鸡小悠",
       "rl": ["10516112"],
       "live_links": {"bilibili": ["https://live.bilibili.com/26401744"]},
+      "isCN": true
+    },
+    {
+      "name": "克鲁诺c",
+      "rl": [],
+      "live_links": {"bilibili": ["https://live.bilibili.com/8829475"]},
       "isCN": true
     }
   ]

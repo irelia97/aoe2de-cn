@@ -58,3 +58,15 @@ test('rate-limit message is shown directly without polling or parsing a replay',
   assert.equal(calls, 1); assert.match(elements['#replayStatus'].textContent, /每分钟最多2次/);
   assert.equal(elements['#replayRemoteRetry'].hidden, false);
 });
+
+test('Cloudflare challenge on a replay API reloads the document without parsing HTML', async () => {
+  const elements = { '#replayStatus': {}, '#replayResult': {}, '#replayRemoteRetry': {} };
+  let reloads = 0;
+  const context = vm.createContext({
+    document: { querySelector: key => elements[key] }, AbortSignal,
+    location: { pathname: '/replay-analysis', reload: () => { reloads++; } },
+    fetch: async () => new Response('<title>Verify</title>', { status: 403, headers: { 'cf-mitigated': 'challenge' } })
+  });
+  await vm.runInContext(code + "\nloadServerReplay('123','456')", context);
+  assert.equal(reloads, 1);
+});

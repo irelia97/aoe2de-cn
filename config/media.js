@@ -42,6 +42,30 @@ export const mediaSources = {
   ]
 };
 
+export const youtubeVideoHandles = [
+  'TheViperAOE', 'LiereyyAoe', 'HeraAgeofEmpires2', 'Hera-Gameplay', 'T90Official',
+  'SpiritOfTheLaw', 'ReoAoeChannel', 'MembTV', 'WayneChangAOE', 'Lewisaoe', 'dogaoAoE',
+  'A88_AOE', 'marioovalle', 'Tiramis_', 'Kasvaoe', 'NachoAoE', 'OrnLu_AoE', 'AgeofLowElo',
+  'F1ReAoE', 'GabiAoe', 'The2ndViper', 'ageofempires'
+];
+
+export const mediaFeaturedVideos = [
+  {
+    id: 'HpksHQpmjw0', platform: 'youtube', isCN: false, channel: 'TheViper',
+    title: 'AoE2:DE - The Last Viking 3. Fulford Gate',
+    url: 'https://www.youtube.com/watch?v=HpksHQpmjw0',
+    thumbnail: 'https://i.ytimg.com/vi/HpksHQpmjw0/hqdefault.jpg',
+    publishedAt: '2026-11-25T21:00:00+08:00'
+  },
+  {
+    id: '1WkVO2DRUSY', platform: 'youtube', isCN: false, channel: 'TheViper',
+    title: 'When Chat SAVES the Game!',
+    url: 'https://www.youtube.com/watch?v=1WkVO2DRUSY',
+    thumbnail: 'https://i.ytimg.com/vi/1WkVO2DRUSY/hqdefault.jpg',
+    publishedAt: '2026-11-24T22:00:00+08:00'
+  }
+];
+
 export const mediaVideoWhitelist = [
   'nishuone123',
   '戏曲艺术一枝花',
